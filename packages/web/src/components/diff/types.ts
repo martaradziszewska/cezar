@@ -103,10 +103,12 @@ export interface DiffProps {
   /**
    * Line comments for the agent (the self-review flow): rendered under the line they anchor to.
    * `onAddComment` absent ⇒ no "+" affordance at all; `onRemoveComment` absent ⇒ read-only
-   * comments. The fallback renderer shows neither — it has no line model to anchor to.
+   * comments (and `onEditComment` absent ⇒ no Edit). The fallback renderer shows neither — it has no line model to anchor to.
    */
   comments?: readonly DiffLineComment[]
   onAddComment?: (comment: DiffNewLineComment) => void
+  /** Absent ⇒ saved comments offer no Edit. */
+  onEditComment?: (id: string, body: string) => void
   onRemoveComment?: (id: string) => void
   className?: string
 }

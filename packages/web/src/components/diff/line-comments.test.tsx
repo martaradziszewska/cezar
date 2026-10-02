@@ -87,7 +87,34 @@ describe('Diff line comments', () => {
     // A context row maps both cells to one anchor — the comment shows once, not twice.
     expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete comment' }))
+    // No `onEditComment` ⇒ no Edit; removal is still offered.
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from chat' }))
     expect(onRemoveComment).toHaveBeenCalledWith('c1')
+  })
+
+  it('edits a saved comment in its place, and Cancel leaves it untouched', async () => {
+    const comments: DiffLineComment[] = [{ id: 'c1', path: 'src/a.ts', side: 'new', line: 4, body: 'remove this' }]
+    const onEditComment = vi.fn()
+    const onAddComment = vi.fn()
+    await renderDiff(
+      <Diff files={[MODIFIED]} comments={comments} onEditComment={onEditComment} onAddComment={onAddComment} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    // The comment is swapped for its editor, prefilled.
+    expect(document.querySelector('[data-slot="diff-line-comment"]')).toBeNull()
+    expect(screen.getByDisplayValue('remove this')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.querySelector('[data-slot="diff-line-comment"]')?.textContent).toContain('remove this')
+    expect(onEditComment).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const editor = screen.getByDisplayValue('remove this')
+    fireEvent.change(editor, { target: { value: 'remove this import' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onEditComment).toHaveBeenCalledWith('c1', 'remove this import')
+    expect(onAddComment).not.toHaveBeenCalled()
   })
 })

@@ -88,13 +88,28 @@ function indent(body: string): string {
     .join('\n')
 }
 
+/** How much of the commented line a comment keeps. A minified line can be the whole file, and
+ *  every comment lives in ONE draft entry capped at `DRAFT_TEXT_MAX` — whose rejected write is
+ *  silent by design — so an uncapped excerpt could quietly stop the comments from persisting. */
+export const EXCERPT_MAX = 200
+
+export function capExcerpt(excerpt: string): string {
+  const trimmed = excerpt.trim()
+  return trimmed.length <= EXCERPT_MAX ? trimmed : `${trimmed.slice(0, EXCERPT_MAX)}…`
+}
+
 function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 export interface DiffComments {
+  /** The stored comments have loaded (or failed to). Until then there is no list to add to: an
+   *  edit would mark the draft dirty, the seed would then be skipped, and the first write would
+   *  replace every stored comment with the one just added. Hosts offer "add" only once ready. */
+  ready: boolean
   comments: DiffComment[]
   add: (comment: DiffNewLineComment) => void
+  update: (id: string, body: string) => void
   remove: (id: string) => void
   clear: () => void
   /** Hand the comments to a send: they are dropped only once it resolves; a failed send keeps them. */
@@ -111,7 +126,12 @@ export function useDiffComments(runId: string): DiffComments {
     [clear, setText],
   )
   const add = useCallback(
-    (comment: DiffNewLineComment) => write([...comments, { ...comment, id: newId() }]),
+    (comment: DiffNewLineComment) =>
+      write([...comments, { ...comment, excerpt: capExcerpt(comment.excerpt), id: newId() }]),
+    [comments, write],
+  )
+  const update = useCallback(
+    (id: string, body: string) => write(comments.map((c) => (c.id === id ? { ...c, body } : c))),
     [comments, write],
   )
   const remove = useCallback((id: string) => write(comments.filter((c) => c.id !== id)), [comments, write])
@@ -127,5 +147,5 @@ export function useDiffComments(runId: string): DiffComments {
     [clear, comments],
   )
 
-  return { comments, add, remove, clear, submit }
+  return { ready: draft.ready, comments, add, update, remove, clear, submit }
 }

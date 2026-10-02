@@ -235,7 +235,9 @@ function ChangesView({ run }: { run: ApiRun }) {
               health.data?.capabilities.localHandoff ? (path) => openImage.mutate(path) : undefined
             }
             comments={diffComments.comments}
-            onAddComment={diffComments.add}
+            // Not until the stored comments have loaded — see `DiffComments.ready`.
+            onAddComment={diffComments.ready ? diffComments.add : undefined}
+            onEditComment={diffComments.update}
             onRemoveComment={diffComments.remove}
             className="min-w-0 flex-1"
           />

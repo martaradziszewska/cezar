@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatDiffComments, parseDiffComments, withDiffComments, type DiffComment } from './diff-comments'
+import {
+  capExcerpt,
+  EXCERPT_MAX,
+  formatDiffComments,
+  parseDiffComments,
+  withDiffComments,
+  type DiffComment,
+} from './diff-comments'
 
 const A: DiffComment = { id: 'a', path: 'src/b.ts', side: 'new', line: 12, body: 'rename this', excerpt: '  const x = 1' }
 const B: DiffComment = { id: 'b', path: 'src/a.ts', side: 'old', line: 3, body: 'why remove?\nit was used', excerpt: '' }
@@ -37,5 +44,12 @@ describe('diff comments', () => {
     expect(withDiffComments('also run the tests', [A])).toBe(`${formatDiffComments([A])}\n\nalso run the tests`)
     expect(withDiffComments('', [A])).toBe(formatDiffComments([A]))
     expect(withDiffComments('just this', [])).toBe('just this')
+  })
+
+  it('caps the excerpt, so a minified line cannot push the draft past its size cap', () => {
+    expect(capExcerpt('  short  ')).toBe('short')
+    const long = capExcerpt('x'.repeat(50_000))
+    expect(long).toHaveLength(EXCERPT_MAX + 1)
+    expect(long.endsWith('…')).toBe(true)
   })
 })

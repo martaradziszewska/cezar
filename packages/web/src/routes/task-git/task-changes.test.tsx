@@ -454,3 +454,70 @@ describe('GitToolbar renders policy fixtures verbatim', () => {
     expect(onWrapChange).toHaveBeenCalledWith(true)
   })
 })
+
+// ---- line comments (self-review) ------------------------------------------------------------
+
+describe('the Changes tab line comments', () => {
+  /**
+   * The draft hook seeds only a PRISTINE input, so a comment added before the stored list arrived
+   * would mark it dirty, skip the seed, and write a one-item list over every stored comment.
+   */
+  it('offers "+" only once the stored comments have loaded, and adding keeps them', async () => {
+    const stored = [{ id: 'old', path: 'notes.md', side: 'new', line: 1, body: 'keep me', excerpt: 'one' }]
+    let release: () => void = () => {}
+    const draftsLoaded = new Promise<void>((resolve) => (release = resolve))
+    const sent = stubFetch({
+      'GET /api/v1/runs/r1/drafts': (() =>
+        draftsLoaded.then(() =>
+          jsonResponse({
+            surfaces: {
+              'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+            },
+          }),
+        )) as unknown as () => Response,
+    })
+    renderChangesRoute()
+
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
+    expect(document.querySelector('[data-slot="diff-add-comment"]')).toBeNull()
+
+    release()
+    await screen.findByText('keep me')
+    fireEvent.click(document.querySelector('[data-slot="diff-add-comment"]')!)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'and this' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      const put = sent.filter((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments').at(-1)
+      expect(put).toBeDefined()
+      const written = JSON.parse((put!.body as { text: string }).text) as { body: string }[]
+      expect(written.map((c) => c.body)).toEqual(['keep me', 'and this'])
+    })
+  })
+
+  it('edits a drafted comment in place', async () => {
+    const stored = [{ id: 'c1', path: 'notes.md', side: 'new', line: 1, body: 'remove this', excerpt: 'one' }]
+    const sent = stubFetch({
+      'GET /api/v1/runs/r1/drafts': () =>
+        jsonResponse({
+          surfaces: {
+            'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+          },
+        }),
+    })
+    renderChangesRoute()
+
+    await screen.findByText('remove this')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const editor = screen.getByDisplayValue('remove this')
+    fireEvent.change(editor, { target: { value: 'remove this import' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await screen.findByText('remove this import')
+    await waitFor(() => {
+      const put = sent.filter((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments').at(-1)
+      expect(JSON.parse((put!.body as { text: string }).text)).toEqual([{ ...stored[0], body: 'remove this import' }])
+    })
+  })
+})

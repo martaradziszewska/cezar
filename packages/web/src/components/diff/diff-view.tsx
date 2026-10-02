@@ -82,6 +82,7 @@ export function DiffView({
   viewRef,
   comments,
   onAddComment,
+  onEditComment,
   onRemoveComment,
   className,
 }: DiffProps) {
@@ -139,16 +140,34 @@ export function DiffView({
       byKey,
       editing,
       canAdd: onAddComment !== undefined,
-      open: (anchor: DiffLineAnchor, excerpt: string) => setEditing({ key: anchorKey(anchor), anchor, excerpt }),
+      open: (anchor: DiffLineAnchor, excerpt: string) => {
+        const key = anchorKey(anchor)
+        setEditing({ key, threadKey: key, anchor, excerpt })
+      },
+      edit: onEditComment
+        ? (comment: DiffLineComment) =>
+            setEditing({
+              key: `edit:${comment.id}`,
+              threadKey: anchorKey(comment),
+              anchor: comment,
+              excerpt: '',
+              commentId: comment.id,
+              initial: comment.body,
+            })
+        : undefined,
       cancel: () => setEditing(null),
       submit: (comment) => {
         onAddComment?.(comment)
         setEditing(null)
       },
+      update: (id, body) => {
+        onEditComment?.(id, body)
+        setEditing(null)
+      },
       remove: onRemoveComment,
       pendingText,
     }
-  }, [comments, editing, onAddComment, onRemoveComment, pendingText])
+  }, [comments, editing, onAddComment, onEditComment, onRemoveComment, pendingText])
 
   const rowCount = useMemo(() => diffRowCount(files), [files])
   // The `?diff=` override is a measurement/debugging seam, not reactive state — read once so

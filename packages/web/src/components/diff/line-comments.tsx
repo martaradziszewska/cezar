@@ -1,4 +1,4 @@
-import { MessageSquareIcon, PlusIcon, XIcon } from 'lucide-react'
+import { MessageSquareOffIcon, PencilIcon, PlusIcon } from 'lucide-react'
 import { createContext, useContext, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -28,14 +28,29 @@ export function anchorKey(anchor: DiffLineAnchor): string {
   return `${anchor.side}:${anchor.line}\u0000${anchor.path}`
 }
 
+/** The one open editor (one at a time, like a review tool): a new comment, or a saved one being
+ *  edited in place (`commentId` set). */
+export interface LineCommentEditing {
+  /** The `pendingText` slot — per new-comment anchor, or per edited comment. */
+  key: string
+  /** The row the editor hangs under (`anchorKey`). */
+  threadKey: string
+  anchor: DiffLineAnchor
+  excerpt: string
+  commentId?: string
+  initial?: string
+}
+
 export interface LineCommentsApi {
   byKey: ReadonlyMap<string, readonly DiffLineComment[]>
-  /** The one open editor (one at a time, like a review tool), or null. */
-  editing: { key: string; anchor: DiffLineAnchor; excerpt: string } | null
+  editing: LineCommentEditing | null
   canAdd: boolean
   open: (anchor: DiffLineAnchor, excerpt: string) => void
+  /** Absent ⇒ saved comments are read-only. */
+  edit?: (comment: DiffLineComment) => void
   cancel: () => void
   submit: (comment: DiffNewLineComment) => void
+  update: (id: string, body: string) => void
   remove?: (id: string) => void
   /** Unsent editor text, kept OUTSIDE React state: virtualization can unmount the editor's row
    *  mid-sentence, and a keystroke must not re-render every row of the diff. */
@@ -80,43 +95,56 @@ export function LineCommentThread({ anchors }: { anchors: readonly (DiffLineAnch
   if (!api) return null
   const keys = [...new Set(anchors.filter((a): a is DiffLineAnchor => a !== undefined).map(anchorKey))]
   const comments = keys.flatMap((key) => api.byKey.get(key) ?? [])
-  const editing = api.editing !== null && keys.includes(api.editing.key) ? api.editing : null
+  const editing = api.editing !== null && keys.includes(api.editing.threadKey) ? api.editing : null
   if (comments.length === 0 && editing === null) return null
+  const editingId = editing?.commentId
   return (
     <div data-slot="diff-line-comments" className="border-y border-border/50 bg-muted/30 py-2 font-sans">
       {/* Sticky + capped: in no-wrap mode the rows are as wide as the longest line, and the
           editor's buttons must not end up scrolled off to the right of it. */}
       <div className="sticky left-0 flex w-full max-w-2xl flex-col gap-2 px-3 md:pl-24">
-        {comments.map((comment) => (
-          <SavedComment key={comment.id} comment={comment} onRemove={api.remove} />
-        ))}
-        {editing ? <CommentEditor key={editing.key} editing={editing} api={api} /> : null}
+        {comments.map((comment) =>
+          // The comment being edited is swapped for its editor, in place.
+          comment.id === editingId && editing ?
+            <CommentEditor key={editing.key} editing={editing} api={api} />
+          : <SavedComment key={comment.id} comment={comment} onEdit={api.edit} onRemove={api.remove} />,
+        )}
+        {editing && editingId === undefined ? <CommentEditor key={editing.key} editing={editing} api={api} /> : null}
       </div>
     </div>
   )
 }
 
-function SavedComment({ comment, onRemove }: { comment: DiffLineComment; onRemove?: (id: string) => void }) {
+function SavedComment({
+  comment,
+  onEdit,
+  onRemove,
+}: {
+  comment: DiffLineComment
+  onEdit?: (comment: DiffLineComment) => void
+  onRemove?: (id: string) => void
+}) {
   return (
     <div
       data-slot="diff-line-comment"
-      className="flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px] leading-normal"
+      className="flex flex-col gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-[13px] leading-normal"
     >
-      <MessageSquareIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-soft-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="break-words whitespace-pre-wrap text-foreground">{comment.body}</p>
-        <p className="mt-0.5 text-[11px] text-soft-foreground">Draft — sent with your next message</p>
-      </div>
-      {onRemove ? (
-        <button
-          type="button"
-          aria-label="Delete comment"
-          title="Delete comment"
-          onClick={() => onRemove(comment.id)}
-          className="shrink-0 rounded-sm p-0.5 text-soft-foreground hover:bg-muted hover:text-foreground"
-        >
-          <XIcon aria-hidden="true" className="size-3.5" />
-        </button>
+      <p className="break-words whitespace-pre-wrap text-foreground">{comment.body}</p>
+      {onEdit || onRemove ? (
+        <div className="flex items-center justify-end gap-1.5">
+          {onEdit ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onEdit(comment)}>
+              <PencilIcon aria-hidden="true" className="size-3.5" />
+              Edit
+            </Button>
+          ) : null}
+          {onRemove ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => onRemove(comment.id)}>
+              <MessageSquareOffIcon aria-hidden="true" className="size-3.5" />
+              Remove from chat
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )
@@ -129,7 +157,7 @@ function CommentEditor({
   editing: NonNullable<LineCommentsApi['editing']>
   api: LineCommentsApi
 }) {
-  const [text, setText] = useState(() => api.pendingText.get(editing.key) ?? '')
+  const [text, setText] = useState(() => api.pendingText.get(editing.key) ?? editing.initial ?? '')
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     const el = ref.current
@@ -142,7 +170,8 @@ function CommentEditor({
   const submit = () => {
     if (body === '') return
     api.pendingText.delete(editing.key)
-    api.submit({ ...editing.anchor, excerpt: editing.excerpt, body })
+    if (editing.commentId !== undefined) api.update(editing.commentId, body)
+    else api.submit({ ...editing.anchor, excerpt: editing.excerpt, body })
   }
   const cancel = () => {
     api.pendingText.delete(editing.key)
@@ -190,7 +219,7 @@ function CommentEditor({
           Cancel
         </Button>
         <Button type="button" size="sm" disabled={body === ''} onClick={submit}>
-          Comment <span aria-hidden="true">↵</span>
+          {editing.commentId !== undefined ? 'Save' : 'Comment'} <span aria-hidden="true">↵</span>
         </Button>
       </div>
     </div>
