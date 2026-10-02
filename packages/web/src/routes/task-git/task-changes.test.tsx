@@ -520,4 +520,49 @@ describe('the Changes tab line comments', () => {
       expect(JSON.parse((put!.body as { text: string }).text)).toEqual([{ ...stored[0], body: 'remove this import' }])
     })
   })
+
+  it('offers no "+" when the stored comments could not be read — there is no list to add to', async () => {
+    stubFetch({ 'GET /api/v1/runs/r1/drafts': () => jsonResponse({ error: 'boom' }, 500) })
+    renderChangesRoute()
+
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
+    // Give the failed read time to settle, then make sure it did not open the gate.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.querySelector('[data-slot="diff-add-comment"]')).toBeNull()
+  })
+
+  it('refuses a comment that would push the stored list past the draft cap — loudly, editor kept', async () => {
+    // ~30 × 3.5 kB ≈ 105 kB once one more is added: past DRAFT_TEXT_MAX (100 000).
+    const stored = Array.from({ length: 28 }, (_, i) => ({
+      id: `c${i}`,
+      path: 'notes.md',
+      side: 'new',
+      line: 2,
+      body: 'x'.repeat(3500),
+      excerpt: 'two',
+    }))
+    const sent = stubFetch({
+      'GET /api/v1/runs/r1/drafts': () =>
+        jsonResponse({
+          surfaces: {
+            'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+          },
+        }),
+    })
+    renderChangesRoute()
+
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(28))
+    const notes = [...document.querySelectorAll<HTMLElement>('[data-slot="diff-file"]')].find(
+      (card) => card.dataset.path === 'notes.md',
+    )!
+    fireEvent.click(notes.querySelector('[aria-label="Comment on line 1"]')!)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'y'.repeat(3500) } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await screen.findByText(/Too many comments to keep as a draft/)
+    expect(screen.getByPlaceholderText('Add a comment for the AI')).not.toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 600)) // past the draft debounce
+    expect(sent.some((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments')).toBe(false)
+  })
 })

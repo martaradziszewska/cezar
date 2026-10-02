@@ -1,6 +1,8 @@
 import { useCallback, useMemo } from 'react'
 
-import type { DiffLineComment, DiffNewLineComment } from '@/components/diff'
+import { DRAFT_TEXT_MAX } from '@open-mercato/cezar-api-client'
+import { COMMENT_MAX, type DiffLineComment, type DiffNewLineComment } from '@/components/diff'
+import { toast } from '@/components/ui/toaster'
 
 import { useDraft } from './thread-draft'
 
@@ -21,6 +23,8 @@ export const DIFF_COMMENTS_SURFACE = 'diff-comments'
 export interface DiffComment extends DiffLineComment {
   /** The commented line's text when the comment was written. */
   excerpt: string
+  /** A removed line of a renamed file: the path its line number belongs to. */
+  oldPath?: string
 }
 
 /** Defensive: the stored text is whatever the wire carried. Anything malformed is dropped. */
@@ -53,32 +57,43 @@ export function parseDiffComments(text: string): DiffComment[] {
       line: c.line,
       body: c.body,
       excerpt: typeof c.excerpt === 'string' ? c.excerpt : '',
+      ...(typeof c.oldPath === 'string' && c.oldPath !== '' ? { oldPath: c.oldPath } : {}),
     })
   }
   return out
 }
 
-/** Path, then line — the order a reviewer reads a diff in, whatever order the notes were left. */
+/** Path, then side (old-file numbers before new-file ones — they count different files), then
+ *  line: the order a reviewer reads a diff in, whatever order the notes were left. */
 export function sortDiffComments(comments: readonly DiffComment[]): DiffComment[] {
-  return [...comments].sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+  const side = (c: DiffComment) => (c.side === 'old' ? 0 : 1)
+  return [...comments].sort((a, b) => a.path.localeCompare(b.path) || side(a) - side(b) || a.line - b.line)
 }
 
 /** What the agent receives: one review block, every comment anchored to file + line. */
 export function formatDiffComments(comments: readonly DiffComment[]): string {
   if (comments.length === 0) return ''
   const blocks = sortDiffComments(comments).map((comment) => {
-    const where = `\`${comment.path}\` line ${comment.line}${comment.side === 'old' ? ' (removed line)' : ''}`
+    // A removed line is numbered in the OLD file, so a renamed file names the old path with it.
+    const where =
+      comment.side === 'old' ?
+        `\`${comment.oldPath ?? comment.path}\` line ${comment.line} (removed line${comment.oldPath ? `, renamed to \`${comment.path}\`` : ''})`
+      : `\`${comment.path}\` line ${comment.line}`
     const excerpt = comment.excerpt.trim() === '' ? '' : `\n> ${comment.excerpt.trim()}`
     return `- ${where}:${excerpt}\n${indent(comment.body)}`
   })
   return `Review comments on the diff:\n\n${blocks.join('\n\n')}`
 }
 
-/** The message that carries the comments: the review first, then whatever the user typed. */
+/**
+ * The message that carries the comments: whatever the user typed, then the review. The typed text
+ * leads because its first character is load-bearing — a `/skill` message is only expanded when it
+ * STARTS with the slash (`expandRegistrySlashSkillText`), and so are the backends' own commands.
+ */
 export function withDiffComments(text: string, comments: readonly DiffComment[]): string {
   const review = formatDiffComments(comments)
   if (review === '') return text
-  return text.trim() === '' ? review : `${review}\n\n${text}`
+  return text.trim() === '' ? review : `${text}\n\n${review}`
 }
 
 function indent(body: string): string {
@@ -103,13 +118,15 @@ function newId(): string {
 }
 
 export interface DiffComments {
-  /** The stored comments have loaded (or failed to). Until then there is no list to add to: an
-   *  edit would mark the draft dirty, the seed would then be skipped, and the first write would
-   *  replace every stored comment with the one just added. Hosts offer "add" only once ready. */
+  /** The stored comments ARRIVED. Until then there is no list to add to: an edit would mark the
+   *  draft dirty, the seed would be skipped, and the first write would replace every stored comment
+   *  with the one just added. A FAILED read is not ready either, for the same reason — the server
+   *  may still hold a list this cockpit never saw. Hosts offer "add" only once ready. */
   ready: boolean
   comments: DiffComment[]
-  add: (comment: DiffNewLineComment) => void
-  update: (id: string, body: string) => void
+  /** `false` when the comment could not be kept (the list would outgrow the draft cap). */
+  add: (comment: DiffNewLineComment) => boolean
+  update: (id: string, body: string) => boolean
   remove: (id: string) => void
   clear: () => void
   /** Hand the comments to a send: they are dropped only once it resolves; a failed send keeps them. */
@@ -121,17 +138,35 @@ export function useDiffComments(runId: string): DiffComments {
   const comments = useMemo(() => parseDiffComments(draft.text), [draft.text])
   const { setText, clear } = draft
 
+  /** Every write is size-checked HERE: the store refuses an over-cap entry, and a refused draft
+   *  write is silent by design — so the comments would look kept and be gone after a reload. */
   const write = useCallback(
-    (next: readonly DiffComment[]) => (next.length === 0 ? clear() : setText(JSON.stringify(next))),
+    (next: readonly DiffComment[]): boolean => {
+      if (next.length === 0) {
+        clear()
+        return true
+      }
+      const text = JSON.stringify(next)
+      if (text.length > DRAFT_TEXT_MAX) {
+        toast('Too many comments to keep as a draft — send the ones you have first.', { tone: 'danger' })
+        return false
+      }
+      setText(text)
+      return true
+    },
     [clear, setText],
   )
   const add = useCallback(
     (comment: DiffNewLineComment) =>
-      write([...comments, { ...comment, excerpt: capExcerpt(comment.excerpt), id: newId() }]),
+      write([
+        ...comments,
+        { ...comment, body: comment.body.slice(0, COMMENT_MAX), excerpt: capExcerpt(comment.excerpt), id: newId() },
+      ]),
     [comments, write],
   )
   const update = useCallback(
-    (id: string, body: string) => write(comments.map((c) => (c.id === id ? { ...c, body } : c))),
+    (id: string, body: string) =>
+      write(comments.map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c))),
     [comments, write],
   )
   const remove = useCallback((id: string) => write(comments.filter((c) => c.id !== id)), [comments, write])
@@ -147,5 +182,5 @@ export function useDiffComments(runId: string): DiffComments {
     [clear, comments],
   )
 
-  return { ready: draft.ready, comments, add, update, remove, clear, submit }
+  return { ready: draft.loaded, comments, add, update, remove, clear, submit }
 }

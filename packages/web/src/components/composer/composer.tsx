@@ -54,7 +54,7 @@ import { formatElapsed, useDictation } from './dictation'
 export interface ComposerProps {
   /** Deliver the message. Rejection = the message did NOT land: the composer toasts the error
    *  and restores the draft (nothing the user typed is ever lost). */
-  onSubmit: (text: string, attachments: AttachmentInput[]) => Promise<unknown>
+  onSubmit: (text: string, attachments: AttachmentInput[], meta?: ComposerSubmitMeta) => Promise<unknown>
   /**
    * Controlled text (pass BOTH or neither): the /new host owns the draft so it survives
    * navigation (spec: "Queued form state survives navigation"). Every internal edit — typing,
@@ -114,6 +114,13 @@ export interface ComposerProps {
   getMentionCandidates?: () => string[]
   /** Exposes `ComposerHandle` — see there for why this exists. */
   ref?: Ref<ComposerHandle>
+}
+
+/** How a message was sent. `quickReply` marks the Alt+A / Alt+C canned replies: they are fired
+ *  from anywhere on the page, so a host must not fold its own draft items (the thread's diff
+ *  comments) into them — the user never saw those leave. */
+export interface ComposerSubmitMeta {
+  quickReply?: boolean
 }
 
 /** The imperative seam a host needs when it wants to write INTO the draft the composer owns —
@@ -363,13 +370,20 @@ export function Composer({
   // ---- submit --------------------------------------------------------------------------------
 
   const send = useCallback(
-    async (messageText: string, messageImages: PendingAttachment[], restoreOnError: boolean) => {
+    async (
+      messageText: string,
+      messageImages: PendingAttachment[],
+      restoreOnError: boolean,
+      meta?: ComposerSubmitMeta,
+    ) => {
       const body = messageText.trim()
       if (disabled || busy) return
       if (body === '' && messageImages.length === 0 && !allowEmptySubmit) return
       setBusy(true)
       try {
-        await onSubmit(body, messageImages.map(toAttachmentInput))
+        // `meta` only when there is something to say, so an ordinary send keeps its two-argument call.
+        const attachments = messageImages.map(toAttachmentInput)
+        await (meta ? onSubmit(body, attachments, meta) : onSubmit(body, attachments))
       } catch (error) {
         toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
         if (restoreOnError) {
@@ -457,7 +471,7 @@ export function Composer({
       if (reply === undefined) return
       event.preventDefault()
       // Canned replies bypass the draft entirely — nothing to restore on failure.
-      void send(reply, [], false)
+      void send(reply, [], false, { quickReply: true })
     }
     window.addEventListener('keydown', onWindowKeyDown)
     return () => window.removeEventListener('keydown', onWindowKeyDown)

@@ -514,9 +514,13 @@ export function ThreadView({
             // the message has actually landed, wherever it turned out to land.
             // The diff comments are folded in at send time and dropped only once the message has
             // landed, on the same terms as the draft that wraps them.
-            onSubmit={(text, images) =>
+            // A quick reply (Alt+A / Alt+C, fired from anywhere on the page) never carries them:
+            // the user did not see the review leave.
+            onSubmit={(text, images, meta) =>
               draft.submit<unknown>(() =>
-                diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images)),
+                meta?.quickReply ?
+                  deliverPrompt(text, images)
+                : diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images)),
               )
             }
             draftItems={

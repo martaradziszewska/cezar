@@ -6,7 +6,7 @@ import { isSubmitShortcut } from '@/lib/use-submit-shortcut'
 import { cn } from '@/lib/utils'
 
 import type { HunkLine } from './parse-patch'
-import type { DiffLineAnchor, DiffLineComment, DiffNewLineComment } from './types'
+import { COMMENT_MAX, type DiffLineAnchor, type DiffLineComment, type DiffNewLineComment } from './types'
 
 /**
  * Line comments inside the diff renderer — the self-review flow: hover a line, press "+", leave
@@ -39,6 +39,7 @@ export interface LineCommentEditing {
   excerpt: string
   commentId?: string
   initial?: string
+  oldPath?: string
 }
 
 export interface LineCommentsApi {
@@ -49,12 +50,16 @@ export interface LineCommentsApi {
   /** Absent ⇒ saved comments are read-only. */
   edit?: (comment: DiffLineComment) => void
   cancel: () => void
-  submit: (comment: DiffNewLineComment) => void
-  update: (id: string, body: string) => void
+  /** `false` ⇒ the host refused it; the editor stays open. */
+  submit: (comment: DiffNewLineComment) => boolean
+  update: (id: string, body: string) => boolean
   remove?: (id: string) => void
   /** Unsent editor text, kept OUTSIDE React state: virtualization can unmount the editor's row
    *  mid-sentence, and a keystroke must not re-render every row of the diff. */
   pendingText: Map<string, string>
+  /** The editor key the user just OPENED. Consumed by that editor's first mount, so a row that
+   *  virtualization re-mounts later does not steal focus or scroll the page. */
+  focusRequest: { current: string | null }
 }
 
 export const LineCommentsContext = createContext<LineCommentsApi | null>(null)
@@ -161,17 +166,25 @@ function CommentEditor({
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     const el = ref.current
-    if (!el) return
-    el.focus()
+    if (!el || api.focusRequest.current !== editing.key) return
+    api.focusRequest.current = null
+    el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
   }, [])
 
   const body = text.trim()
   const submit = () => {
     if (body === '') return
-    api.pendingText.delete(editing.key)
-    if (editing.commentId !== undefined) api.update(editing.commentId, body)
-    else api.submit({ ...editing.anchor, excerpt: editing.excerpt, body })
+    const stored =
+      editing.commentId !== undefined ?
+        api.update(editing.commentId, body)
+      : api.submit({
+          ...editing.anchor,
+          ...(editing.oldPath ? { oldPath: editing.oldPath } : {}),
+          excerpt: editing.excerpt,
+          body,
+        })
+    if (stored) api.pendingText.delete(editing.key)
   }
   const cancel = () => {
     api.pendingText.delete(editing.key)
@@ -204,6 +217,7 @@ function CommentEditor({
       <textarea
         ref={ref}
         rows={3}
+        maxLength={COMMENT_MAX}
         value={text}
         aria-label={`Comment on line ${editing.anchor.line}`}
         placeholder="Add a comment for the AI"

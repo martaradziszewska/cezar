@@ -24,9 +24,9 @@ const MODIFIED: DiffFileChange = {
   ].join('\n'),
 }
 
-async function renderDiff(ui: React.ReactElement) {
+async function renderDiff(ui: React.ReactElement, settleText = 'src/a.ts') {
   const view = render(ui)
-  await screen.findByText('src/a.ts')
+  await screen.findByText(settleText)
   return view
 }
 
@@ -117,4 +117,100 @@ describe('Diff line comments', () => {
     expect(onEditComment).toHaveBeenCalledWith('c1', 'remove this import')
     expect(onAddComment).not.toHaveBeenCalled()
   })
+
+  it('anchors a split context row to the new side from EITHER cell', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} mode="split" onAddComment={onAddComment} />)
+
+    // The first context line (`const one = 1`) is old 3 / new 3; click the LEFT (old) cell's "+".
+    const pair = [...document.querySelectorAll('[data-slot="diff-pair"]')].find((row) =>
+      row.textContent?.includes('const one = 1'),
+    )!
+    const [leftCell] = pair.querySelectorAll('[data-slot="diff-cell"]')
+    fireEvent.click(leftCell!.querySelector('[data-slot="diff-add-comment"]')!)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'ctx' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ side: 'new', line: 3, excerpt: 'const one = 1' }))
+  })
+
+  it('keeps the editor and its text open when the host refuses the comment', async () => {
+    const onAddComment = vi.fn(() => false)
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'too much' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledTimes(1)
+    expect((screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement).value).toBe('too much')
+  })
+
+  it('carries the pre-rename path with a removed line of a renamed file', async () => {
+    const onAddComment = vi.fn()
+    const renamed: DiffFileChange = { ...MODIFIED, path: 'src/b.ts', oldPath: 'src/a.ts', status: 'renamed' }
+    render(<Diff files={[renamed]} onAddComment={onAddComment} />)
+    await screen.findByText('src/b.ts')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 4' }))
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'why?' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onAddComment).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'src/b.ts', oldPath: 'src/a.ts', side: 'old', line: 4 }),
+    )
+
+    // An added line of the same file carries no oldPath — its number is the new file's.
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    const next = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(next, { target: { value: 'ok' } })
+    fireEvent.keyDown(next, { key: 'Enter' })
+    expect(onAddComment.mock.calls[1]?.[0]).not.toHaveProperty('oldPath')
+  })
+
+  it('anchors a split context row on the new side, whichever cell the "+" was on', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} mode="split" onAddComment={onAddComment} />)
+
+    // The first context row: old 3 | new 3. Its LEFT cell's "+" must still mean new-side 3.
+    const pair = document.querySelector('[data-slot="diff-pair"]')!
+    const [left] = pair.querySelectorAll<HTMLButtonElement>('[data-slot="diff-add-comment"]')
+    fireEvent.click(left!)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'ctx' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ side: 'new', line: 3, excerpt: 'const one = 1' }))
+  })
+
+  it('keeps the editor and its text open when the host refuses the comment', async () => {
+    const onAddComment = vi.fn(() => false)
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'not kept' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledTimes(1)
+    expect(screen.getByDisplayValue('not kept')).not.toBeNull()
+  })
+
+  it('hands back the pre-rename path for a removed line of a renamed file', async () => {
+    const renamed: DiffFileChange = { ...MODIFIED, path: 'src/b.ts', oldPath: 'src/a.ts', status: 'renamed' }
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[renamed]} onAddComment={onAddComment} />, 'src/b.ts')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 4' }))
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'gone?' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith(
+      expect.objectContaining({ path: 'src/b.ts', oldPath: 'src/a.ts', side: 'old', line: 4 }),
+    )
+  })
 })
+

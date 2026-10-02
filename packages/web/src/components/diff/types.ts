@@ -54,6 +54,11 @@ export interface DiffLineAnchor {
   line: number
 }
 
+/** One comment's length cap — generous for prose, but a pasted log must not be able to grow the
+ *  host's stored list past what it can keep. Here rather than in `line-comments.tsx` so hosts can
+ *  import it without pulling the lazy renderer chunk into the main bundle. */
+export const COMMENT_MAX = 4000
+
 /** A line comment as the diff renders it — the host owns storage and identity. */
 export interface DiffLineComment extends DiffLineAnchor {
   id: string
@@ -62,6 +67,9 @@ export interface DiffLineComment extends DiffLineAnchor {
 
 /** What the inline editor hands back: the anchor, the commented line's text, and the note. */
 export interface DiffNewLineComment extends DiffLineAnchor {
+  /** The file's pre-rename path, set for a removed line of a renamed file — its line number
+   *  belongs to the OLD file. */
+  oldPath?: string
   /** The commented line's text, so the comment still reads in context once the file moves on. */
   excerpt: string
   body: string
@@ -106,9 +114,11 @@ export interface DiffProps {
    * comments (and `onEditComment` absent ⇒ no Edit). The fallback renderer shows neither — it has no line model to anchor to.
    */
   comments?: readonly DiffLineComment[]
-  onAddComment?: (comment: DiffNewLineComment) => void
-  /** Absent ⇒ saved comments offer no Edit. */
-  onEditComment?: (id: string, body: string) => void
+  /** Return `false` to refuse (the host could not keep it) — the editor then stays open with
+   *  the text, instead of closing on a comment that was never stored. */
+  onAddComment?: (comment: DiffNewLineComment) => boolean | void
+  /** Absent ⇒ saved comments offer no Edit. Return `false` to refuse, as above. */
+  onEditComment?: (id: string, body: string) => boolean | void
   onRemoveComment?: (id: string) => void
   className?: string
 }

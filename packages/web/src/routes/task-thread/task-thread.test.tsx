@@ -718,6 +718,96 @@ describe('ThreadView', () => {
       )
     })
 
+    /** The fetch stub for the diff-comment cases: one stored comment, a `/messages` answer the
+     *  case picks, and a recorded request log. */
+    const withDiffCommentDraft = (messages: () => Response) => {
+      const sent: { path: string; method: string; body: unknown }[] = []
+      const comments = [
+        { id: 'c1', path: 'src/app/page.tsx', side: 'new', line: 11, body: 'use the shared import', excerpt: 'import {' },
+      ]
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+          const path = String(input)
+          const method = init.method ?? 'GET'
+          sent.push({ path, method, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+          const json = (body: unknown) =>
+            Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
+          if (path === '/api/v1/runs/r1/messages') return Promise.resolve(messages())
+          if (path === '/api/v1/providers/status')
+            return json({ providers: [{ provider: 'claude', status: 'connected', enabled: true }] })
+          if (path === '/api/v1/runs/r1/drafts') {
+            return json({
+              surfaces: {
+                'diff-comments': { text: JSON.stringify(comments), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+              },
+            })
+          }
+          if (path.startsWith('/api/v1/runs/r1/drafts/'))
+            return json({ text: '', images: [], updatedAt: '2026-10-02T00:00:00.000Z' })
+          return json([])
+        }),
+      )
+      render(
+        <QueryClientProvider client={createQueryClient()}>
+          <MemoryRouter>
+            <ThreadView run={run('waiting')} thread={reduceThread(EVENTS)} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+      const commentsCleared = () =>
+        sent.some(
+          (r) =>
+            r.method === 'PUT' &&
+            r.path === '/api/v1/runs/r1/drafts/diff-comments' &&
+            (r.body as { text?: string } | undefined)?.text === '',
+        )
+      return { sent, commentsCleared }
+    }
+    const ok = () => new Response(JSON.stringify({ delivered: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+
+    it('keeps the diff comments when the send is rejected', async () => {
+      const { sent, commentsCleared } = withDiffCommentDraft(
+        () => new Response(JSON.stringify({ error: 'session gone' }), { status: 500, headers: { 'content-type': 'application/json' } }),
+      )
+      await screen.findByText('page.tsx +11')
+      const composer = screen.getByLabelText('Reply to the agent') as HTMLTextAreaElement
+      const send = composer.closest('[data-slot="composer"]')!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
+      await waitFor(() => expect(send.disabled).toBe(false))
+      fireEvent.click(send)
+
+      await waitFor(() => expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/messages')).toBe(true))
+      // Let the rejection settle, then: the chip is still there and nothing emptied the store.
+      await waitFor(() => expect(send.disabled).toBe(false))
+      expect(screen.getByText('page.tsx +11')).not.toBeNull()
+      expect(commentsCleared()).toBe(false)
+    })
+
+    it('never folds the diff comments into an Alt quick reply', async () => {
+      const { sent, commentsCleared } = withDiffCommentDraft(ok)
+      await screen.findByText('page.tsx +11')
+
+      fireEvent.keyDown(window, { code: 'KeyC', key: 'c', altKey: true })
+
+      await waitFor(() =>
+        expect(sent.find((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/messages')?.body).toMatchObject({
+          text: 'Continue.',
+        }),
+      )
+      expect(screen.getByText('page.tsx +11')).not.toBeNull()
+      expect(commentsCleared()).toBe(false)
+    })
+
+    it('drops one comment from its chip, and the last one empties the stored list', async () => {
+      const { commentsCleared } = withDiffCommentDraft(ok)
+      await screen.findByText('page.tsx +11')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove comment on page.tsx line 11' }))
+
+      expect(screen.queryByText('page.tsx +11')).toBeNull()
+      await waitFor(() => expect(commentsCleared()).toBe(true))
+    })
+
     it('leaves the composer empty when this task has no draft — including another surface\'s', async () => {
       const queryClient = withDrafts({ 'review-notes': { text: 'notes, not a reply' } })
 

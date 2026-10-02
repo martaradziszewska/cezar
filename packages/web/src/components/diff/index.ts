@@ -4,6 +4,7 @@
  * modules are internal; they are exported nowhere on purpose.
  */
 export { Diff } from './diff'
+export { COMMENT_MAX } from './types'
 export type {
   DiffFileChange,
   DiffHandle,

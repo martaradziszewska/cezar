@@ -225,6 +225,10 @@ function ChangesView({ run }: { run: ApiRun }) {
             <ChangesTree root={tree} selected={selected} onSelect={selectFile} />
           </aside>
           <Diff
+            // Keyed by run: the open comment editor and its unsent text are keyed by path + line
+            // only, and walking to another task keeps this view mounted — without the key a
+            // half-written note would reappear on the same path + line of the next task.
+            key={run.id}
             files={files}
             viewRef={diffRef}
             mode={effectiveMode}

@@ -40,8 +40,8 @@ describe('diff comments', () => {
     )
   })
 
-  it('puts the review ahead of the typed message, and leaves a message without comments alone', () => {
-    expect(withDiffComments('also run the tests', [A])).toBe(`${formatDiffComments([A])}\n\nalso run the tests`)
+  it('appends the review after the typed message, and leaves a message without comments alone', () => {
+    expect(withDiffComments('also run the tests', [A])).toBe(`also run the tests\n\n${formatDiffComments([A])}`)
     expect(withDiffComments('', [A])).toBe(formatDiffComments([A]))
     expect(withDiffComments('just this', [])).toBe('just this')
   })
@@ -51,5 +51,28 @@ describe('diff comments', () => {
     const long = capExcerpt('x'.repeat(50_000))
     expect(long).toHaveLength(EXCERPT_MAX + 1)
     expect(long.endsWith('…')).toBe(true)
+  })
+
+  // A registry skill is expanded only when the message STARTS with its slash
+  // (`expandRegistrySlashSkillText`), so the review must never be put in front of one.
+  it('keeps a /skill message leading, so the skill still expands', () => {
+    const sent = withDiffComments('/fix-review please', [A])
+    expect(sent.startsWith('/fix-review please\n\n')).toBe(true)
+    expect(/^\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/.exec(sent)?.[1]).toBe('fix-review')
+  })
+
+  it('orders old-file line numbers before new-file ones within a path', () => {
+    const newSide: DiffComment = { ...B, id: 'n', side: 'new', line: 1 }
+    const oldSide: DiffComment = { ...B, id: 'o', side: 'old', line: 9 }
+    const review = formatDiffComments([newSide, oldSide])
+    expect(review.indexOf('line 9 (removed line)')).toBeLessThan(review.indexOf('line 1:'))
+  })
+
+  it('names the old path for a removed line of a renamed file, and keeps it across storage', () => {
+    const renamed: DiffComment = { ...B, path: 'src/new-name.ts', oldPath: 'src/old-name.ts' }
+    expect(parseDiffComments(JSON.stringify([renamed]))).toEqual([renamed])
+    expect(formatDiffComments([renamed])).toContain(
+      '`src/old-name.ts` line 3 (removed line, renamed to `src/new-name.ts`):',
+    )
   })
 })

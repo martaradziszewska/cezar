@@ -129,6 +129,7 @@ export function DiffView({
   // virtualized away and back while the user is still deciding what to write.
   const [editing, setEditing] = useState<LineCommentsApi['editing']>(null)
   const pendingText = useRef(new Map<string, string>()).current
+  const focusRequest = useRef<string | null>(null)
   const commentsApi = useMemo((): LineCommentsApi | null => {
     if (!onAddComment && (comments?.length ?? 0) === 0) return null
     const byKey = new Map<string, DiffLineComment[]>()
@@ -142,10 +143,14 @@ export function DiffView({
       canAdd: onAddComment !== undefined,
       open: (anchor: DiffLineAnchor, excerpt: string) => {
         const key = anchorKey(anchor)
-        setEditing({ key, threadKey: key, anchor, excerpt })
+        // A removed line's number belongs to the pre-rename file, so it travels with its path.
+        const oldPath = anchor.side === 'old' ? files.find((file) => file.path === anchor.path)?.oldPath : undefined
+        focusRequest.current = key
+        setEditing({ key, threadKey: key, anchor, excerpt, ...(oldPath ? { oldPath } : {}) })
       },
       edit: onEditComment
-        ? (comment: DiffLineComment) =>
+        ? (comment: DiffLineComment) => {
+            focusRequest.current = `edit:${comment.id}`
             setEditing({
               key: `edit:${comment.id}`,
               threadKey: anchorKey(comment),
@@ -154,20 +159,25 @@ export function DiffView({
               commentId: comment.id,
               initial: comment.body,
             })
+          }
         : undefined,
       cancel: () => setEditing(null),
+      // A refused comment keeps its editor (and its text) open rather than vanishing unsaved.
       submit: (comment) => {
-        onAddComment?.(comment)
+        if (onAddComment?.(comment) === false) return false
         setEditing(null)
+        return true
       },
       update: (id, body) => {
-        onEditComment?.(id, body)
+        if (onEditComment?.(id, body) === false) return false
         setEditing(null)
+        return true
       },
       remove: onRemoveComment,
       pendingText,
+      focusRequest,
     }
-  }, [comments, editing, onAddComment, onEditComment, onRemoveComment, pendingText])
+  }, [comments, editing, files, onAddComment, onEditComment, onRemoveComment, pendingText])
 
   const rowCount = useMemo(() => diffRowCount(files), [files])
   // The `?diff=` override is a measurement/debugging seam, not reactive state — read once so
