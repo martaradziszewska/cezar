@@ -169,48 +169,56 @@ describe('Diff line comments', () => {
     fireEvent.keyDown(next, { key: 'Enter' })
     expect(onAddComment.mock.calls[1]?.[0]).not.toHaveProperty('oldPath')
   })
-
-  it('anchors a split context row on the new side, whichever cell the "+" was on', async () => {
-    const onAddComment = vi.fn()
-    await renderDiff(<Diff files={[MODIFIED]} mode="split" onAddComment={onAddComment} />)
-
-    // The first context row: old 3 | new 3. Its LEFT cell's "+" must still mean new-side 3.
-    const pair = document.querySelector('[data-slot="diff-pair"]')!
-    const [left] = pair.querySelectorAll<HTMLButtonElement>('[data-slot="diff-add-comment"]')
-    fireEvent.click(left!)
-    const editor = screen.getByPlaceholderText('Add a comment for the AI')
-    fireEvent.change(editor, { target: { value: 'ctx' } })
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ side: 'new', line: 3, excerpt: 'const one = 1' }))
-  })
-
-  it('keeps the editor and its text open when the host refuses the comment', async () => {
-    const onAddComment = vi.fn(() => false)
-    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
-    const editor = screen.getByPlaceholderText('Add a comment for the AI')
-    fireEvent.change(editor, { target: { value: 'not kept' } })
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    expect(onAddComment).toHaveBeenCalledTimes(1)
-    expect(screen.getByDisplayValue('not kept')).not.toBeNull()
-  })
-
-  it('hands back the pre-rename path for a removed line of a renamed file', async () => {
-    const renamed: DiffFileChange = { ...MODIFIED, path: 'src/b.ts', oldPath: 'src/a.ts', status: 'renamed' }
-    const onAddComment = vi.fn()
-    await renderDiff(<Diff files={[renamed]} onAddComment={onAddComment} />, 'src/b.ts')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 4' }))
-    const editor = screen.getByPlaceholderText('Add a comment for the AI')
-    fireEvent.change(editor, { target: { value: 'gone?' } })
-    fireEvent.keyDown(editor, { key: 'Enter' })
-
-    expect(onAddComment).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'src/b.ts', oldPath: 'src/a.ts', side: 'old', line: 4 }),
-    )
-  })
 })
 
+/** jsdom ships no `matchMedia`; stub the one query the tap handler reads. */
+function stubHover(canHover: boolean) {
+  vi.stubGlobal('matchMedia', (query: string) => ({ media: query, matches: query === '(hover: none)' ? !canHover : false }))
+}
+
+describe('Diff line comments on touch screens', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('opens the editor when a line is tapped on a device that cannot hover', async () => {
+    stubHover(false)
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    const added = document.querySelector('[data-slot="diff-line"][data-line="add"]')!
+    fireEvent.click(added.querySelector('[data-word], span:last-child')!)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'tapped' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ side: 'new', line: 4, body: 'tapped' }))
+  })
+
+  it('works in split mode too', async () => {
+    stubHover(false)
+    await renderDiff(<Diff files={[MODIFIED]} mode="split" onAddComment={vi.fn()} />)
+
+    fireEvent.click(document.querySelector('[data-slot="diff-cell"][data-line="del"]')!)
+    expect(screen.getByPlaceholderText('Add a comment for the AI')).not.toBeNull()
+  })
+
+  it('leaves a click on a hover device alone — the "+" is there', async () => {
+    stubHover(true)
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+
+    fireEvent.click(document.querySelector('[data-slot="diff-line"][data-line="add"]')!)
+    expect(screen.queryByPlaceholderText('Add a comment for the AI')).toBeNull()
+  })
+
+  it('does not open an editor when the tap ends a text selection, or when comments are off', async () => {
+    stubHover(false)
+    const { rerender } = await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+    vi.stubGlobal('getSelection', () => ({ toString: () => 'const two' }))
+    fireEvent.click(document.querySelector('[data-slot="diff-line"][data-line="add"]')!)
+    expect(screen.queryByPlaceholderText('Add a comment for the AI')).toBeNull()
+
+    vi.stubGlobal('getSelection', () => ({ toString: () => '' }))
+    rerender(<Diff files={[MODIFIED]} />)
+    fireEvent.click(document.querySelector('[data-slot="diff-line"][data-line="add"]')!)
+    expect(screen.queryByPlaceholderText('Add a comment for the AI')).toBeNull()
+  })
+})

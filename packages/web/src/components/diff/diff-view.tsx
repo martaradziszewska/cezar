@@ -21,6 +21,8 @@ import {
   anchorKey,
   LineCommentsContext,
   LineCommentThread,
+  tapToComment,
+  useLineComments,
   type LineCommentsApi,
 } from './line-comments'
 
@@ -662,15 +664,17 @@ function UnifiedRowView({
   tokensFor: (line: HunkLine) => SynToken[] | null
   onExpand?: (gap: ContextGap) => void
 }) {
+  const comments = useLineComments()
   if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
   const { line } = row.cell
   const anchor = anchorForLine(path, line)
+  const tap = tapToComment(comments, anchor, line.text)
   // A fragment, not a wrapper: each row stays a direct child of `diff-rows`, which is what its
   // per-row `content-visibility` selector targets.
   return (
     <>
-      <div data-slot="diff-line" data-line={line.kind} className={cn('group/line flex', LINE_BG[line.kind])}>
+      <div data-slot="diff-line" data-line={line.kind} {...tap} className={cn('group/line flex', LINE_BG[line.kind])}>
         <Gutter value={line.oldLine} />
         <Gutter value={line.newLine} />
         <span className="relative w-4 shrink-0 text-soft-foreground select-none">
@@ -725,6 +729,7 @@ function SplitCell({
   tokensFor: (line: HunkLine) => SynToken[] | null
   wrap: boolean
 }) {
+  const comments = useLineComments()
   if (!cell) {
     // The other side has no counterpart line — an honest hatch-free blank.
     return <div data-slot="diff-cell-empty" className={cn('bg-muted/20', side === 'new' && 'border-l border-border/40')} />
@@ -734,6 +739,7 @@ function SplitCell({
     <div
       data-slot="diff-cell"
       data-line={line.kind}
+      {...tapToComment(comments, anchor, line.text)}
       className={cn('group/line flex min-w-0 overflow-x-auto', LINE_BG[line.kind], side === 'new' && 'border-l border-border/40')}
     >
       <Gutter value={side === 'old' ? line.oldLine : line.newLine} />

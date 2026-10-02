@@ -68,6 +68,33 @@ export function useLineComments(): LineCommentsApi | null {
   return useContext(LineCommentsContext)
 }
 
+/** A device whose primary pointer cannot hover — a phone or tablet. Read at tap time, not at
+ *  render: a hybrid laptop can switch between touch and trackpad without a re-render. */
+function isTouchPrimary(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(hover: none)').matches
+}
+
+/**
+ * Tap-to-comment: on a touch-primary device the hover "+" never shows, so tapping the line itself
+ * opens its editor. Spread onto the row element. Inert on hover devices (the "+" is there), when
+ * the host takes no comments, and when the tap ends a text selection — selecting code to copy it
+ * must not pop an editor open.
+ *
+ * A plain function over the context value rather than a hook: rows return early for hunk and
+ * gap rows, so the caller reads the context once, above those returns, and passes it in.
+ */
+export function tapToComment(api: LineCommentsApi | null, anchor: DiffLineAnchor | undefined, excerpt: string) {
+  if (!api?.canAdd || anchor === undefined) return undefined
+  return {
+    onClick: (event: React.MouseEvent<HTMLElement>) => {
+      if (!isTouchPrimary()) return
+      if ((event.target as HTMLElement).closest('button, a, textarea, input')) return
+      if ((window.getSelection?.()?.toString() ?? '') !== '') return
+      api.open(anchor, excerpt)
+    },
+  }
+}
+
 /** The hover "+" in a line's marker column. Rendered only when the host can take a comment. */
 export function AddCommentButton({ anchor, excerpt }: { anchor: DiffLineAnchor | undefined; excerpt: string }) {
   const api = useLineComments()
