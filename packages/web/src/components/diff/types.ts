@@ -43,6 +43,30 @@ export interface DiffHandle {
   scrollToPath: (path: string) => void
 }
 
+/**
+ * Where a line comment is anchored. A deleted line only exists on the old side, so it is
+ * addressed by its old number; every other line (added or context) by its new one — which is
+ * what lets a context line's comment show up under the same row in unified AND split layouts.
+ */
+export interface DiffLineAnchor {
+  path: string
+  side: 'old' | 'new'
+  line: number
+}
+
+/** A line comment as the diff renders it — the host owns storage and identity. */
+export interface DiffLineComment extends DiffLineAnchor {
+  id: string
+  body: string
+}
+
+/** What the inline editor hands back: the anchor, the commented line's text, and the note. */
+export interface DiffNewLineComment extends DiffLineAnchor {
+  /** The commented line's text, so the comment still reads in context once the file moves on. */
+  excerpt: string
+  body: string
+}
+
 export interface DiffProps {
   files: DiffFileChange[]
   /** Layout: one interleaved column, or old|new side by side. Default `unified`. */
@@ -76,5 +100,13 @@ export interface DiffProps {
    * their DOM-based scroll there).
    */
   viewRef?: { current: DiffHandle | null }
+  /**
+   * Line comments for the agent (the self-review flow): rendered under the line they anchor to.
+   * `onAddComment` absent ⇒ no "+" affordance at all; `onRemoveComment` absent ⇒ read-only
+   * comments. The fallback renderer shows neither — it has no line model to anchor to.
+   */
+  comments?: readonly DiffLineComment[]
+  onAddComment?: (comment: DiffNewLineComment) => void
+  onRemoveComment?: (id: string) => void
   className?: string
 }

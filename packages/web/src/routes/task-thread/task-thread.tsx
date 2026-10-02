@@ -28,6 +28,8 @@ import { cn, isHttpUrl } from '@/lib/utils'
 
 import { AutoResumeHint } from './auto-resume-hint'
 import { useDraft } from './thread-draft'
+import { DiffCommentChips } from './diff-comment-chips'
+import { useDiffComments, withDiffComments } from './diff-comments'
 import { WorkingIndicator } from './thread-items'
 import { useDeliverPrompt } from './deliver-prompt'
 import { useContinueAction } from './follow-up-engine'
@@ -252,6 +254,9 @@ export function ThreadView({
   const deliverPrompt = useDeliverPrompt(run, continueAction)
   // The reply composer's unsent content (#939) — server-side, per run, restored on return.
   const draft = useDraft(run.id, 'composer')
+  // Line comments left on the Changes tab — draft items that ride the next message (self-review).
+  const diffComments = useDiffComments(run.id)
+  const hasDiffComments = diffComments.comments.length > 0
   const activeProvider = useActiveProviderAvailability(run)
   // A queued send only amends the persisted prompt; it invokes no provider and therefore
   // remains available even when provider discovery cannot authorize a live session. Once the
@@ -507,7 +512,18 @@ export function ThreadView({
             // would pick the endpoint can be stale, so the re-route on a 409 decides it from the
             // truth instead. The two compose exactly as they read — the draft stays open until
             // the message has actually landed, wherever it turned out to land.
-            onSubmit={(text, images) => draft.submit<unknown>(() => deliverPrompt(text, images))}
+            // The diff comments are folded in at send time and dropped only once the message has
+            // landed, on the same terms as the draft that wraps them.
+            onSubmit={(text, images) =>
+              draft.submit<unknown>(() =>
+                diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images)),
+              )
+            }
+            draftItems={
+              hasDiffComments ?
+                <DiffCommentChips runId={run.id} comments={diffComments.comments} onRemove={diffComments.remove} />
+              : undefined
+            }
             disabled={providerBlocked || (!sessionOpen && !queued && !continuable)}
             // Only reachable now by a closed run with NO session to resume — which is exactly
             // the one case where Continue is not on offer either. Left honest rather than
@@ -526,7 +542,8 @@ export function ThreadView({
               ) : continuable ? continueAction.pills : undefined
             }
             // Continuing with nothing typed is the legacy one-click Continue.
-            allowEmptySubmit={continuable}
+            // …and pending diff comments are a message on their own.
+            allowEmptySubmit={continuable || hasDiffComments}
             sendAriaLabel={continuable ? 'Continue' : 'Send'}
             placeholder={
               queued ? 'Add to the prompt — sent when the run starts…'

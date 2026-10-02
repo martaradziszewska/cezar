@@ -75,6 +75,13 @@ export interface ComposerProps {
   onImagesChange?: (images: PendingAttachment[], reason: AttachmentsChangeReason) => void
   /** Focus the textarea on mount — the /new hero, where typing is the whole point of arriving. */
   autoFocus?: boolean
+  /**
+   * Draft items the host holds beside the message, rendered in the attachment row ahead of the
+   * thumbnails — the thread's diff-comment chips. The composer knows nothing about them: the host
+   * owns their content, folds them into what it sends, and decides via `allowEmptySubmit` whether
+   * they alone make the message sendable.
+   */
+  draftItems?: ReactNode
   /** Rendered in the footer bar after the paperclip — the /new picker pill row. */
   footerStart?: ReactNode
   /** Rendered between Dictation and the send button — the /new mode segment + kbd hint. */
@@ -127,6 +134,7 @@ export function Composer({
   images: controlledImages,
   onImagesChange,
   autoFocus = false,
+  draftItems,
   footerStart,
   footerEnd,
   sendAriaLabel = 'Send',
@@ -489,8 +497,9 @@ export function Composer({
             disabled && 'opacity-80',
           )}
         >
-          {images.length > 0 ? (
+          {images.length > 0 || draftItems ? (
             <div data-slot="composer-thumbs" className="flex flex-wrap items-center gap-2 px-4 pt-3">
+              {draftItems}
               {images.map((attachment, index) => (
                 <button
                   key={`${attachment.name}-${index}`}

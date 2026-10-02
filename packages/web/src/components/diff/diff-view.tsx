@@ -15,6 +15,14 @@ import {
   widestLineChars,
 } from './diff-scroll'
 import { ImagePreview, shouldPreviewImage } from './image-preview'
+import {
+  AddCommentButton,
+  anchorForLine,
+  anchorKey,
+  LineCommentsContext,
+  LineCommentThread,
+  type LineCommentsApi,
+} from './line-comments'
 
 import {
   buildSplitRows,
@@ -30,7 +38,7 @@ import {
   type SplitRow,
   type UnifiedRow,
 } from './parse-patch'
-import type { DiffFileChange, DiffProps } from './types'
+import type { DiffFileChange, DiffLineAnchor, DiffLineComment, DiffProps } from './types'
 import { overlaySegments } from './word-diff'
 
 /**
@@ -72,6 +80,9 @@ export function DiffView({
   imageSrc,
   onOpenInApp,
   viewRef,
+  comments,
+  onAddComment,
+  onRemoveComment,
   className,
 }: DiffProps) {
   const stat: DiffStat = useMemo(
@@ -112,6 +123,32 @@ export function DiffView({
     },
     [loadFileText],
   )
+
+  // The open line-comment editor lives here for the same reason as `collapsed`: its row can be
+  // virtualized away and back while the user is still deciding what to write.
+  const [editing, setEditing] = useState<LineCommentsApi['editing']>(null)
+  const pendingText = useRef(new Map<string, string>()).current
+  const commentsApi = useMemo((): LineCommentsApi | null => {
+    if (!onAddComment && (comments?.length ?? 0) === 0) return null
+    const byKey = new Map<string, DiffLineComment[]>()
+    for (const comment of comments ?? []) {
+      const key = anchorKey(comment)
+      byKey.set(key, [...(byKey.get(key) ?? []), comment])
+    }
+    return {
+      byKey,
+      editing,
+      canAdd: onAddComment !== undefined,
+      open: (anchor: DiffLineAnchor, excerpt: string) => setEditing({ key: anchorKey(anchor), anchor, excerpt }),
+      cancel: () => setEditing(null),
+      submit: (comment) => {
+        onAddComment?.(comment)
+        setEditing(null)
+      },
+      remove: onRemoveComment,
+      pendingText,
+    }
+  }, [comments, editing, onAddComment, onRemoveComment, pendingText])
 
   const rowCount = useMemo(() => diffRowCount(files), [files])
   // The `?diff=` override is a measurement/debugging seam, not reactive state — read once so
@@ -158,6 +195,7 @@ export function DiffView({
   }
 
   return (
+    <LineCommentsContext.Provider value={commentsApi}>
     <div
       ref={(el) => {
         rootRef.current = el
@@ -194,6 +232,7 @@ export function DiffView({
         </div>
       )}
     </div>
+    </LineCommentsContext.Provider>
   )
 }
 
@@ -472,12 +511,12 @@ function DiffFileBody({
       >
         {rows
           ? rows.map((row, index) => (
-              <UnifiedRowView key={index} row={row} wrap={wrap} tokensFor={tokensFor} onExpand={expandable ? onExpand : undefined} />
+              <UnifiedRowView key={index} path={file.path} row={row} wrap={wrap} tokensFor={tokensFor} onExpand={expandable ? onExpand : undefined} />
             ))
           : null}
         {splitRows
           ? splitRows.map((row, index) => (
-              <SplitRowView key={index} row={row} wrap={wrap} tokensFor={tokensFor} onExpand={expandable ? onExpand : undefined} />
+              <SplitRowView key={index} path={file.path} row={row} wrap={wrap} tokensFor={tokensFor} onExpand={expandable ? onExpand : undefined} />
             ))
           : null}
       </div>
@@ -582,11 +621,13 @@ function Gutter({ value }: { value: number | undefined }) {
 }
 
 function UnifiedRowView({
+  path,
   row,
   wrap,
   tokensFor,
   onExpand,
 }: {
+  path: string
   row: UnifiedRow
   wrap: boolean
   tokensFor: (line: HunkLine) => SynToken[] | null
@@ -595,22 +636,33 @@ function UnifiedRowView({
   if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
   const { line } = row.cell
+  const anchor = anchorForLine(path, line)
+  // A fragment, not a wrapper: each row stays a direct child of `diff-rows`, which is what its
+  // per-row `content-visibility` selector targets.
   return (
-    <div data-slot="diff-line" data-line={line.kind} className={cn('flex', LINE_BG[line.kind])}>
-      <Gutter value={line.oldLine} />
-      <Gutter value={line.newLine} />
-      <span className="w-4 shrink-0 text-soft-foreground select-none">{MARKER[line.kind]}</span>
-      <LineContent cell={row.cell} tokens={tokensFor(line)} wrap={wrap} />
-    </div>
+    <>
+      <div data-slot="diff-line" data-line={line.kind} className={cn('group/line flex', LINE_BG[line.kind])}>
+        <Gutter value={line.oldLine} />
+        <Gutter value={line.newLine} />
+        <span className="relative w-4 shrink-0 text-soft-foreground select-none">
+          {MARKER[line.kind]}
+          <AddCommentButton anchor={anchor} excerpt={line.text} />
+        </span>
+        <LineContent cell={row.cell} tokens={tokensFor(line)} wrap={wrap} />
+      </div>
+      <LineCommentThread anchors={[anchor]} />
+    </>
   )
 }
 
 function SplitRowView({
+  path,
   row,
   wrap,
   tokensFor,
   onExpand,
 }: {
+  path: string
   row: SplitRow
   wrap: boolean
   tokensFor: (line: HunkLine) => SynToken[] | null
@@ -618,21 +670,28 @@ function SplitRowView({
 }) {
   if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
+  const leftAnchor = row.left ? anchorForLine(path, row.left.line) : undefined
+  const rightAnchor = row.right ? anchorForLine(path, row.right.line) : undefined
   return (
-    <div data-slot="diff-pair" className="grid grid-cols-2">
-      <SplitCell cell={row.left} side="old" tokensFor={tokensFor} wrap={wrap} />
-      <SplitCell cell={row.right} side="new" tokensFor={tokensFor} wrap={wrap} />
-    </div>
+    <>
+      <div data-slot="diff-pair" className="grid grid-cols-2">
+        <SplitCell cell={row.left} anchor={leftAnchor} side="old" tokensFor={tokensFor} wrap={wrap} />
+        <SplitCell cell={row.right} anchor={rightAnchor} side="new" tokensFor={tokensFor} wrap={wrap} />
+      </div>
+      <LineCommentThread anchors={[leftAnchor, rightAnchor]} />
+    </>
   )
 }
 
 function SplitCell({
   cell,
+  anchor,
   side,
   tokensFor,
   wrap,
 }: {
   cell?: DiffCell
+  anchor: DiffLineAnchor | undefined
   side: 'old' | 'new'
   tokensFor: (line: HunkLine) => SynToken[] | null
   wrap: boolean
@@ -646,10 +705,13 @@ function SplitCell({
     <div
       data-slot="diff-cell"
       data-line={line.kind}
-      className={cn('flex min-w-0 overflow-x-auto', LINE_BG[line.kind], side === 'new' && 'border-l border-border/40')}
+      className={cn('group/line flex min-w-0 overflow-x-auto', LINE_BG[line.kind], side === 'new' && 'border-l border-border/40')}
     >
       <Gutter value={side === 'old' ? line.oldLine : line.newLine} />
-      <span className="w-4 shrink-0 text-soft-foreground select-none">{MARKER[line.kind]}</span>
+      <span className="relative w-4 shrink-0 text-soft-foreground select-none">
+        {MARKER[line.kind]}
+        <AddCommentButton anchor={anchor} excerpt={line.text} />
+      </span>
       <LineContent cell={cell} tokens={tokensFor(line)} wrap={wrap} />
     </div>
   )

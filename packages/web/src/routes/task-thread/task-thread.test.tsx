@@ -655,6 +655,69 @@ describe('ThreadView', () => {
       await waitFor(() => expect(composer.value).toBe(''))
     })
 
+    /**
+     * Self-review: comments left on the Changes tab are draft items in the composer (one chip
+     * each), are a sendable message on their own, ride the reply as one review block, and are
+     * dropped from the draft store once it landed.
+     */
+    it('sends the diff comments drafted on the Changes tab with the next message', async () => {
+      const sent: { path: string; method: string; body: unknown }[] = []
+      const comments = [
+        { id: 'c1', path: 'src/app/page.tsx', side: 'new', line: 11, body: 'use the shared import', excerpt: 'import {' },
+      ]
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+          const path = String(input)
+          const method = init.method ?? 'GET'
+          sent.push({ path, method, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+          const json = (body: unknown) =>
+            Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
+          if (path === '/api/v1/runs/r1/messages') return json({ delivered: true })
+          if (path === '/api/v1/providers/status')
+            return json({ providers: [{ provider: 'claude', status: 'connected', enabled: true }] })
+          if (path === '/api/v1/runs/r1/drafts') {
+            return json({
+              surfaces: {
+                'diff-comments': { text: JSON.stringify(comments), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+              },
+            })
+          }
+          if (path.startsWith('/api/v1/runs/r1/drafts/'))
+            return json({ text: '', images: [], updatedAt: '2026-10-02T00:00:00.000Z' })
+          return json([])
+        }),
+      )
+      render(
+        <QueryClientProvider client={createQueryClient()}>
+          <MemoryRouter>
+            <ThreadView run={run('waiting')} thread={reduceThread(EVENTS)} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      )
+
+      const chip = await screen.findByText('page.tsx +11')
+      expect(chip.closest('[data-slot="composer"]')).not.toBeNull()
+      const composer = screen.getByLabelText('Reply to the agent') as HTMLTextAreaElement
+      const send = composer.closest('[data-slot="composer"]')!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
+      // Nothing typed — the comments alone make it a message.
+      await waitFor(() => expect(send.disabled).toBe(false))
+      fireEvent.click(send)
+
+      await waitFor(() =>
+        expect(sent.find((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/messages')?.body).toMatchObject({
+          text: expect.stringContaining('`src/app/page.tsx` line 11:\n> import {\n  use the shared import'),
+        }),
+      )
+      await waitFor(() => expect(screen.queryByText('page.tsx +11')).toBeNull())
+      await waitFor(() =>
+        expect(sent.find((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments')?.body).toEqual({
+          text: '',
+          images: [],
+        }),
+      )
+    })
+
     it('leaves the composer empty when this task has no draft — including another surface\'s', async () => {
       const queryClient = withDrafts({ 'review-notes': { text: 'notes, not a reply' } })
 

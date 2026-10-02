@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
+import { FileDiffIcon, GitCommitHorizontalIcon, MessageSquareIcon } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
@@ -10,8 +10,10 @@ import { CenteredState } from '@/components/centered-state'
 import { Diff, type DiffHandle, type DiffMode } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 import { gitActionPolicy, type GitActionId } from '@/lib/git-actions'
+import { Link } from '@/lib/project-router'
 import { useIsDesktop } from '@/lib/use-desktop'
 
+import { useDiffComments } from '../task-thread/diff-comments'
 import { isRunActive, lastSessionId } from '../task-thread/run-actions'
 import { RunHeader } from '../task-thread/run-header'
 import { ChangesTree } from './changes-tree'
@@ -54,6 +56,9 @@ function ChangesView({ run }: { run: ApiRun }) {
   const [selected, setSelected] = useState<string | null>(null)
   const [commitOpen, setCommitOpen] = useState(false)
   const diffRef = useRef<DiffHandle | null>(null)
+  // Line comments for the agent (self-review): drafted here, sent from the thread composer.
+  const diffComments = useDiffComments(run.id)
+  const commentCount = diffComments.comments.length
 
   const queryClient = useQueryClient()
   const invalidateRuns = () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
@@ -169,6 +174,22 @@ function ChangesView({ run }: { run: ApiRun }) {
         </p>
       ) : null}
 
+      {commentCount > 0 ? (
+        <p
+          data-slot="diff-comments-note"
+          className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground md:px-6"
+        >
+          <MessageSquareIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          {commentCount} {commentCount === 1 ? 'comment' : 'comments'} drafted — they are sent with your next message.
+          <Link
+            to={`/tasks/${run.id}`}
+            className="font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            Go to chat
+          </Link>
+        </p>
+      ) : null}
+
       {changes.isPending ? (
         <p data-slot="changes-loading" className="px-4 py-6 text-center text-xs text-soft-foreground md:px-6">
           Loading changes…
@@ -213,6 +234,9 @@ function ChangesView({ run }: { run: ApiRun }) {
             onOpenInApp={
               health.data?.capabilities.localHandoff ? (path) => openImage.mutate(path) : undefined
             }
+            comments={diffComments.comments}
+            onAddComment={diffComments.add}
+            onRemoveComment={diffComments.remove}
             className="min-w-0 flex-1"
           />
         </div>
