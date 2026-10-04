@@ -1,34 +1,35 @@
-# Remove automation startup test races
+# Make agent identity reasons provider-specific
 
 ## Goal
 
-Make the automation startup tests wait on observable boot outcomes instead of a fixed 50 ms
-window, and prove that stale enabled polls are re-baselined before scheduler startup.
+Ensure every unsupported agent provider gets an accurate identity explanation instead of inheriting
+OpenCode's wording.
 
 ## Scope
 
-- `packages/cezar/src/server/automations-gate.test.ts`
-- Regression evidence for #1107 and related #930
+- `packages/cezar/src/agent-config/account-identity.ts`
+- `packages/cezar/src/agent-config/account-identity.test.ts`
+- Regression evidence for #1233 (follow-up from #1113)
 
 ## Implementation Plan
 
-### Phase 1: Reproduce and harden startup assertions
+### Phase 1: Make unsupported-provider reasons exhaustive
 
-- [x] 1.1 Reproduce the fixed-window failures with a delayed git subprocess.
-- [x] 1.2 Replace startup sleeps with bounded observable waits and capture re-baseline-before-start ordering.
+- [ ] 1.1 Confirm the provider fallthrough and current issue reproduction.
+- [ ] 1.2 Add exhaustive provider-specific reasons and regression tests.
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
 
 ## Risks
 
-The test boots the real server and touches temporary stores; assertions must remain bounded and must
-not alter production startup behavior. No production files are in scope.
+Unsupported providers must not read credentials or invoke CLIs; the change is copy and dispatch
+logic only. Adding a provider must require an explicit reason or reader at compile time.
 
 ## Progress
 
 > Convention: `- [ ]` pending, `- [x]` done. Append — <commit sha> when a step lands.
 
-### Phase 1: Reproduce and harden startup assertions
+### Phase 1: Make unsupported-provider reasons exhaustive
 
-- [x] 1.1 Reproduce the fixed-window failures with a delayed git subprocess. — c56c5a92
-- [x] 1.2 Replace startup sleeps with bounded observable waits and capture re-baseline-before-start ordering. — c56c5a92
+- [ ] 1.1 Confirm the provider fallthrough and current issue reproduction.
+- [ ] 1.2 Add exhaustive provider-specific reasons and regression tests.
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
