@@ -49,6 +49,7 @@ const READ_CAP = 2 * 1024 * 1024;
 const NOT_SIGNED_IN = 'Not signed in on this account yet — use Connect.';
 const UNREADABLE = 'Could not read this account’s details.';
 
+
 /** Read a JSON file under the cap. `null` for absent, unreadable, oversized or malformed. */
 async function readJsonCapped(path: string): Promise<Record<string, unknown> | null> {
   try {
