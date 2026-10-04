@@ -254,9 +254,16 @@ describe('automations gate (#801, default-on since spec 2026-09-14)', () => {
       else process.env.CEZ_HOME = savedHome;
       if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
       else process.env.CEZ_DRY_RUN = savedDryRun;
+      vi.restoreAllMocks();
     });
 
     it('re-baselines a stale enabled poll before the scheduler starts, so upgrading never launches a backlog', async () => {
+      const originalStart = WorkspaceAutomationScheduler.prototype.start;
+      let stateAtSchedulerStart: ReturnType<AutomationStore['state']>;
+      const started = vi.spyOn(WorkspaceAutomationScheduler.prototype, 'start').mockImplementation(async function (this: WorkspaceAutomationScheduler) {
+        stateAtSchedulerStart = AutomationStore.open(dataDir).state(staleId);
+        await originalStart.call(this);
+      });
       const server = startServer(
         { repoRoot, store, manager: { isActive: () => false } as unknown as RunManager, version: '0.0.0-test' },
         0,
@@ -277,6 +284,8 @@ describe('automations gate (#801, default-on since spec 2026-09-14)', () => {
       expect(state?.baselineAt).toBeTruthy();
       expect(state?.cursor?.timestamp).toBe(state?.baselineAt);
       expect(state?.consecutiveFailures).toBe(0);
+      expect(started).toHaveBeenCalledTimes(1);
+      expect(stateAtSchedulerStart?.baselineAt).toBe(state?.baselineAt);
       // Zero launches: the backlog this poll would otherwise have resumed was forgotten, not
       // processed. No receipt exists for this automation.
       expect([...fresh.latestReceipts().values()].filter((r) => r.automationId === staleId)).toHaveLength(0);
