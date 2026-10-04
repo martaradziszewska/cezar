@@ -157,9 +157,9 @@ describe('readAccountIdentity', () => {
 
   it.each([
     ['opencode', 'OpenCode keeps its login outside its config folder, so cezar cannot read it.'],
-    ['pi', 'pi does not expose its login in a readable config folder, so cezar cannot read it.'],
-    ['junie', 'Junie does not expose its login in a readable config folder, so cezar cannot read it.'],
-    ['copilot', 'Copilot does not expose its login in a readable config folder, so cezar cannot read it.'],
+    ['pi', 'cezar does not yet read Pi account details from its config folder.'],
+    ['junie', 'cezar does not yet read Junie account details from its config folder.'],
+    ['copilot', 'cezar does not yet read Copilot account details from its config folder.'],
   ] as const)('%s gets its own unsupported-provider reason without a CLI read', async (provider, reason) => {
     const identity = await readAccountIdentity(provider, home);
     expect(identity).toEqual({ available: false, reason, fields: [] });

@@ -52,11 +52,10 @@ const UNREADABLE = 'Could not read this account’s details.';
 /** Unsupported providers must each explain their own limitation; a new provider must add a row. */
 const UNSUPPORTED_IDENTITY_REASON: Record<Exclude<ProviderId, 'claude' | 'codex' | 'cursor'>, string> = {
   opencode: 'OpenCode keeps its login outside its config folder, so cezar cannot read it.',
-  pi: 'pi does not expose its login in a readable config folder, so cezar cannot read it.',
-  junie: 'Junie does not expose its login in a readable config folder, so cezar cannot read it.',
-  copilot: 'Copilot does not expose its login in a readable config folder, so cezar cannot read it.',
+  pi: 'cezar does not yet read Pi account details from its config folder.',
+  junie: 'cezar does not yet read Junie account details from its config folder.',
+  copilot: 'cezar does not yet read Copilot account details from its config folder.',
 };
-
 
 /** Read a JSON file under the cap. `null` for absent, unreadable, oversized or malformed. */
 async function readJsonCapped(path: string): Promise<Record<string, unknown> | null> {
