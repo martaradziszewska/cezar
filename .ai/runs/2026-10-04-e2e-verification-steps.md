@@ -44,8 +44,9 @@ small and specific:
   appear in every project's catalog, including the ones with no e2e installed.
 - cezar's own cockpit is not migrated to `e2e`; this is a product capability, not a change
   of cezar's test stack.
-- The pre-existing failure in `packages/web/src/routes/github/hand-to-agent-draft.test.ts`
-  is left alone (see Risks).
+- No behavior fix for the unrelated merge-base test failure in
+  `packages/web/src/routes/github/hand-to-agent-draft.test.ts` — only the one-line fixture
+  unblock the validation gate needed to pass at all (see Risks).
 
 ## Approach
 
@@ -74,8 +75,12 @@ the same class of bug as a `RUNNER_IDS` widening that bare array literals drop.
   `workflowFileSchema`, every shell snippet through `bash -n`) and not end-to-end.
 - **One pre-existing red test** on the merge base: `hand-to-agent-draft.test.ts` expects
   `cursor` to be an unknown runner while `RUNNER_IDS` contains it (introduced by c6f1a061).
-  Proved pre-existing by stashing this diff and re-running on the untouched tip. Fixing it
-  here would mix an unrelated regression into this diff; it is disclosed on the PR instead.
+  Proved pre-existing by stashing this whole diff and re-running on the untouched tip. The
+  validation gate cannot go green around it, and leaving it would also leave this PR's CI
+  red for a cause no reviewer of this diff can act on, so it got the smallest possible
+  unblock in its own commit: the fixture now names a runner id no build has, restoring the
+  degradation the test is named for. No assertion and no production line changed. A reviewer
+  who would rather see it on its own PR can drop that one commit without touching the rest.
 
 ## Progress
 
@@ -100,5 +105,5 @@ the same class of bug as a `RUNNER_IDS` widening that bare array literals drop.
 
 ### Phase 4: Ship
 
-- [ ] 4.1 Full validation gate (`typecheck`, `test`, `test:unit`, `build`, `test:package`)
+- [x] 4.1 Full validation gate (`typecheck`, `test`, `test:unit`, `build`, `test:package`) — green; needed a one-line fixture unblock of a merge-base failure — 992a0e02
 - [ ] 4.2 PR body, label set, authoritative review pass, summary comment
