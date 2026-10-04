@@ -84,6 +84,8 @@ the same class of bug as a `RUNNER_IDS` widening that bare array literals drop.
 
 ## Progress
 
+PR: #1265
+
 > Convention: `- [ ]` pending, `- [x]` done. Append ` — <commit sha>` when a step lands. Do not rename step titles.
 
 ### Phase 1: Establish the facts on both sides
@@ -106,4 +108,4 @@ the same class of bug as a `RUNNER_IDS` widening that bare array literals drop.
 ### Phase 4: Ship
 
 - [x] 4.1 Full validation gate (`typecheck`, `test`, `test:unit`, `build`, `test:package`) — green; needed a one-line fixture unblock of a merge-base failure — 992a0e02
-- [ ] 4.2 PR body, label set, authoritative review pass, summary comment
+- [x] 4.2 PR body, label set, authoritative review pass, summary comment — review approved, one minor fixed as b2c5f550 — b2c5f550
