@@ -25,6 +25,8 @@ Unsupported providers must not read credentials or invoke CLIs; the change is co
 logic only. Adding a provider must require an explicit reason or reader at compile time.
 
 ## Progress
+PR: #1258
+
 
 > Convention: `- [ ]` pending, `- [x]` done. Append — <commit sha> when a step lands.
 
@@ -33,3 +35,7 @@ logic only. Adding a provider must require an explicit reason or reader at compi
 - [x] 1.1 Confirm the provider fallthrough and current issue reproduction. — e6644323
 - [x] 1.2 Add exhaustive provider-specific reasons and regression tests. — eafe1799 / 12144bfe
 - [x] 1.3 Run targeted and configured validation, review the PR, and report evidence. — ed6f7522
+
+## Final verification
+
+Implementation source at `ab667321` was independently reviewed by dispatch task `9ac8a721`; final verdict approve, no findings. All configured validation commands passed with full-suite evidence on the PR. The completion update changes this plan only; source remains the reviewed version.
