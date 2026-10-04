@@ -31,5 +31,5 @@ logic only. Adding a provider must require an explicit reason or reader at compi
 ### Phase 1: Make unsupported-provider reasons exhaustive
 
 - [x] 1.1 Confirm the provider fallthrough and current issue reproduction. — e6644323
-- [x] 1.2 Add exhaustive provider-specific reasons and regression tests. — pending
+- [x] 1.2 Add exhaustive provider-specific reasons and regression tests. — eafe1799 / 12144bfe
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
