@@ -29,6 +29,6 @@ not alter production startup behavior. No production files are in scope.
 
 ### Phase 1: Reproduce and harden startup assertions
 
-- [ ] 1.1 Reproduce the fixed-window failures with a delayed git subprocess.
-- [ ] 1.2 Replace startup sleeps with bounded observable waits and capture re-baseline-before-start ordering.
+- [x] 1.1 Reproduce the fixed-window failures with a delayed git subprocess. — c56c5a92
+- [x] 1.2 Replace startup sleeps with bounded observable waits and capture re-baseline-before-start ordering. — c56c5a92
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
