@@ -49,6 +49,14 @@ const READ_CAP = 2 * 1024 * 1024;
 const NOT_SIGNED_IN = 'Not signed in on this account yet — use Connect.';
 const UNREADABLE = 'Could not read this account’s details.';
 
+/** Unsupported providers must each explain their own limitation; a new provider must add a row. */
+const UNSUPPORTED_IDENTITY_REASON: Record<Exclude<ProviderId, 'claude' | 'codex' | 'cursor'>, string> = {
+  opencode: 'OpenCode keeps its login outside its config folder, so cezar cannot read it.',
+  pi: 'pi does not expose its login in a readable config folder, so cezar cannot read it.',
+  junie: 'Junie does not expose its login in a readable config folder, so cezar cannot read it.',
+  copilot: 'Copilot does not expose its login in a readable config folder, so cezar cannot read it.',
+};
+
 
 /** Read a JSON file under the cap. `null` for absent, unreadable, oversized or malformed. */
 async function readJsonCapped(path: string): Promise<Record<string, unknown> | null> {
@@ -168,11 +176,7 @@ export async function readAccountIdentity(
   if (provider === 'claude') return readClaudeIdentity(configDir);
   if (provider === 'codex') return readCodexIdentity(configDir);
   if (provider === 'cursor') return readCursorIdentity(configDir, opts.runCommand);
-  return {
-    available: false,
-    reason: 'OpenCode keeps its login outside its config folder, so cezar cannot read it.',
-    fields: [],
-  };
+  return { available: false, reason: UNSUPPORTED_IDENTITY_REASON[provider], fields: [] };
 }
 
 export type RunCursorIdentityCommand = (

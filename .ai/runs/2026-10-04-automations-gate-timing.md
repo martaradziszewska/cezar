@@ -15,8 +15,8 @@ OpenCode's wording.
 
 ### Phase 1: Make unsupported-provider reasons exhaustive
 
-- [ ] 1.1 Confirm the provider fallthrough and current issue reproduction.
-- [ ] 1.2 Add exhaustive provider-specific reasons and regression tests.
+- [x] 1.1 Confirm the provider fallthrough and current issue reproduction.
+- [x] 1.2 Add exhaustive provider-specific reasons and regression tests.
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
 
 ## Risks
@@ -30,6 +30,6 @@ logic only. Adding a provider must require an explicit reason or reader at compi
 
 ### Phase 1: Make unsupported-provider reasons exhaustive
 
-- [ ] 1.1 Confirm the provider fallthrough and current issue reproduction.
-- [ ] 1.2 Add exhaustive provider-specific reasons and regression tests.
+- [x] 1.1 Confirm the provider fallthrough and current issue reproduction. — e6644323
+- [x] 1.2 Add exhaustive provider-specific reasons and regression tests. — pending
 - [ ] 1.3 Run targeted and configured validation, review the PR, and report evidence.
