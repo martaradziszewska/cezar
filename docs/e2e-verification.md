@@ -184,6 +184,10 @@ blind spots are not the author's:
       bug-bash topic of the e2e skill: plan charters, run them, triage, and
       prove every surviving finding with a repro test.
 
+      Write every repro test under `tests/repro/` and tag it `repro` — the next
+      step runs exactly that directory, so a repro test written anywhere else
+      leaves the gate green with the bug still in.
+
       Report what reproduced. Do NOT change application code — you are the
       reviewer, not the author.
     allowedTools: [Read, Grep, Glob, Bash, Write]
