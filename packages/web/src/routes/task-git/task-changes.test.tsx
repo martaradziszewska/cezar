@@ -186,10 +186,11 @@ describe('the Changes tab route', () => {
 
     await waitFor(() => expect(document.querySelector('[data-slot="changes-tree-pane"]')).not.toBeNull())
     const pane = document.querySelector('[data-slot="changes-tree-pane"]') as HTMLElement
-    // Bounded by the room left under the sticky chrome and above the floating composer dock (0
-    // while no dock shows) — an unbounded pane cannot scroll at all, and one that ignored the dock
-    // would park its last files underneath it.
-    expect(pane.className).toContain('max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_var(--changes-dock,0px)_-_1rem)]')
+    // Bounded by the room left under the sticky chrome — an unbounded pane cannot scroll at all.
+    expect(pane.className).toContain('max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)]')
+    // The floating composer dock sits OVER the pane, so the list pads its end by the dock's height
+    // (0 while no dock shows) — its last files can still be scrolled up above the box.
+    expect(pane.className).toContain('pb-[var(--changes-dock,0px)]')
     expect(pane.parentElement?.style.getPropertyValue('--changes-dock')).toBe('0px')
     expect(pane.className).toContain('overflow-y-auto')
     // …and a wheel that bottoms out inside the tree must not chain into the diff.
@@ -624,8 +625,12 @@ describe('the Changes tab composer dock', () => {
     renderChangesRoute()
 
     const chip = await screen.findByText('notes.md +1')
-    const dock = chip.closest('[data-slot="thread-dock"]')!
+    const dock = chip.closest<HTMLElement>('[data-slot="thread-dock"]')!
     expect(dock).not.toBeNull()
+    // Floating over the diff and the tree, not on a band of its own — clicks pass through around it.
+    expect(dock.dataset.floating).toBe('true')
+    expect(dock.className).toContain('pointer-events-none')
+    expect(dock.className).not.toContain('bg-background')
     // The same composer the Session tab docks: same grammar, same placeholder family.
     const composer = dock.querySelector<HTMLTextAreaElement>('textarea')!
     fireEvent.change(composer, { target: { value: 'and run the tests' } })

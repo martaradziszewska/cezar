@@ -68,8 +68,9 @@ function ChangesView({ run }: { run: ApiRun }) {
   // Shown once there are comments, and kept while a typed message is unsent — so deleting the last
   // comment never whisks away a half-written reply.
   const showDock = commentCount > 0 || composerDraft.hasDraft
-  // The dock floats over the bottom of the view; the sticky file tree's own scroller is capped to
-  // leave room for it, or its last files would sit under the dock with no way to reach them.
+  // The dock floats OVER the diff and the file tree. It takes no room of its own (a negative top
+  // margin cancels its height), so both columns get that height back as bottom padding instead —
+  // their last lines can still be scrolled up above the box.
   const [dockHeight, setDockHeight] = useState(0)
   const dockRef = useCallback((element: HTMLDivElement | null) => {
     if (!element) {
@@ -225,7 +226,12 @@ function ChangesView({ run }: { run: ApiRun }) {
       ) : (
         <div
           className="flex min-h-0 flex-1 items-start gap-5 px-4 py-4 [--diff-sticky-top:10rem] md:px-6"
-          style={{ '--changes-dock': `${showDock ? dockHeight : 0}px` } as React.CSSProperties}
+          style={
+            {
+              '--changes-dock': `${showDock ? dockHeight : 0}px`,
+              paddingBottom: showDock ? `calc(1rem + ${dockHeight}px)` : undefined,
+            } as React.CSSProperties
+          }
         >
           {/* The tree column: sticky under the header so long diffs scroll beside it, and its OWN
               scroller. Sticky alone is not enough — a tree taller than the viewport grows the page
@@ -235,7 +241,7 @@ function ChangesView({ run }: { run: ApiRun }) {
               inside it from chaining into the diff once it bottoms out. */}
           <aside
             data-slot="changes-tree-pane"
-            className="sticky top-40 hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_var(--changes-dock,0px)_-_1rem)] w-60 shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72"
+            className="sticky top-40 hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)] w-60 pb-[var(--changes-dock,0px)] shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72"
           >
             <ChangesTree root={tree} selected={selected} onSelect={selectFile} commentCounts={commentCounts} />
           </aside>
@@ -264,8 +270,9 @@ function ChangesView({ run }: { run: ApiRun }) {
       )}
 
       {showDock ? (
-        // `mt-auto` so a short view still parks it at the bottom, exactly where the Session tab's is.
-        <TaskDock ref={dockRef} className="mt-auto">
+        // `mt-auto` so a short view still parks it at the bottom, exactly where the Session tab's is;
+        // the negative margin is what lets it float over the content instead of below it.
+        <TaskDock ref={dockRef} floating className="mt-auto" style={{ marginTop: dockHeight ? -dockHeight : undefined }}>
           <TaskComposer
             run={run}
             draft={composerDraft}

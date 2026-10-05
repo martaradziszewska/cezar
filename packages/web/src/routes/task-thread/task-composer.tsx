@@ -1,10 +1,11 @@
-import { useMemo, type ReactNode, type Ref } from 'react'
+import { useMemo, type CSSProperties, type ReactNode, type Ref } from 'react'
 
 import { useSkills } from '@/api/queries'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { Composer } from '@/components/composer/composer'
 import { toast } from '@/components/ui/toaster'
 import { Link } from '@/lib/project-router'
+import { cn } from '@/lib/utils'
 
 import { useActiveProviderAvailability } from './active-provider'
 import { useDeliverPrompt } from './deliver-prompt'
@@ -136,27 +137,42 @@ export function TaskComposer({
 export function TaskDock({
   children,
   overlay,
+  floating = false,
   className,
+  style,
   ref,
 }: {
   children: ReactNode
   overlay?: ReactNode
+  /** Float OVER the content instead of sitting on a band of its own: no background, no divider,
+   *  and clicks pass through everywhere but the box itself — the Changes tab, where the diff and
+   *  the file tree should stay visible around and behind the composer. */
+  floating?: boolean
   className?: string
+  style?: CSSProperties
   ref?: Ref<HTMLDivElement>
 }) {
   return (
     <div
       ref={ref}
       data-slot="thread-dock"
-      className={[
+      data-floating={floating || undefined}
+      style={style}
+      className={cn(
         'sticky bottom-[var(--kb,0px)] z-10 bg-background px-3 pt-1 pb-2 max-md:border-t max-md:border-border md:px-6 md:pt-1.5 md:pb-4',
+        floating && 'pointer-events-none bg-transparent max-md:border-t-0 [&_[data-slot=composer]]:shadow-lg',
         className,
-      ]
-        .filter(Boolean)
-        .join(' ')}
+      )}
     >
       {overlay}
-      <div className="mx-auto flex w-full max-w-[var(--measure)] flex-col gap-1.5 md:gap-2.5">{children}</div>
+      <div
+        className={cn(
+          'mx-auto flex w-full max-w-[var(--measure)] flex-col gap-1.5 md:gap-2.5',
+          floating && 'pointer-events-auto',
+        )}
+      >
+        {children}
+      </div>
     </div>
   )
 }
