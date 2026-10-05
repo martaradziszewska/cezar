@@ -40,6 +40,15 @@ function mount(mode: 'flat' | 'virtual') {
 }
 
 describe('revealing a comment', () => {
+  it('positions a selected file below the sticky chrome through the virtualizer', () => {
+    const { ref } = mount('virtual')
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({ scrollMarginTop: '160px' } as CSSStyleDeclaration)
+
+    act(() => ref.current!.scrollToPath(file.path))
+
+    expect(virtual.scrollToIndex).toHaveBeenCalledWith(0, { align: 'start', offset: -160 })
+  })
+
   it('uses the virtualizer for the exact jump, replacing its pending file jump', async () => {
     const { ref, main } = mount('virtual')
     const card = document.querySelector<HTMLElement>('[data-comment-id="deep"]')!
@@ -54,7 +63,7 @@ describe('revealing a comment', () => {
     act(() => ref.current!.reveal!({ path: file.path, side: 'new', line: 3, commentId: comment.id }))
 
     await waitFor(() => expect(virtual.scrollTo).toHaveBeenCalledWith(3020))
-    expect(virtual.scrollToIndex).toHaveBeenCalledWith(0, { align: 'start' })
+    expect(virtual.scrollToIndex).toHaveBeenCalledWith(0, { align: 'start', offset: -0 })
     expect(domScroll).not.toHaveBeenCalled()
     expect(card.dataset.flash).toBe('true')
   })

@@ -329,14 +329,17 @@ export function DiffView({
   useImperativeHandle(
     viewRef,
     () => {
-      const scrollToPath = (path: string, behavior: ScrollBehavior = 'smooth') => {
+      const scrollToPath = (path: string) => {
         const index = files.findIndex((file) => file.path === path)
         if (index === -1) return
         const handle = virtualizerRef.current
         // Virtualized: the target may not be mounted, so the scroll goes through the index.
-        // Flat: the element is always there, and scrollIntoView keeps the smooth behavior.
-        if (handle) handle.scrollToIndex(index, { align: 'start' })
-        else findFileElement(rootRef.current, path)?.scrollIntoView?.({ block: 'start', behavior })
+        // Reserve the sticky chrome above the file in both modes. Flat jumps must be
+        // immediate: lazy content measurement can invalidate a smooth-scroll destination.
+        const root = rootRef.current
+        const offset = root ? Number.parseFloat(getComputedStyle(root).scrollMarginTop) || 0 : 0
+        if (handle) handle.scrollToIndex(index, { align: 'start', offset: -offset })
+        else findFileElement(root, path)?.scrollIntoView?.({ block: 'start', behavior: 'instant' })
       }
       return {
         scrollToPath: (path: string) => scrollToPath(path),
@@ -350,7 +353,7 @@ export function DiffView({
             next.delete(fileKey(file))
             return next
           })
-          scrollToPath(target.path, 'auto')
+          scrollToPath(target.path)
           // The rows may not exist yet — a virtualized card mounts after the scroll, an expanded
           // one after the next commit — so look for a few frames before settling for the file.
           let frames = 0
@@ -412,7 +415,7 @@ export function DiffView({
       }}
       data-slot="diff"
       data-mode={mode}
-      className={cn('flex min-w-0 flex-col', className)}
+      className={cn('flex min-w-0 flex-col scroll-mt-[var(--diff-sticky-top,0px)]', className)}
     >
       <p data-slot="diff-totals" className="flex items-center gap-2 px-1 pb-3 text-xs text-muted-foreground">
         <span>
@@ -558,7 +561,7 @@ function DiffFileCard({
     <section
       data-slot="diff-file"
       data-path={file.path}
-      className="min-w-0 overflow-clip rounded-md border border-border bg-card"
+      className="min-w-0 scroll-mt-[var(--diff-sticky-top,0px)] overflow-clip rounded-md border border-border bg-card"
     >
       {/* Sticky within the consumer's scroll container — the reader always knows which file.
           The offset is a consumer-set CSS var so the file header parks BELOW a sticky page
