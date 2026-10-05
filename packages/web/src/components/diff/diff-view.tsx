@@ -357,7 +357,21 @@ export function DiffView({
           const look = () => {
             const element = findRevealElement(rootRef.current, target)
             if (element) {
-              element.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+              const scroller = scrollElRef.current
+              const handle = virtualizerRef.current
+              if (scroller && handle) {
+                // Cancel the virtualizer's pending file jump with another virtualizer scroll.
+                // A DOM scroll races its measurement corrections and can leave a deep comment
+                // off screen even though we found and flashed the right element.
+                const box = element.getBoundingClientRect()
+                const margin = Number.parseFloat(getComputedStyle(element).scrollMarginBottom) || 0
+                handle.scrollTo(scroller.scrollTop + box.top - scroller.getBoundingClientRect().top
+                  - (scroller.clientHeight - margin - box.height) / 2)
+              } else {
+                // An immediate jump lets content-visibility finish measuring before the next
+                // paint; a smooth jump can stop at the off-screen placeholder's old position.
+                element.scrollIntoView?.({ block: 'center', behavior: 'instant' })
+              }
               flash(element)
               return
             }
