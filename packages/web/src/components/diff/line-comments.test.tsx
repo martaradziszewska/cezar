@@ -428,3 +428,26 @@ describe('Diff line comments — editor focus, text and ranges', () => {
     )
   })
 })
+
+describe('Diff line comments after the agent changed the code', () => {
+  it('marks a comment outdated, with the code it was left on, once its line reads differently', async () => {
+    // Left on new-side line 4 when it read `const two = 99`; the diff now shows `const two = 3`.
+    const stale: DiffLineComment[] = [
+      { id: 's1', path: 'src/a.ts', side: 'new', line: 4, body: 'why 99?', excerpt: 'const two = 99' },
+    ]
+    await renderDiff(<Diff files={[MODIFIED]} comments={stale} />)
+    const card = document.querySelector('[data-slot="diff-line-comment"]')!
+    expect(card.querySelector('[data-slot="diff-line-comment-outdated"]')?.textContent).toContain('const two = 99')
+  })
+
+  it('leaves a comment whose line still reads the same unmarked', async () => {
+    const current: DiffLineComment[] = [
+      { id: 'c1', path: 'src/a.ts', side: 'new', line: 4, body: 'fine', excerpt: 'const two = 3' },
+      // A range compares its LAST line — the anchor.
+      { id: 'r1', path: 'src/a.ts', side: 'new', line: 5, start: { side: 'new', line: 3 }, body: 'block', excerpt: 'const one = 1\nconst two = 3\nconst three = 3' },
+    ]
+    await renderDiff(<Diff files={[MODIFIED]} comments={current} />)
+    expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(2)
+    expect(document.querySelector('[data-slot="diff-line-comment-outdated"]')).toBeNull()
+  })
+})

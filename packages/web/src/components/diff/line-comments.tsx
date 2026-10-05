@@ -271,6 +271,7 @@ export function orderOfEnd(file: FileLines, path: string, end: DiffLineEnd): num
  */
 export function LineCommentThread({ anchors }: { anchors: readonly (DiffLineAnchor | undefined)[] }) {
   const api = useLineComments()
+  const file = useContext(FileLinesContext)
   if (!api) return null
   const keys = [...new Set(anchors.filter((a): a is DiffLineAnchor => a !== undefined).map(anchorKey))]
   const comments = keys.flatMap((key) => api.byKey.get(key) ?? [])
@@ -286,7 +287,15 @@ export function LineCommentThread({ anchors }: { anchors: readonly (DiffLineAnch
           // The comment being edited is swapped for its editor, in place.
           comment.id === editingId && editing ?
             <CommentEditor key={editing.key} editing={editing} api={api} />
-          : <SavedComment key={comment.id} comment={comment} onEdit={api.edit} onRemove={api.remove} />,
+          : (
+            <SavedComment
+              key={comment.id}
+              comment={comment}
+              outdated={isOutdated(comment, file)}
+              onEdit={api.edit}
+              onRemove={api.remove}
+            />
+          ),
         )}
         {editing && editingId === undefined ? <CommentEditor key={editing.key} editing={editing} api={api} /> : null}
       </div>
@@ -294,12 +303,32 @@ export function LineCommentThread({ anchors }: { anchors: readonly (DiffLineAnch
   )
 }
 
+/**
+ * Comments are anchored by line NUMBER, so once the agent edits the file the number can point at
+ * different code. A comment knows the code it was left on (`excerpt`; for a range, its last line
+ * is the anchor's): when the line now at the anchor reads differently, the comment is outdated.
+ * Unknowable — no excerpt, a cut-off one, the line not displayed — counts as current.
+ */
+export function isOutdated(comment: DiffLineComment, file: FileLines | null): boolean {
+  if (!file || !comment.excerpt || comment.excerpt.endsWith('…')) return false
+  const key = anchorKey(comment)
+  const now = file.lines.find((line) => {
+    const at = anchorForLine(comment.path, line)
+    return at !== undefined && anchorKey(at) === key
+  })
+  if (!now) return false
+  const then = comment.excerpt.split('\n').at(-1) ?? ''
+  return then.trimEnd() !== now.text.trimEnd()
+}
+
 function SavedComment({
   comment,
+  outdated = false,
   onEdit,
   onRemove,
 }: {
   comment: DiffLineComment
+  outdated?: boolean
   onEdit?: (comment: DiffLineComment) => void
   onRemove?: (id: string) => void
 }) {
@@ -313,6 +342,16 @@ function SavedComment({
       aria-label={`Comment on ${describeLines(comment, comment.start)}`}
       className="flex flex-col gap-1.5 rounded-md border border-primary/40 bg-card px-3 py-2.5 text-[13px] leading-normal shadow-sm transition-shadow duration-500 data-[flash=true]:ring-2 data-[flash=true]:ring-primary"
     >
+      {outdated ? (
+        // The line under this card is not the one the note was about: say so, and show the code it
+        // WAS about, rather than letting the note read as if it were about what is here now.
+        <div data-slot="diff-line-comment-outdated" className="flex flex-col gap-1">
+          <p className="text-[11px] font-medium text-pending-strong">Outdated — the code here changed since this comment</p>
+          <pre className="max-h-32 overflow-auto rounded-sm border border-border/60 bg-muted/40 px-2 py-1 font-mono text-[12px] whitespace-pre text-muted-foreground">
+            {comment.excerpt}
+          </pre>
+        </div>
+      ) : null}
       <p className="break-words whitespace-pre-wrap text-foreground">{comment.body}</p>
       {onEdit || onRemove ? (
         <div className="flex items-center justify-end gap-1.5">

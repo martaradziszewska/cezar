@@ -87,6 +87,9 @@ export interface DiffLineComment extends DiffLineAnchor {
   id: string
   body: string
   start?: DiffLineEnd
+  /** The code the comment was left on, as it read then. Given, a comment whose line now reads
+   *  differently (the agent edited the file since) is shown as outdated, with this code. */
+  excerpt?: string
 }
 
 /** What the inline editor hands back: the anchor, the commented line's text, and the note. */
