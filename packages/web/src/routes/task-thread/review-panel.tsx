@@ -23,7 +23,7 @@ import { isHttpUrl } from '@/lib/utils'
 
 import { finishTitle } from './run-actions'
 import { useContinuationProvider } from './continuation-provider'
-import { withDiffComments, type DiffComments } from './diff-comments'
+import { MESSAGE_TEXT_MAX, messageWithReview, type DiffComments } from './diff-comments'
 import { useDraft } from './thread-draft'
 import { useFinishRun } from './use-finish-run'
 
@@ -35,11 +35,10 @@ import { useFinishRun } from './use-finish-run'
  * a notes box with ↩ Send back (`POST /continue` with the `Review feedback:` prefix
  * — legacy semantics verbatim), Draft PR (`POST /pr`; 409 → the copyable `git merge` manual
  * fallback), and ✓ Accept (the shared finish action from use-finish-run.ts).
- */
-/**
- * `diffComments` is the thread's own instance (never a second `useDraft` host of the surface):
- * the line comments left on the Changes tab ride Send back — the review gate is the self-review
- * moment, and notes sent without them would leave them pending for some later message.
+ *
+ * `diffComments`, when given, is the thread's comments: the line comments left on the Changes tab
+ * ride Send back — the review gate is the self-review moment, and notes sent without them would
+ * leave them pending for some later message.
  */
 export function ReviewPanel({ run, diffComments }: { run: ApiRun; diffComments?: DiffComments }) {
   return (
@@ -89,11 +88,14 @@ function ReviewActions({ run, diffComments }: { run: ApiRun; diffComments?: Diff
       // and a rejected send-back leaves them in the box AND in the store.
       // The line comments go with the notes, and are dropped on the same terms: only once the
       // send-back has landed.
-      const deliver = (held: Parameters<typeof withDiffComments>[1]) =>
-        continueRun(run.id, {
-          text: `Review feedback:\n${withDiffComments(text, held)}`,
-          runner: continuation.runnerOverride,
-        })
+      const deliver = async (held: Parameters<typeof messageWithReview>[1]) => {
+        // Checked against the cap with the prefix it actually goes out with.
+        const message = `Review feedback:\n${messageWithReview(text, held)}`
+        if (message.length > MESSAGE_TEXT_MAX) {
+          throw new Error('Too long with the diff comments attached — shorten the notes or remove some comments.')
+        }
+        return continueRun(run.id, { text: message, runner: continuation.runnerOverride })
+      }
       return draft.submit(() => (diffComments ? diffComments.submit(deliver) : deliver([])))
     },
     onSuccess: (result) => {

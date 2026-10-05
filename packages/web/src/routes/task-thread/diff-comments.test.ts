@@ -5,6 +5,8 @@ import {
   commentsRideWith,
   EXCERPT_MAX,
   formatDiffComments,
+  MESSAGE_TEXT_MAX,
+  messageWithReview,
   parseDiffComments,
   parseReviewMessage,
   RANGE_EXCERPT_MAX,
@@ -36,13 +38,19 @@ describe('diff comments', () => {
         '',
         '- `src/a.ts` line 3 (removed line):',
         '',
+        // Fenced even when empty, so a note can never be mistaken for the code.
+        '  ```',
+        '  ',
+        '  ```',
+        '',
         '  why remove?',
         '  it was used',
         '',
         '- `src/b.ts` line 12:',
         '',
         '  ```',
-        '  const x = 1',
+        // The commented line's own indentation survives.
+        '    const x = 1',
         '  ```',
         '',
         '  rename this',
@@ -78,7 +86,8 @@ describe('diff comments', () => {
   })
 
   it('caps the excerpt, so a minified line cannot push the draft past its size cap', () => {
-    expect(capExcerpt('  short  ')).toBe('short')
+    // Indentation is structure: only blank lines and trailing space go.
+    expect(capExcerpt('  short  ')).toBe('  short')
     const long = capExcerpt('x'.repeat(50_000))
     expect(long).toHaveLength(EXCERPT_MAX + 1)
     expect(long.endsWith('…')).toBe(true)
@@ -182,5 +191,30 @@ describe('diff comments', () => {
     expect(parseReviewMessage('just a message')).toBeUndefined()
     expect(parseReviewMessage('quoting Review comments on the diff:\n\nmid-sentence')).toBeUndefined()
     expect(parseReviewMessage(`${REVIEW_HEADING}\n\nnot an item`)).toBeUndefined()
+  })
+
+  it('reads a note that itself opens with a code block as the note, not as the commented code', () => {
+    const suggestion: DiffComment = { ...B, side: 'new', excerpt: '', body: '```\nfoo()\n```\nuse this instead' }
+    expect(parseReviewMessage(formatDiffComments([suggestion]))?.items[0]).toMatchObject({
+      excerpt: '',
+      body: '```\nfoo()\n```\nuse this instead',
+    })
+  })
+
+  it('keeps every line of a range in place, the first included', () => {
+    const range: DiffComment = {
+      ...A,
+      line: 3,
+      start: { side: 'new', line: 1 },
+      excerpt: capExcerpt('\n    if x:\n        y()\n    z()\n', RANGE_EXCERPT_MAX),
+    }
+    expect(formatDiffComments([range])).toContain('  ```\n      if x:\n          y()\n      z()\n  ```')
+    expect(parseReviewMessage(formatDiffComments([range]))?.items[0]?.excerpt).toBe('    if x:\n        y()\n    z()')
+  })
+
+  it('refuses, with a reason, a message the review would push past the server cap', () => {
+    const huge: DiffComment = { ...A, body: 'x'.repeat(4000) }
+    expect(() => messageWithReview('y'.repeat(MESSAGE_TEXT_MAX - 100), [huge])).toThrow(/Too long with the diff comment attached/)
+    expect(messageWithReview('fits', [A])).toBe(withDiffComments('fits', [A]))
   })
 })

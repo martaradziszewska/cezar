@@ -405,8 +405,7 @@ export function ThreadView({
 
         {/* The review gate (spec 009): a finished run with changes parks here — nothing
             auto-merges. The panel exists exactly while the run rests at `review`. */}
-        {/* The thread's ONE comments instance: the panel and the composer are on screen together,
-            and two `useDraft` hosts of one surface would each keep their own copy. */}
+        {/* Send back carries the drafted line comments, like the composer does. */}
         {run.status === 'review' ? <ReviewPanel run={run} diffComments={diffComments} /> : null}
       </div>
 

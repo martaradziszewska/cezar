@@ -297,7 +297,6 @@ export function UserBubble({
   )
 }
 
-/** An assistant message item, as markdown. */
 /**
  * A user message's text. A message that carries a diff review (comments drafted on the Changes
  * tab) renders the review as comment cards under whatever was typed; anything else is the plain
@@ -314,6 +313,7 @@ function UserText({ text }: { text: string }) {
   )
 }
 
+/** An assistant message item, as markdown. */
 export function AssistantMessage({ text }: { text: string }) {
   return (
     <div data-slot="assistant-message" className="min-w-0 text-[15px] leading-[1.65]">

@@ -608,11 +608,24 @@ describe('the Changes tab composer dock', () => {
     jsonResponse({ providers: [{ provider: 'claude', status: 'connected', enabled: true }] })
   const STORED = [{ id: 'c1', path: 'notes.md', side: 'new', line: 1, body: 'tighten this', excerpt: 'one' }]
 
-  it('floats no composer while nothing is drafted', async () => {
-    stubFetch({ 'GET /api/v1/providers/status': PROVIDERS })
+  it('floats no composer while nothing is drafted — and loads nothing a composer would need', async () => {
+    const sent = stubFetch({ 'GET /api/v1/providers/status': PROVIDERS })
     renderChangesRoute()
     await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
     expect(document.querySelector('[data-slot="thread-dock"]')).toBeNull()
+    // The continue engine (runner models, accounts, provider status) mounts with the dock only.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(sent.some((r) => r.path.startsWith('/api/v1/models'))).toBe(false)
+  })
+
+  it('loads the continue engine once the dock shows', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+    })
+    renderChangesRoute()
+    await screen.findByText('notes.md +1')
+    await waitFor(() => expect(sent.some((r) => r.path.startsWith('/api/v1/models'))).toBe(true))
   })
 
   /** The whole loop without leaving the diff: the chips sit in the docked composer, a message can

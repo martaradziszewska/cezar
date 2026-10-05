@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 
-import { putRunDraft } from '@/api/client'
+import { getRunDrafts, putRunDraft } from '@/api/client'
 import { queryKeys, useRunDrafts } from '@/api/queries'
 import { DRAFT_TEXT_MAX, type RunDraftsResponse } from '@open-mercato/cezar-api-client'
 import { COMMENT_MAX, describeLines, type DiffLineComment, type DiffLineEnd, type DiffNewLineComment } from '@/components/diff'
@@ -14,8 +14,8 @@ import { toast } from '@/components/ui/toaster'
  *
  * Stored in the run's server-side draft store under the `diff-comments` surface, as JSON in the
  * entry's `text`, so they survive the route change between Changes and the thread (the whole
- * point), a reload, and another browser. See `useDiffComments` for why they are read from the
- * query cache rather than through `useDraft`.
+ * point), a reload, and another browser. See `useDiffComments` for why they live in one shared
+ * in-memory list per run (merged with the server's on every save) rather than in `useDraft`.
  */
 
 export const DIFF_COMMENTS_SURFACE = 'diff-comments'
@@ -103,8 +103,9 @@ export function formatDiffComments(comments: readonly DiffComment[]): string {
       comment.side === 'old' ?
         `\`${comment.oldPath ?? comment.path}\` line ${comment.line} (removed line${comment.oldPath ? `, renamed to \`${comment.path}\`` : ''})`
       : `\`${comment.path}\` line ${comment.line}`
-    const excerpt = comment.excerpt.trim() === '' ? '' : `\n\n${indent(fence(comment.excerpt))}`
-    return `- ${comment.start ? rangeWhere(comment) : where}:${excerpt}\n\n${indent(comment.body)}`
+    // ALWAYS fenced, even empty: a note that itself opens with a fence (a code suggestion) must
+    // never be read back as the commented line.
+    return `- ${comment.start ? rangeWhere(comment) : where}:\n\n${indent(fence(comment.excerpt))}\n\n${indent(comment.body)}`
   })
   return `${REVIEW_HEADING}\n\n${blocks.join('\n\n')}`
 }
@@ -232,8 +233,7 @@ function rangeWhere(comment: DiffComment): string {
 function fence(excerpt: string): string {
   const longest = Math.max(0, ...(excerpt.match(/`+/g) ?? []).map((run) => run.length))
   const ticks = '`'.repeat(Math.max(3, longest + 1))
-  const code = excerpt
-    .trim()
+  const code = trimBlankEdges(excerpt)
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')
@@ -256,8 +256,32 @@ export const EXCERPT_MAX = 200
 export const RANGE_EXCERPT_MAX = 1000
 
 export function capExcerpt(excerpt: string, max: number = EXCERPT_MAX): string {
-  const trimmed = excerpt.trim()
+  const trimmed = trimBlankEdges(excerpt)
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}…`
+}
+
+/** Blank lines off both ends and trailing spaces off the last line — but every line's LEADING
+ *  indentation kept, the first one's included: indentation is structure in Python or YAML, and a
+ *  quoted block whose first line lost it reads as different code. */
+export function trimBlankEdges(text: string): string {
+  return text.replace(/^(?:[ \t]*\r?\n)+/, '').replace(/\s+$/, '')
+}
+
+/** What `POST /runs/:id/messages` and `POST /runs/:id/continue` accept (`messageInputSchema`,
+ *  `continueSchema`): a message the review pushes past it would be refused with a schema error. */
+export const MESSAGE_TEXT_MAX = 100_000
+
+/** The send with the review attached, refused HERE with a reason the user can act on when it would
+ *  be too long — the server's own refusal names a schema field. Throws, so the host keeps both the
+ *  typed message and the comments (a failed send drops neither). */
+export function messageWithReview(text: string, comments: readonly DiffComment[]): string {
+  const message = withDiffComments(text, comments)
+  if (message.length > MESSAGE_TEXT_MAX) {
+    throw new Error(
+      `Too long with the ${comments.length === 1 ? 'diff comment' : `${comments.length} diff comments`} attached — shorten the message or remove some comments.`,
+    )
+  }
+  return message
 }
 
 function newId(): string {
@@ -293,18 +317,25 @@ export interface DiffComments {
  * refetch answered before the clearing write landed would put the sent comments straight back.
  * Each write still mirrors into the cache, so a fresh load reads what was written. Keyed by the
  * query client, so every client (and every test) has its own lists.
+ *
+ * Every save MERGES with the server's list first: another window (or browser) on the same task
+ * keeps a list of its own, and saving this one's whole list would overwrite every comment that
+ * window added. Comments this window removed or sent are remembered (`removed`), so a merge never
+ * brings them back. Two windows editing the SAME comment: the last save wins.
  */
 interface CommentsStore {
   lists: Map<string, DiffComment[]>
   listeners: Map<string, Set<() => void>>
   /** One write chain per run: two quick edits on two tabs still land in order. */
   chains: Map<string, Promise<unknown>>
+  /** Per run: ids this window removed or sent — never merged back in from the server. */
+  removed: Map<string, Set<string>>
 }
 const stores = new WeakMap<object, CommentsStore>()
 function storeFor(client: object): CommentsStore {
   let store = stores.get(client)
   if (!store) {
-    store = { lists: new Map(), listeners: new Map(), chains: new Map() }
+    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map() }
     stores.set(client, store)
   }
   return store
@@ -349,34 +380,63 @@ export function useDiffComments(runId: string): DiffComments {
     [runId, serverComments, store],
   )
 
-  /** Every write is size-checked HERE: the store refuses an over-cap entry, and a refused draft
-   *  write is silent by design — so the comments would look kept and be gone after a reload. */
-  const write = useCallback(
-    (next: DiffComment[]): boolean => {
-      const text = next.length === 0 ? '' : JSON.stringify(next)
-      if (text.length > DRAFT_TEXT_MAX) {
-        toast('Too many comments to keep as a draft — send the ones you have first.', { tone: 'danger' })
-        return false
-      }
+  /** Put `next` in the store, tell every host, and mirror it into the cached listing (so a later
+   *  mount, or a reload's first read, agrees). */
+  const publish = useCallback(
+    (next: DiffComment[]) => {
       store.lists.set(runId, next)
       store.listeners.get(runId)?.forEach((listener) => listener())
-      // Mirrored into the cached listing, so a later mount (or a reload's first read) agrees.
+      const text = serialize(next)
       queryClient.setQueryData<RunDraftsResponse>(queryKeys.runs.drafts(runId), (listing) => {
         const surfaces = { ...(listing?.surfaces ?? {}) }
         if (text === '') delete surfaces[DIFF_COMMENTS_SURFACE]
         else surfaces[DIFF_COMMENTS_SURFACE] = { text, images: [], updatedAt: new Date().toISOString() }
         return { surfaces }
       })
+    },
+    [queryClient, runId, store],
+  )
+
+  /** Every write is size-checked HERE: the store refuses an over-cap entry, and a refused draft
+   *  write is silent by design — so the comments would look kept and be gone after a reload.
+   *  `dropped` are the ids this change removes, remembered so no later merge restores them. */
+  const write = useCallback(
+    (next: DiffComment[], dropped: readonly string[] = []): boolean => {
+      if (serialize(next).length > DRAFT_TEXT_MAX) {
+        toast('Too many comments to keep as a draft — send the ones you have first.', { tone: 'danger' })
+        return false
+      }
+      if (dropped.length > 0) {
+        const removed = store.removed.get(runId) ?? new Set<string>()
+        for (const id of dropped) removed.add(id)
+        store.removed.set(runId, removed)
+      }
+      publish(next)
       // In order, and silent on failure, like every draft write — it must never be louder than
-      // the review it carries.
+      // the review it carries. Each step saves the list as it stands WHEN IT RUNS, merged with the
+      // server's, so a burst of edits coalesces and nothing another window saved is overwritten.
       const chained = (store.chains.get(runId) ?? Promise.resolve())
         .catch(() => {})
-        .then(() => putRunDraft(runId, DIFF_COMMENTS_SURFACE, { text, images: [] }))
+        .then(async () => {
+          const local = store.lists.get(runId) ?? next
+          let merged = local
+          try {
+            const listing = await getRunDrafts(runId)
+            const text = listing.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
+            merged = mergeComments(local, parseDiffComments(typeof text === 'string' ? text : ''), store.removed.get(runId))
+          } catch {
+            // Unreadable: save what this window has — no worse than before the merge existed.
+          }
+          if (merged !== local) publish(merged)
+          const text = serialize(merged)
+          if (text.length > DRAFT_TEXT_MAX) return // the other window's comments pushed it over; keep what's stored
+          await putRunDraft(runId, DIFF_COMMENTS_SURFACE, { text, images: [] })
+        })
         .catch(() => {})
       store.chains.set(runId, chained)
       return true
     },
-    [queryClient, runId, store],
+    [publish, runId, store],
   )
 
   const add = useCallback(
@@ -397,8 +457,14 @@ export function useDiffComments(runId: string): DiffComments {
       write(current().map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c))),
     [current, write],
   )
-  const remove = useCallback((id: string) => void write(current().filter((c) => c.id !== id)), [current, write])
-  const clear = useCallback(() => void write([]), [write])
+  const remove = useCallback(
+    (id: string) => void write(current().filter((c) => c.id !== id), [id]),
+    [current, write],
+  )
+  const clear = useCallback(
+    () => void write([], current().map((c) => c.id)),
+    [current, write],
+  )
 
   // Not cleared up front (unlike the composer's optimistic clear): a rejected send must leave
   // every comment exactly where it was, and the chips staying put during the send says so.
@@ -410,12 +476,38 @@ export function useDiffComments(runId: string): DiffComments {
         // Drop what was SENT, as it was sent: a comment added meanwhile, or edited after it was
         // captured, is not what the agent read — it stays a draft for the next message.
         const sent = new Map(held.map((c) => [c.id, c.body]))
-        write(current().filter((c) => sent.get(c.id) !== c.body))
+        const now = current()
+        write(
+          now.filter((c) => sent.get(c.id) !== c.body),
+          now.filter((c) => sent.get(c.id) === c.body).map((c) => c.id),
+        )
       }
       return result
     },
     [current, write],
   )
 
-  return { ready: drafts.isSuccess, comments, add, update, remove, clear, submit }
+  // Ready once the list has loaded ONCE: a later background refetch that fails (every send
+  // invalidates the run's queries) turns `isSuccess` false while the list is long since in hand,
+  // and must not take the "+" away.
+  return { ready: live !== undefined || drafts.isSuccess, comments, add, update, remove, clear, submit }
+}
+
+function serialize(comments: readonly DiffComment[]): string {
+  return comments.length === 0 ? '' : JSON.stringify(comments)
+}
+
+/**
+ * This window's list, plus every comment the server holds that this window has never seen and
+ * did not remove — another window's additions. Returns `local` itself when there is nothing to
+ * add, so callers can tell a merge that changed nothing.
+ */
+export function mergeComments(
+  local: readonly DiffComment[],
+  server: readonly DiffComment[],
+  removed: ReadonlySet<string> | undefined,
+): DiffComment[] {
+  const known = new Set(local.map((c) => c.id))
+  const extra = server.filter((c) => !known.has(c.id) && !removed?.has(c.id))
+  return extra.length === 0 ? (local as DiffComment[]) : [...local, ...extra]
 }

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
 import { ApiError, createRunPr, getRunFile, openRunFileInApp, openRunInCli, pushRun, runFileRawUrl } from '@/api/client'
@@ -66,15 +66,11 @@ function ChangesView({ run }: { run: ApiRun }) {
   const diffComments = useDiffComments(run.id)
   const commentCount = diffComments.comments.length
   const composerDraft = useDraft(run.id, 'composer')
-  const continueAction = useContinueAction(run)
   // Shown once there are comments, kept while a typed message is unsent — so deleting the last
   // comment never whisks away a half-written reply — and kept while a send is in flight: the
   // composer clears optimistically, and a box that vanished mid-send could not show the outcome.
   const [sending, setSending] = useState(false)
   const showDock = commentCount > 0 || composerDraft.hasDraft || sending
-  // The dock's `bottom: var(--kb)` is the iOS keyboard lift; this tab publishes it too, or the
-  // keyboard would cover the composer it opened for.
-  useKeyboardInsetVar()
   // The dock floats OVER the diff and the file tree. It takes no room of its own (a negative top
   // margin cancels its height), so both columns get that height back as bottom padding instead —
   // their last lines can still be scrolled up above the box.
@@ -324,11 +320,10 @@ function ChangesView({ run }: { run: ApiRun }) {
           className="mt-auto"
           style={{ marginTop: diffShown && dockHeight ? -dockHeight : undefined }}
         >
-          <TaskComposer
+          <DockedComposer
             run={run}
             draft={composerDraft}
             diffComments={diffComments}
-            continueAction={continueAction}
             onSendingChange={setSending}
             onOpenComment={(comment) =>
               revealOrScroll({ path: comment.path, side: comment.side, line: comment.line, commentId: comment.id })
@@ -341,6 +336,18 @@ function ChangesView({ run }: { run: ApiRun }) {
       <CommitDialog run={run} open={commitOpen} onOpenChange={setCommitOpen} />
     </div>
   )
+}
+
+/**
+ * The composer as the Changes tab docks it. Its own component so that what only a VISIBLE
+ * composer needs — the continue engine's queries (runner models, accounts, providers) and the
+ * iOS keyboard tracking behind the dock's `bottom: var(--kb)` — runs only while the dock is shown,
+ * not on every visit to the tab.
+ */
+function DockedComposer(props: Omit<ComponentProps<typeof TaskComposer>, 'continueAction'>) {
+  const continueAction = useContinueAction(props.run)
+  useKeyboardInsetVar()
+  return <TaskComposer {...props} continueAction={continueAction} />
 }
 
 /** The facade's expandable-context source: the file's current text from the worktree, or

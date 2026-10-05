@@ -13,7 +13,7 @@ import { DiffCommentChips } from './diff-comment-chips'
 import {
   commentsRideWith,
   slashCommandOf,
-  withDiffComments,
+  messageWithReview,
   type DiffComment,
   type DiffComments,
 } from './diff-comments'
@@ -26,10 +26,10 @@ import type { Draft } from './thread-draft'
  * folded in (and kept out of quick replies and backend slash commands), the continue/deliver
  * re-route, the provider gate, the engine pills.
  *
- * The host owns the state and passes it in, because each piece has exactly one owner per route:
- * `draft` and `diffComments` are `useDraft` hosts (two hosts of one surface would each keep their
- * own copy), and `continueAction` is shared with the Session header's engine badge, which must
- * edit the very choice this composer sends.
+ * The host owns the state and passes it in: `draft` is a `useDraft` host (two hosts of one surface
+ * would each keep their own copy, so a route has exactly one), and `continueAction` is shared with
+ * the Session header's engine badge, which must edit the very choice this composer sends.
+ * `diffComments` is the run's shared comment list — any number of hosts see the same one.
  */
 export function TaskComposer({
   run,
@@ -107,7 +107,7 @@ export function TaskComposer({
               toast(`Diff comments kept — /${slashCommandOf(text)} is a command, so they go with your next message.`)
               return deliverPrompt(text, images)
             }
-            return diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images))
+            return diffComments.submit(async (held) => deliverPrompt(messageWithReview(text, held), images))
           })
         } finally {
           onSendingChange?.(false)

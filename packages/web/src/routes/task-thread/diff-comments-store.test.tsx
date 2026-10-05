@@ -39,7 +39,7 @@ function stubServer(stored: DiffComment[]) {
   return puts
 }
 
-function twoHosts() {
+function mountChangesHost() {
   const client = createQueryClient()
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
   const changes = renderHook(() => useDiffComments('r1'), { wrapper })
@@ -51,7 +51,7 @@ describe('diff comments shared across hosts', () => {
    *  mounted, and not a refetch's pre-clear copy. */
   it('a host mounted while a send is in flight sees the sent comments go', async () => {
     stubServer([C1, C2])
-    const { wrapper, changes } = twoHosts()
+    const { wrapper, changes } = mountChangesHost()
     await waitFor(() => expect(changes.result.current.comments).toHaveLength(2))
 
     let land: (value: string) => void = () => {}
@@ -73,7 +73,7 @@ describe('diff comments shared across hosts', () => {
 
   it('keeps a comment added, or edited, while the send was in flight', async () => {
     const puts = stubServer([C1, C2])
-    const { changes } = twoHosts()
+    const { changes } = mountChangesHost()
     await waitFor(() => expect(changes.result.current.comments).toHaveLength(2))
 
     let land: (value: string) => void = () => {}
@@ -97,12 +97,107 @@ describe('diff comments shared across hosts', () => {
 
   it('a failed send keeps every comment', async () => {
     stubServer([C1, C2])
-    const { changes } = twoHosts()
+    const { changes } = mountChangesHost()
     await waitFor(() => expect(changes.result.current.comments).toHaveLength(2))
 
     await act(async () => {
       await changes.result.current.submit(() => Promise.reject(new Error('no'))).catch(() => {})
     })
     expect(changes.result.current.comments.map((c) => c.id)).toEqual(['c1', 'c2'])
+  })
+})
+
+/** A server that keeps what it is sent — two windows of one cockpit talk to the same one. */
+function statefulServer(initial: DiffComment[]) {
+  let stored = JSON.stringify(initial)
+  let failReads = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = String(input)
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+      if ((init.method ?? 'GET') === 'PUT') {
+        stored = (JSON.parse(String(init.body)) as { text: string }).text
+        return json({ text: stored, images: [], updatedAt: '2026-10-05T00:00:00.000Z' })
+      }
+      if (path === '/api/v1/runs/r1/drafts') {
+        if (failReads) return json({ error: 'restarting' }, 503)
+        return json({
+          surfaces: stored === '' ? {} : { 'diff-comments': { text: stored, images: [], updatedAt: '2026-10-05T00:00:00.000Z' } },
+        })
+      }
+      return json({})
+    }),
+  )
+  return {
+    stored: () => (stored === '' ? [] : (JSON.parse(stored) as DiffComment[])),
+    failReads: (fail: boolean) => (failReads = fail),
+  }
+}
+
+/** One browser window: its own query client, so its own in-memory list. */
+function openWindow() {
+  const client = createQueryClient()
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  return { client, view: renderHook(() => useDiffComments('r1'), { wrapper }) }
+}
+
+const NEW = { path: 'src/a.ts', side: 'new' as const, excerpt: '' }
+
+describe('diff comments across windows', () => {
+  it("a window's save never wipes what another window added", async () => {
+    const server = statefulServer([])
+    const a = openWindow()
+    const b = openWindow()
+    await waitFor(() => expect(a.view.result.current.ready && b.view.result.current.ready).toBe(true))
+
+    act(() => {
+      a.view.result.current.add({ ...NEW, line: 1, body: 'from A, one' })
+      a.view.result.current.add({ ...NEW, line: 2, body: 'from A, two' })
+      a.view.result.current.add({ ...NEW, line: 3, body: 'from A, three' })
+    })
+    await waitFor(() => expect(server.stored()).toHaveLength(3))
+
+    // B was seeded with the empty list before A wrote anything.
+    act(() => {
+      b.view.result.current.add({ ...NEW, line: 9, body: 'from B' })
+    })
+    await waitFor(() => expect(server.stored().map((c) => c.body).sort()).toEqual(['from A, one', 'from A, three', 'from A, two', 'from B']))
+    // …and B now shows A's comments too.
+    await waitFor(() => expect(b.view.result.current.comments).toHaveLength(4))
+  })
+
+  it('a comment removed here is not merged back from the server', async () => {
+    const seeded: DiffComment[] = [
+      { id: 'k1', path: 'src/a.ts', side: 'new', line: 1, body: 'keep', excerpt: '' },
+      { id: 'g1', path: 'src/a.ts', side: 'new', line: 2, body: 'gone', excerpt: '' },
+    ]
+    const server = statefulServer(seeded)
+    const a = openWindow()
+    await waitFor(() => expect(a.view.result.current.comments).toHaveLength(2))
+
+    act(() => a.view.result.current.remove('g1'))
+    await waitFor(() => expect(server.stored().map((c) => c.id)).toEqual(['k1']))
+    expect(a.view.result.current.comments.map((c) => c.id)).toEqual(['k1'])
+  })
+
+  it('keeps offering "+" when a later refetch of the drafts fails', async () => {
+    const server = statefulServer([])
+    const a = openWindow()
+    await waitFor(() => expect(a.view.result.current.ready).toBe(true))
+
+    server.failReads(true)
+    await act(async () => {
+      await a.client.invalidateQueries()
+    })
+    // The refetch really did fail — the case this pins.
+    const draftsQuery = a.client.getQueryCache().getAll().find((q) => q.queryKey.includes('drafts'))
+    expect(draftsQuery?.state.status).toBe('error')
+    // Let the hook re-render with the failed state before judging it.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(a.view.result.current.ready).toBe(true)
   })
 })
