@@ -1,8 +1,9 @@
-import { ChevronRightIcon, MessageSquareIcon } from 'lucide-react'
+import { ChevronRightIcon } from 'lucide-react'
 import { useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtualizer, type VirtualizerHandle } from 'virtua'
 
 import type { DiffStat } from '@open-mercato/cezar-api-client'
+import { CommentCount } from '@/components/comment-count'
 import { DiffStatLabel } from '@/components/diff-stat'
 import { highlight, highlightSync, langForPath, type SynToken } from '@/lib/highlighter'
 import { cn } from '@/lib/utils'
@@ -140,17 +141,56 @@ export function DiffView({
   // A range being dragged out with the "+". The dragged file's line list rides a ref: the release
   // handler needs it, and it never has to re-render anything.
   const [selection, setSelection] = useState<LineSelection | null>(null)
+  // Mirrored synchronously: the release handler reads THIS, so a fast release cannot finish on a
+  // render that had not yet caught up with the last row the pointer entered.
+  const selectionRef = useRef<LineSelection | null>(null)
   const selectionLines = useRef<readonly HunkLine[]>([])
+  const selecting = selection !== null
   const editingRef = useRef(editing)
   editingRef.current = editing
+  // Where focus goes back to when the editor closes (Comment, Save, Cancel, Escape): the control
+  // that opened it, or — when that one is gone, as an Edit button is once its card turns into the
+  // editor — the comment's card. Without this, focus fell to <body> and a keyboard user restarted
+  // from the top of the page after every comment.
+  const returnFocus = useRef<{ element: HTMLElement | null; commentId?: string }>({ element: null })
+  const rootForFocus = useRef<HTMLDivElement | null>(null)
+  const captureOpener = (commentId?: string) => {
+    const active = document.activeElement
+    returnFocus.current = {
+      element: active instanceof HTMLElement && rootForFocus.current?.contains(active) ? active : null,
+      ...(commentId ? { commentId } : {}),
+    }
+  }
+  const restoreFocus = () => {
+    const { element, commentId } = returnFocus.current
+    returnFocus.current = { element: null }
+    // After the commit that removed the editor, so the target exists (or is known to be gone).
+    setTimeout(() => {
+      if (element?.isConnected) {
+        element.focus({ preventScroll: true })
+        return
+      }
+      if (commentId === undefined) return
+      for (const card of rootForFocus.current?.querySelectorAll<HTMLElement>('[data-slot="diff-line-comment"]') ?? []) {
+        if (card.dataset.commentId === commentId) {
+          card.querySelector<HTMLElement>('button')?.focus({ preventScroll: true })
+          return
+        }
+      }
+    }, 0)
+  }
+  const focusHelpers = useRef({ captureOpener, restoreFocus })
+  focusHelpers.current = { captureOpener, restoreFocus }
 
   const openEditor = useCallback(
-    (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd) => {
+    (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd, stretch = false) => {
       const threadKey = anchorKey(anchor)
       const key = start ? `${threadKey}\u0000${start.side}:${start.line}` : threadKey
-      // Stretching an open range must not lose what was already typed into it.
+      // Stretching an open range must not lose what was already typed into it. Only a STRETCH
+      // carries the text: opening a fresh editor elsewhere starts empty (the old one's text stays
+      // filed under its own line, for when the user comes back to it).
       const previous = editingRef.current
-      if (previous && previous.commentId === undefined && previous.key !== key) {
+      if (stretch && previous && previous.commentId === undefined && previous.key !== key) {
         const typed = pendingText.get(previous.key)
         if (typed !== undefined) {
           pendingText.set(key, typed)
@@ -161,6 +201,7 @@ export function DiffView({
       const oldPath =
         anchor.side === 'old' || start?.side === 'old' ? files.find((file) => file.path === anchor.path)?.oldPath : undefined
       focusRequest.current = key
+      if (!stretch) focusHelpers.current.captureOpener()
       setEditing({ key, threadKey, anchor, excerpt, ...(start ? { start } : {}), ...(oldPath ? { oldPath } : {}) })
     },
     [files, pendingText],
@@ -168,15 +209,18 @@ export function DiffView({
 
   // Releasing the button ANYWHERE ends the drag — over a row, between rows, or off the diff.
   useEffect(() => {
-    if (selection === null) return
+    if (!selecting) return
     const finish = () => {
+      const done = selectionRef.current
+      selectionRef.current = null
       setSelection(null)
-      const target = rangeTarget(selection.path, selectionLines.current, selection.from, selection.to)
+      if (!done) return
+      const target = rangeTarget(done.path, selectionLines.current, done.from, done.to)
       if (target) openEditor(target.anchor, target.excerpt, target.start)
     }
     window.addEventListener('mouseup', finish)
     return () => window.removeEventListener('mouseup', finish)
-  }, [openEditor, selection])
+  }, [openEditor, selecting])
   const commentsApi = useMemo((): LineCommentsApi | null => {
     if (!onAddComment && (comments?.length ?? 0) === 0) return null
     const byKey = new Map<string, DiffLineComment[]>()
@@ -193,15 +237,19 @@ export function DiffView({
       open: openEditor,
       beginSelect: (path, order, lines) => {
         selectionLines.current = lines
-        setSelection({ path, from: order, to: order })
+        selectionRef.current = { path, from: order, to: order }
+        setSelection(selectionRef.current)
       },
-      extendSelect: (path, order) =>
-        setSelection((current) =>
-          current === null || current.path !== path || current.to === order ? current : { ...current, to: order },
-        ),
+      extendSelect: (path, order) => {
+        const current = selectionRef.current
+        if (current === null || current.path !== path || current.to === order) return
+        selectionRef.current = { ...current, to: order }
+        setSelection(selectionRef.current)
+      },
       edit: onEditComment
         ? (comment: DiffLineComment) => {
             focusRequest.current = `edit:${comment.id}`
+            focusHelpers.current.captureOpener(comment.id)
             setEditing({
               key: `edit:${comment.id}`,
               threadKey: anchorKey(comment),
@@ -213,16 +261,21 @@ export function DiffView({
             })
           }
         : undefined,
-      cancel: () => setEditing(null),
+      cancel: () => {
+        setEditing(null)
+        focusHelpers.current.restoreFocus()
+      },
       // A refused comment keeps its editor (and its text) open rather than vanishing unsaved.
       submit: (comment) => {
         if (onAddComment?.(comment) === false) return false
         setEditing(null)
+        focusHelpers.current.restoreFocus()
         return true
       },
       update: (id, body) => {
         if (onEditComment?.(id, body) === false) return false
         setEditing(null)
+        focusHelpers.current.restoreFocus()
         return true
       },
       remove: onRemoveComment,
@@ -280,6 +333,7 @@ export function DiffView({
     <div
       ref={(el) => {
         rootRef.current = el
+        rootForFocus.current = el
         if (el) scrollElRef.current = el.closest<HTMLElement>('[data-slot="main"]')
       }}
       data-slot="diff"
@@ -473,17 +527,7 @@ function DiffFileCard({
             </span>
           ) : null}
           <span className="ml-auto flex shrink-0 items-center gap-2">
-            {commentCount > 0 ? (
-              <span
-                data-slot="diff-file-comments"
-                aria-label={`${commentCount} ${commentCount === 1 ? 'comment' : 'comments'}`}
-                title={`${commentCount} ${commentCount === 1 ? 'comment' : 'comments'} for the agent`}
-                className="flex items-center gap-1 text-[11px] font-medium text-primary tabular-nums"
-              >
-                <MessageSquareIcon aria-hidden="true" className="size-3" />
-                {commentCount}
-              </span>
-            ) : null}
+            <CommentCount count={commentCount} />
             <DiffStatLabel stat={{ adds: file.adds, dels: file.dels, files: 1 }} className="text-[11px]" />
           </span>
         </button>

@@ -10,7 +10,13 @@ import { cn } from '@/lib/utils'
 import { useActiveProviderAvailability } from './active-provider'
 import { useDeliverPrompt } from './deliver-prompt'
 import { DiffCommentChips } from './diff-comment-chips'
-import { commentsRideWith, slashCommandOf, withDiffComments, type DiffComments } from './diff-comments'
+import {
+  commentsRideWith,
+  slashCommandOf,
+  withDiffComments,
+  type DiffComment,
+  type DiffComments,
+} from './diff-comments'
 import type { ContinueAction } from './follow-up-engine'
 import type { Draft } from './thread-draft'
 
@@ -31,12 +37,19 @@ export function TaskComposer({
   diffComments,
   continueAction,
   getMentionCandidates,
+  onSendingChange,
+  onOpenComment,
 }: {
   run: ApiRun
   draft: Draft
   diffComments: DiffComments
   continueAction: ContinueAction
   getMentionCandidates?: () => string[]
+  /** A send started (`true`) or settled (`false`) — for a host that shows the composer only
+   *  conditionally and must not drop it mid-send. */
+  onSendingChange?: (sending: boolean) => void
+  /** Passed to the chips — see `DiffCommentChips.onOpen`. */
+  onOpenComment?: (comment: DiffComment) => void
 }) {
   // The legacy session-open rule (web/app.js `updateDetail`): the composer can deliver while the
   // engine owns a live session — running queues the message, waiting answers it. A queued run's
@@ -83,19 +96,31 @@ export function TaskComposer({
       // The diff comments are folded in at send time and dropped only once the message has
       // landed. A quick reply (Alt+A / Alt+C, fired from anywhere on the page) never carries them:
       // the user did not see the review leave.
-      onSubmit={(text, images, meta) =>
-        draft.submit<unknown>(() => {
-          if (meta?.quickReply) return deliverPrompt(text, images)
-          if (hasDiffComments && !commentsRideWith(text, skillNames)) {
-            toast(`Diff comments kept — /${slashCommandOf(text)} is a command, so they go with your next message.`)
-            return deliverPrompt(text, images)
-          }
-          return diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images))
-        })
-      }
+      onSubmit={async (text, images, meta) => {
+        // A quick reply never touches the draft: it is not what the box holds, so its success
+        // must not clear whatever the user had typed there.
+        if (meta?.quickReply) return deliverPrompt(text, images)
+        onSendingChange?.(true)
+        try {
+          return await draft.submit<unknown>(() => {
+            if (hasDiffComments && !commentsRideWith(text, skillNames)) {
+              toast(`Diff comments kept — /${slashCommandOf(text)} is a command, so they go with your next message.`)
+              return deliverPrompt(text, images)
+            }
+            return diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images))
+          })
+        } finally {
+          onSendingChange?.(false)
+        }
+      }}
       draftItems={
         hasDiffComments ?
-          <DiffCommentChips runId={run.id} comments={diffComments.comments} onRemove={diffComments.remove} />
+          <DiffCommentChips
+            runId={run.id}
+            comments={diffComments.comments}
+            onRemove={diffComments.remove}
+            onOpen={onOpenComment}
+          />
         : undefined
       }
       disabled={providerBlocked || (!sessionOpen && !queued && !continuable)}

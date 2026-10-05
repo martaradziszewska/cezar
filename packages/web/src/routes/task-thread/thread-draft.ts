@@ -54,10 +54,6 @@ export interface Draft {
   /** The seed has settled — the server answered (or failed to). Hosts that decide whether to
    *  OPEN an editor wait for this; hosts that only need a value do not. */
   ready: boolean
-  /** The stored draft actually ARRIVED (`ready` is also true when the read failed). A host whose
-   *  content is a list it appends to needs this one: after a failed read there is nothing to
-   *  append to, and the first write would replace whatever the server still holds. */
-  loaded: boolean
   /** There is stored, unsent content for this surface. What re-opens an inline editor on return. */
   hasDraft: boolean
   text: string
@@ -430,7 +426,6 @@ export function useDraft(runId: string, surface: string, { enabled = true }: Dra
 
   return {
     ready: !live || drafts.isSuccess || drafts.isError,
-    loaded: !live || drafts.isSuccess,
     hasDraft: text !== '' || images.length > 0,
     text,
     setText,

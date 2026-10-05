@@ -13,10 +13,14 @@ export function DiffCommentChips({
   runId,
   comments,
   onRemove,
+  onOpen,
 }: {
   runId: string
   comments: readonly DiffComment[]
   onRemove: (id: string) => void
+  /** Given, the label is a button that calls this — the Changes tab, where a link to itself would
+   *  do nothing, scrolls the diff to the comment's file instead. Absent, it links to the tab. */
+  onOpen?: (comment: DiffComment) => void
 }) {
   if (comments.length === 0) return null
   return (
@@ -44,13 +48,24 @@ export function DiffCommentChips({
             <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
               <FileIcon className="size-3.5" />
             </span>
-            <Link
-              to={`/tasks/${runId}/changes`}
-              className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={`Comment on ${comment.path} ${where}`}
-            >
-              {label}
-            </Link>
+            {onOpen ? (
+              <button
+                type="button"
+                onClick={() => onOpen(comment)}
+                className="min-w-0 truncate px-2 font-medium hover:underline"
+                aria-label={`Show comment on ${comment.path} ${where}`}
+              >
+                {label}
+              </button>
+            ) : (
+              <Link
+                to={`/tasks/${runId}/changes`}
+                className="min-w-0 truncate px-2 font-medium hover:underline"
+                aria-label={`Comment on ${comment.path} ${where}`}
+              >
+                {label}
+              </Link>
+            )}
             <button
               type="button"
               aria-label={`Remove comment on ${name} ${where}`}

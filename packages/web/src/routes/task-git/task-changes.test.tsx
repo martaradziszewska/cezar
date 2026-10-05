@@ -554,7 +554,7 @@ describe('the Changes tab line comments', () => {
       const notes = [...document.querySelectorAll<HTMLElement>('[data-slot="diff-file"]')].find(
         (card) => card.dataset.path === 'notes.md',
       )!
-      fireEvent.click(notes.querySelector('[aria-label="Comment on line 1"]')!)
+      fireEvent.click(notes.querySelector('[aria-label="Comment on notes.md line 1"]')!)
       const editor = screen.getByPlaceholderText('Add a comment for the AI')
       fireEvent.change(editor, { target: { value: text } })
       fireEvent.keyDown(editor, { key: 'Enter' })
@@ -670,5 +670,85 @@ describe('the Changes tab composer dock', () => {
 
     expect(screen.queryByText('notes.md +1')).toBeNull()
     expect(document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')?.value).toBe('half-written')
+  })
+
+  it('keeps the dock through a text-only send, and back on failure', async () => {
+    let fail: () => void = () => {}
+    stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+      'POST /api/v1/runs/r1/continue': (() =>
+        new Promise<Response>((resolve) => (fail = () => resolve(jsonResponse({ error: 'nope' }, 500))))) as unknown as () => Response,
+    })
+    renderChangesRoute()
+    await screen.findByText('notes.md +1')
+    const composer = () => document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')
+    fireEvent.change(composer()!, { target: { value: 'only words' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove comment on notes.md line 1' }))
+    const send = document.querySelector<HTMLButtonElement>('[data-slot="thread-dock"] button[aria-label="Continue"]')!
+    await waitFor(() => expect(send.disabled).toBe(false))
+    fireEvent.click(send)
+
+    // In flight: the composer cleared optimistically, but the dock stays to show the outcome.
+    await waitFor(() => expect(composer()?.value).toBe(''))
+    expect(document.querySelector('[data-slot="thread-dock"]')).not.toBeNull()
+    act(() => fail())
+    await waitFor(() => expect(composer()?.value).toBe('only words'))
+  })
+
+  it('never clears the typed message on an Alt quick reply', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+    })
+    renderChangesRoute()
+    await screen.findByText('notes.md +1')
+    const composer = document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')!
+    fireEvent.change(composer, { target: { value: 'still writing this' } })
+    composer.blur()
+
+    fireEvent.keyDown(window, { code: 'KeyC', key: 'c', altKey: true })
+
+    await waitFor(() =>
+      expect(sent.find((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/continue')?.body).toMatchObject({
+        text: 'Continue.',
+      }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(composer.value).toBe('still writing this')
+    expect(screen.getByText('notes.md +1')).not.toBeNull()
+  })
+
+  it('does not pull the dock over the toolbar while the diff is still loading', async () => {
+    stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+      'GET /api/v1/runs/r1/changes': (() => new Promise<Response>(() => {})) as unknown as () => Response,
+    })
+    renderChangesRoute()
+    const chip = await screen.findByText('notes.md +1')
+    const dock = chip.closest<HTMLElement>('[data-slot="thread-dock"]')!
+    expect(document.querySelector('[data-slot="changes-loading"]')).not.toBeNull()
+    expect(dock.style.marginTop).toBe('')
+  })
+
+  it('a chip here jumps to its file rather than linking to the tab it is already on', async () => {
+    stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+    })
+    renderChangesRoute()
+    await screen.findByText('notes.md +1')
+    // jsdom has no scrolling; record the jump instead.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Show comment on notes.md line 1' }))
+      expect(document.querySelector('[data-slot="tree-file"][data-path="notes.md"]')?.getAttribute('aria-current')).toBe('true')
+      expect(scrolled).toHaveBeenCalled()
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
   })
 })

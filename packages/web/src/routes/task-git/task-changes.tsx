@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
 import { ApiError, createRunPr, getRunFile, openRunFileInApp, openRunInCli, pushRun, runFileRawUrl } from '@/api/client'
@@ -16,6 +16,7 @@ import { useDiffComments } from '../task-thread/diff-comments'
 import { useContinueAction } from '../task-thread/follow-up-engine'
 import { TaskComposer, TaskDock } from '../task-thread/task-composer'
 import { useDraft } from '../task-thread/thread-draft'
+import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
 import { isRunActive, lastSessionId } from '../task-thread/run-actions'
 import { RunHeader } from '../task-thread/run-header'
 import { ChangesTree } from './changes-tree'
@@ -65,9 +66,14 @@ function ChangesView({ run }: { run: ApiRun }) {
   const commentCount = diffComments.comments.length
   const composerDraft = useDraft(run.id, 'composer')
   const continueAction = useContinueAction(run)
-  // Shown once there are comments, and kept while a typed message is unsent — so deleting the last
-  // comment never whisks away a half-written reply.
-  const showDock = commentCount > 0 || composerDraft.hasDraft
+  // Shown once there are comments, kept while a typed message is unsent — so deleting the last
+  // comment never whisks away a half-written reply — and kept while a send is in flight: the
+  // composer clears optimistically, and a box that vanished mid-send could not show the outcome.
+  const [sending, setSending] = useState(false)
+  const showDock = commentCount > 0 || composerDraft.hasDraft || sending
+  // The dock's `bottom: var(--kb)` is the iOS keyboard lift; this tab publishes it too, or the
+  // keyboard would cover the composer it opened for.
+  useKeyboardInsetVar()
   // The dock floats OVER the diff and the file tree. It takes no room of its own (a negative top
   // margin cancels its height), so both columns get that height back as bottom padding instead —
   // their last lines can still be scrolled up above the box.
@@ -83,6 +89,16 @@ function ChangesView({ run }: { run: ApiRun }) {
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+  // The scroller keeps whatever it scrolls into view (a just-opened comment editor) clear of the
+  // floating dock, which covers the bottom of the viewport.
+  useEffect(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-slot="main"]')
+    if (!scroller || !showDock) return
+    scroller.style.scrollPaddingBottom = `${dockHeight}px`
+    return () => {
+      scroller.style.scrollPaddingBottom = ''
+    }
+  }, [dockHeight, showDock])
   const commentCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const comment of diffComments.comments) counts.set(comment.path, (counts.get(comment.path) ?? 0) + 1)
@@ -168,6 +184,7 @@ function ChangesView({ run }: { run: ApiRun }) {
   }
 
   const files = changes.data?.files ?? []
+  const diffShown = !changes.isPending && !changes.isError && files.length > 0
   const tree = useMemo(() => buildFileTree(files), [files])
 
   // Phones force the readable combination; the toggles only exist ≥md (toolbar hides them).
@@ -270,14 +287,22 @@ function ChangesView({ run }: { run: ApiRun }) {
       )}
 
       {showDock ? (
-        // `mt-auto` so a short view still parks it at the bottom, exactly where the Session tab's is;
-        // the negative margin is what lets it float over the content instead of below it.
-        <TaskDock ref={dockRef} floating className="mt-auto" style={{ marginTop: dockHeight ? -dockHeight : undefined }}>
+        // `mt-auto` so a short view still parks it at the bottom, exactly where the Session tab's is.
+        // Only over the diff does it float (the negative margin): above a loading line or an empty
+        // state there is nothing to see through, and pulling it up would overlap the toolbar.
+        <TaskDock
+          ref={dockRef}
+          floating
+          className="mt-auto"
+          style={{ marginTop: diffShown && dockHeight ? -dockHeight : undefined }}
+        >
           <TaskComposer
             run={run}
             draft={composerDraft}
             diffComments={diffComments}
             continueAction={continueAction}
+            onSendingChange={setSending}
+            onOpenComment={(comment) => selectFile(comment.path)}
             getMentionCandidates={() => files.map((file) => file.path)}
           />
         </TaskDock>

@@ -1,6 +1,7 @@
-import { ChevronRightIcon, FileIcon, FolderIcon, MessageSquareIcon } from 'lucide-react'
+import { ChevronRightIcon, FileIcon, FolderIcon } from 'lucide-react'
 import { createContext, useContext, useState } from 'react'
 
+import { CommentCount } from '@/components/comment-count'
 import { cn } from '@/lib/utils'
 
 import type { TreeDir, TreeFile } from './file-tree'
@@ -50,22 +51,6 @@ function dirCommentCount(dir: TreeDir, counts: ReadonlyMap<string, number>): num
   return total
 }
 
-/** "💬 2" — how many drafted comments sit in this file (or folder). Nothing at zero. */
-export function CommentCount({ count, className }: { count: number; className?: string }) {
-  if (count === 0) return null
-  return (
-    <span
-      data-slot="comment-count"
-      title={`${count} ${count === 1 ? 'comment' : 'comments'} for the agent`}
-      aria-label={`${count} ${count === 1 ? 'comment' : 'comments'}`}
-      className={cn('flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary tabular-nums', className)}
-    >
-      <MessageSquareIcon aria-hidden="true" className="size-3" />
-      {count}
-    </span>
-  )
-}
-
 /** ±12/−3 in miniature — the tree's per-row counts (the aggregate label lives in the toolbar). */
 function Counts({ adds, dels }: { adds: number; dels: number }) {
   return (
@@ -91,7 +76,8 @@ function DirNode({
   const [open, setOpen] = useState(true)
   // Only while collapsed: an open folder's files show their own counts, so a total here would
   // just repeat them. Collapsed, it is the one place that says the folder holds comments.
-  const comments = open ? 0 : dirCommentCount(dir, useContext(CommentCountsContext))
+  const counts = useContext(CommentCountsContext)
+  const comments = open ? 0 : dirCommentCount(dir, counts)
   return (
     <li>
       <button

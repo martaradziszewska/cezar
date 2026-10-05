@@ -58,8 +58,34 @@ export function rangeTarget(
   return {
     anchor,
     ...(first ? { start: { side: first.side, line: first.line } } : {}),
-    excerpt: covered.map((line) => line.text).join('\n'),
+    excerpt: excerptWithGaps(covered),
   }
+}
+
+/**
+ * The covered lines' text, with a marker wherever the range crossed a COLLAPSED context gap: the
+ * displayed list skips those lines, and an excerpt that read as continuous would tell the agent
+ * "lines 10–80" while quietly quoting half of them.
+ */
+function excerptWithGaps(covered: readonly HunkLine[]): string {
+  const out: string[] = []
+  let lastOld: number | undefined
+  let lastNew: number | undefined
+  for (const line of covered) {
+    const skipped =
+      (line.newLine !== undefined && lastNew !== undefined && line.newLine > lastNew + 1) ||
+      (line.oldLine !== undefined && lastOld !== undefined && line.oldLine > lastOld + 1)
+    if (skipped) {
+      const count =
+        line.newLine !== undefined && lastNew !== undefined ? line.newLine - lastNew - 1
+        : line.oldLine! - lastOld! - 1
+      out.push(`⋯ ${count} unchanged ${count === 1 ? 'line' : 'lines'} not shown`)
+    }
+    out.push(line.text)
+    if (line.oldLine !== undefined) lastOld = line.oldLine
+    if (line.newLine !== undefined) lastNew = line.newLine
+  }
+  return out.join('\n')
 }
 
 /**
@@ -113,7 +139,8 @@ export interface LineCommentsApi {
   editing: LineCommentEditing | null
   selection: LineSelection | null
   canAdd: boolean
-  open: (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd) => void
+  /** `stretch` — this re-opens the current new comment over a wider range; its text comes along. */
+  open: (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd, stretch?: boolean) => void
   /** Press on a "+": start a range at that row. Releasing anywhere opens the editor for it. */
   beginSelect: (path: string, order: number, lines: readonly HunkLine[]) => void
   /** The pointer entered another row while a range is being dragged. */
@@ -192,7 +219,9 @@ export function AddCommentButton({
     <button
       type="button"
       data-slot="diff-add-comment"
-      aria-label={`Comment on ${anchor.side === 'old' ? 'removed ' : ''}line ${anchor.line}`}
+      // The file is named: every file has a "line 4", and a list of controls that all read
+      // "Comment on line 4" is no list at all to a screen reader.
+      aria-label={`Comment on ${anchor.path.split('/').at(-1)} ${anchor.side === 'old' ? 'removed ' : ''}line ${anchor.line}`}
       title="Add a comment for the agent — drag to cover several lines, or shift-click to extend"
       onMouseDown={(event) => {
         if (event.button !== 0) return
@@ -206,7 +235,7 @@ export function AddCommentButton({
           const startAt = editing.start ?? editing.anchor
           const fromOrder = orderOfEnd(file!, anchor.path, startAt) ?? order
           const target = rangeTarget(anchor.path, file!.lines, fromOrder, order)
-          if (target) api.open(target.anchor, target.excerpt, target.start)
+          if (target) api.open(target.anchor, target.excerpt, target.start, true)
           return
         }
         // A pointer click was already handled by press → release (`beginSelect`); only keyboard
@@ -277,6 +306,7 @@ function SavedComment({
   return (
     <div
       data-slot="diff-line-comment"
+      data-comment-id={comment.id}
       // An accent border on a tinted band is what sets a drafted comment apart from the code
       // around it; the lines it covers carry the accent bar in their gutter edge.
       role="group"
@@ -319,6 +349,10 @@ function CommentEditor({
     api.focusRequest.current = null
     el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
+    // Brought into view on an explicit open only — the scroller's `scroll-padding-bottom` (the
+    // Changes tab sets it to the floating dock's height) keeps it clear of the composer. `?.`:
+    // not every DOM implementation has it.
+    el.closest<HTMLElement>('[data-slot="diff-comment-editor"]')?.scrollIntoView?.({ block: 'nearest' })
   }, [])
 
   const body = text.trim()

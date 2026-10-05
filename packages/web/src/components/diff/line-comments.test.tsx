@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Diff } from './diff'
@@ -41,7 +41,7 @@ describe('Diff line comments', () => {
     await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
 
     // The added line is new-side line 4.
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on a.ts line 4' }))
     const editor = screen.getByPlaceholderText('Add a comment for the AI')
     expect(screen.getByRole('button', { name: 'Comment' })).toHaveProperty('disabled', true)
 
@@ -62,7 +62,7 @@ describe('Diff line comments', () => {
     const onAddComment = vi.fn()
     await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on a.ts removed line 4' }))
     const editor = screen.getByPlaceholderText('Add a comment for the AI')
     fireEvent.change(editor, { target: { value: 'x' } })
     fireEvent.keyDown(editor, { key: 'Escape' })
@@ -139,7 +139,7 @@ describe('Diff line comments', () => {
     const onAddComment = vi.fn(() => false)
     await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on a.ts line 4' }))
     const editor = screen.getByPlaceholderText('Add a comment for the AI')
     fireEvent.change(editor, { target: { value: 'too much' } })
     fireEvent.keyDown(editor, { key: 'Enter' })
@@ -154,7 +154,7 @@ describe('Diff line comments', () => {
     render(<Diff files={[renamed]} onAddComment={onAddComment} />)
     await screen.findByText('src/b.ts')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on removed line 4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on b.ts removed line 4' }))
     const editor = screen.getByPlaceholderText('Add a comment for the AI')
     fireEvent.change(editor, { target: { value: 'why?' } })
     fireEvent.keyDown(editor, { key: 'Enter' })
@@ -163,7 +163,7 @@ describe('Diff line comments', () => {
     )
 
     // An added line of the same file carries no oldPath — its number is the new file's.
-    fireEvent.click(screen.getByRole('button', { name: 'Comment on line 4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on b.ts line 4' }))
     const next = screen.getByPlaceholderText('Add a comment for the AI')
     fireEvent.change(next, { target: { value: 'ok' } })
     fireEvent.keyDown(next, { key: 'Enter' })
@@ -317,6 +317,114 @@ describe('Diff line comments on a range of lines', () => {
       'Comment on removed line 4 – line 5',
     )
     // The file header counts it.
-    expect(document.querySelector('[data-slot="diff-file-comments"]')?.textContent).toBe('1')
+    expect(document.querySelector('[data-slot="diff-file-header"] [data-slot="comment-count"]')?.textContent).toBe('1')
+  })
+})
+
+describe('Diff line comments — editor focus, text and ranges', () => {
+  const rows = () => [...document.querySelectorAll<HTMLElement>('[data-slot="diff-line"]')]
+  const plusOf = (row: HTMLElement) => row.querySelector<HTMLButtonElement>('[data-slot="diff-add-comment"]')!
+
+  it('names the file on every "+", so "line 4" is not ambiguous across files', async () => {
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Comment on a.ts line 4' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Comment on a.ts removed line 4' })).not.toBeNull()
+  })
+
+  it('brings a freshly opened editor into view', async () => {
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    try {
+      await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Comment on a.ts line 4' }))
+      expect(scrolled).toHaveBeenCalledWith({ block: 'nearest' })
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
+  })
+
+  it('returns focus to the "+" that opened the editor, on Comment and on Escape', async () => {
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+    const plus = screen.getByRole('button', { name: 'Comment on a.ts line 4' })
+
+    plus.focus()
+    fireEvent.click(plus)
+    fireEvent.keyDown(screen.getByPlaceholderText('Add a comment for the AI'), { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(plus))
+
+    fireEvent.click(plus)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'noted' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    await waitFor(() => expect(document.activeElement).toBe(plus))
+  })
+
+  it('returns focus to the comment after an edit is saved', async () => {
+    const comments: DiffLineComment[] = [{ id: 'c1', path: 'src/a.ts', side: 'new', line: 4, body: 'remove this' }]
+    await renderDiff(<Diff files={[MODIFIED]} comments={comments} onEditComment={vi.fn()} />)
+    const edit = screen.getByRole('button', { name: 'Edit' })
+    edit.focus()
+    fireEvent.click(edit)
+    fireEvent.keyDown(screen.getByDisplayValue('remove this'), { key: 'Escape' })
+    // The Edit button was replaced by the editor and rendered anew — focus lands on the card's.
+    await waitFor(() => expect(document.activeElement?.textContent).toContain('Edit'))
+  })
+
+  it('does not carry a half-written note to another line — only a shift-click stretch does', async () => {
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={vi.fn()} />)
+    fireEvent.click(plusOf(rows()[0]!))
+    fireEvent.change(screen.getByPlaceholderText('Add a comment for the AI'), { target: { value: 'about line 3' } })
+    fireEvent.click(plusOf(rows()[3]!)) // a plain open elsewhere
+    expect((screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('a fast release still ends the drag on the last row entered', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+    fireEvent.mouseDown(plusOf(rows()[0]!), { button: 0 })
+    // Entering the row and releasing in ONE batch — no render in between.
+    act(() => {
+      fireEvent.mouseEnter(rows()[3]!)
+      fireEvent.mouseUp(window)
+    })
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'all of it' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ line: 5, start: { side: 'new', line: 3 } }))
+  })
+
+  it('says so in the excerpt when a range crosses collapsed unchanged lines', async () => {
+    const twoHunks: DiffFileChange = {
+      path: 'src/c.ts',
+      status: 'modified',
+      adds: 2,
+      dels: 0,
+      patch: [
+        'diff --git a/src/c.ts b/src/c.ts',
+        '--- a/src/c.ts',
+        '+++ b/src/c.ts',
+        '@@ -1,1 +1,2 @@',
+        ' top',
+        '+added near the top',
+        '@@ -40,1 +41,2 @@',
+        ' bottom',
+        '+added near the bottom',
+        '',
+      ].join('\n'),
+    }
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[twoHunks]} onAddComment={onAddComment} />, 'src/c.ts')
+    const lines = rows()
+    fireEvent.mouseDown(plusOf(lines[0]!), { button: 0 })
+    fireEvent.mouseEnter(lines[3]!)
+    fireEvent.mouseUp(window)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'span' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment.mock.calls[0]?.[0].excerpt).toBe(
+      ['top', 'added near the top', '⋯ 38 unchanged lines not shown', 'bottom', 'added near the bottom'].join('\n'),
+    )
   })
 })

@@ -1,10 +1,11 @@
-import { useCallback, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 
-import { DRAFT_TEXT_MAX } from '@open-mercato/cezar-api-client'
+import { putRunDraft } from '@/api/client'
+import { queryKeys, useRunDrafts } from '@/api/queries'
+import { DRAFT_TEXT_MAX, type RunDraftsResponse } from '@open-mercato/cezar-api-client'
 import { COMMENT_MAX, describeLines, type DiffLineComment, type DiffLineEnd, type DiffNewLineComment } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
-
-import { useDraft } from './thread-draft'
 
 /**
  * Diff line comments — the self-review flow. On the Changes tab the user leaves notes on lines of
@@ -13,9 +14,8 @@ import { useDraft } from './thread-draft'
  *
  * Stored in the run's server-side draft store under the `diff-comments` surface, as JSON in the
  * entry's `text`, so they survive the route change between Changes and the thread (the whole
- * point), a reload, and another browser — on exactly the terms `useDraft` already gives every
- * other unsent input. The two hosts never mount at once (they are sibling routes), so each one
- * seeding from the shared cache on mount is enough to keep them in step.
+ * point), a reload, and another browser. See `useDiffComments` for why they are read from the
+ * query cache rather than through `useDraft`.
  */
 
 export const DIFF_COMMENTS_SURFACE = 'diff-comments'
@@ -172,10 +172,10 @@ function newId(): string {
 }
 
 export interface DiffComments {
-  /** The stored comments ARRIVED. Until then there is no list to add to: an edit would mark the
-   *  draft dirty, the seed would be skipped, and the first write would replace every stored comment
-   *  with the one just added. A FAILED read is not ready either, for the same reason — the server
-   *  may still hold a list this cockpit never saw. Hosts offer "add" only once ready. */
+  /** The stored comments ARRIVED. Until then there is no list to add to: the first write would
+   *  replace whatever the server holds with just the new comment. A FAILED read is not ready
+   *  either, for the same reason — the server may still hold a list this cockpit never saw.
+   *  Hosts offer "add" only once ready. */
   ready: boolean
   comments: DiffComment[]
   /** `false` when the comment could not be kept (the list would outgrow the draft cap). */
@@ -183,37 +183,113 @@ export interface DiffComments {
   update: (id: string, body: string) => boolean
   remove: (id: string) => void
   clear: () => void
-  /** Hand the comments to a send: they are dropped only once it resolves; a failed send keeps them. */
+  /** Hand the comments to a send. Once it lands, exactly the comments it carried are dropped —
+   *  one added, or edited, while it was in flight stays a draft. A failed send keeps them all. */
   submit: <T>(action: (comments: DiffComment[]) => Promise<T>) => Promise<T>
 }
 
+/**
+ * The comments live in ONE place per run: an in-memory list every host subscribes to, seeded once
+ * from the server's draft listing and changed only by the user's own actions. Unlike the text
+ * inputs (`useDraft`, which seeds local state once and then owns it), no host keeps a copy — the
+ * Changes tab, the Session composer and the review panel can each be the one that adds, sends or
+ * clears, and a tab switched to mid-send must see the send's outcome, not the list as it was when
+ * the tab mounted.
+ *
+ * Deliberately NOT read live from the query cache: a send invalidates the run's queries, and a
+ * refetch answered before the clearing write landed would put the sent comments straight back.
+ * Each write still mirrors into the cache, so a fresh load reads what was written. Keyed by the
+ * query client, so every client (and every test) has its own lists.
+ */
+interface CommentsStore {
+  lists: Map<string, DiffComment[]>
+  listeners: Map<string, Set<() => void>>
+  /** One write chain per run: two quick edits on two tabs still land in order. */
+  chains: Map<string, Promise<unknown>>
+}
+const stores = new WeakMap<object, CommentsStore>()
+function storeFor(client: object): CommentsStore {
+  let store = stores.get(client)
+  if (!store) {
+    store = { lists: new Map(), listeners: new Map(), chains: new Map() }
+    stores.set(client, store)
+  }
+  return store
+}
+
+const NO_COMMENTS: DiffComment[] = []
+
 export function useDiffComments(runId: string): DiffComments {
-  const draft = useDraft(runId, DIFF_COMMENTS_SURFACE)
-  const comments = useMemo(() => parseDiffComments(draft.text), [draft.text])
-  const { setText, clear } = draft
+  const queryClient = useQueryClient()
+  const store = storeFor(queryClient)
+  const drafts = useRunDrafts(runId === '' ? undefined : runId)
+  const storedText = drafts.data?.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
+  const serverComments = useMemo(
+    () => parseDiffComments(typeof storedText === 'string' ? storedText : ''),
+    [storedText],
+  )
+
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const set = store.listeners.get(runId) ?? new Set()
+      set.add(listener)
+      store.listeners.set(runId, set)
+      return () => set.delete(listener)
+    },
+    [runId, store],
+  )
+  const live = useSyncExternalStore(subscribe, () => store.lists.get(runId))
+
+  // Seed once, from the first listing that arrives. After that the list is the user's alone.
+  useEffect(() => {
+    if (drafts.isSuccess && !store.lists.has(runId)) {
+      store.lists.set(runId, serverComments)
+      store.listeners.get(runId)?.forEach((listener) => listener())
+    }
+  }, [drafts.isSuccess, runId, serverComments, store])
+
+  const comments = live ?? (drafts.isSuccess ? serverComments : NO_COMMENTS)
+
+  /** The list as it stands NOW — never a render's snapshot, which a send outlives. */
+  const current = useCallback(
+    (): DiffComment[] => store.lists.get(runId) ?? serverComments,
+    [runId, serverComments, store],
+  )
 
   /** Every write is size-checked HERE: the store refuses an over-cap entry, and a refused draft
    *  write is silent by design — so the comments would look kept and be gone after a reload. */
   const write = useCallback(
-    (next: readonly DiffComment[]): boolean => {
-      if (next.length === 0) {
-        clear()
-        return true
-      }
-      const text = JSON.stringify(next)
+    (next: DiffComment[]): boolean => {
+      const text = next.length === 0 ? '' : JSON.stringify(next)
       if (text.length > DRAFT_TEXT_MAX) {
         toast('Too many comments to keep as a draft — send the ones you have first.', { tone: 'danger' })
         return false
       }
-      setText(text)
+      store.lists.set(runId, next)
+      store.listeners.get(runId)?.forEach((listener) => listener())
+      // Mirrored into the cached listing, so a later mount (or a reload's first read) agrees.
+      queryClient.setQueryData<RunDraftsResponse>(queryKeys.runs.drafts(runId), (listing) => {
+        const surfaces = { ...(listing?.surfaces ?? {}) }
+        if (text === '') delete surfaces[DIFF_COMMENTS_SURFACE]
+        else surfaces[DIFF_COMMENTS_SURFACE] = { text, images: [], updatedAt: new Date().toISOString() }
+        return { surfaces }
+      })
+      // In order, and silent on failure, like every draft write — it must never be louder than
+      // the review it carries.
+      const chained = (store.chains.get(runId) ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => putRunDraft(runId, DIFF_COMMENTS_SURFACE, { text, images: [] }))
+        .catch(() => {})
+      store.chains.set(runId, chained)
       return true
     },
-    [clear, setText],
+    [queryClient, runId, store],
   )
+
   const add = useCallback(
     (comment: DiffNewLineComment) =>
       write([
-        ...comments,
+        ...current(),
         {
           ...comment,
           body: comment.body.slice(0, COMMENT_MAX),
@@ -221,25 +297,32 @@ export function useDiffComments(runId: string): DiffComments {
           id: newId(),
         },
       ]),
-    [comments, write],
+    [current, write],
   )
   const update = useCallback(
     (id: string, body: string) =>
-      write(comments.map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c))),
-    [comments, write],
+      write(current().map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c))),
+    [current, write],
   )
-  const remove = useCallback((id: string) => write(comments.filter((c) => c.id !== id)), [comments, write])
+  const remove = useCallback((id: string) => void write(current().filter((c) => c.id !== id)), [current, write])
+  const clear = useCallback(() => void write([]), [write])
 
   // Not cleared up front (unlike the composer's optimistic clear): a rejected send must leave
   // every comment exactly where it was, and the chips staying put during the send says so.
   const submit = useCallback(
     async <T>(action: (held: DiffComment[]) => Promise<T>): Promise<T> => {
-      const result = await action(comments)
-      if (comments.length > 0) clear()
+      const held = current()
+      const result = await action(held)
+      if (held.length > 0) {
+        // Drop what was SENT, as it was sent: a comment added meanwhile, or edited after it was
+        // captured, is not what the agent read — it stays a draft for the next message.
+        const sent = new Map(held.map((c) => [c.id, c.body]))
+        write(current().filter((c) => sent.get(c.id) !== c.body))
+      }
       return result
     },
-    [clear, comments],
+    [current, write],
   )
 
-  return { ready: draft.loaded, comments, add, update, remove, clear, submit }
+  return { ready: drafts.isSuccess, comments, add, update, remove, clear, submit }
 }
