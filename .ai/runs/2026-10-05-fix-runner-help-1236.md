@@ -38,4 +38,4 @@ This is a low-risk text-only change; interpolation must preserve existing wordin
 ### Phase 2: Validate and hand off
 
 - [x] 2.1 Run focused tests and the configured full validation gate. — focused tests/unit pass; full-gate baseline failures documented
-- [ ] 2.2 Review the diff, update PR evidence, and report the branch and PR to the parent.
+- [x] 2.2 Review the diff, update PR evidence, and report the branch and PR to the parent. — 10eb62c0
