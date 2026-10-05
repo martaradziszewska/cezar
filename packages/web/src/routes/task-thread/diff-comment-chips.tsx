@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Link } from '@/lib/project-router'
 
 import { linesLabel, sortDiffComments, type DiffComment } from './diff-comments'
+import { reviewTarget } from './review-comments-block'
 
 /**
  * The diff comments as draft items in the thread composer — one chip per comment, `file +line`,
@@ -62,7 +63,13 @@ export function DiffCommentChips({
                   </button>
                 ) : (
                   <Link
-                    to={`/tasks/${runId}/changes`}
+                    // Straight to THIS comment on the Changes tab, not the top of its file.
+                    to={reviewTarget(runId, {
+                      path: comment.path,
+                      side: comment.side,
+                      line: comment.line,
+                      commentId: comment.id,
+                    })}
                     className="min-w-0 truncate px-2 font-medium hover:underline"
                     aria-label={`Comment on ${comment.path} ${where}`}
                   >

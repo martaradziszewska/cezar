@@ -15,4 +15,5 @@ export type {
   DiffMode,
   DiffNewLineComment,
   DiffProps,
+  DiffRevealTarget,
 } from './types'

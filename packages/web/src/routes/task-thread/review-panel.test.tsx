@@ -431,7 +431,7 @@ describe('the review gate and diff comments', () => {
 
     await waitFor(() => expect(continued(sent)).toBeDefined())
     expect(continued(sent)!.text).toBe(
-      'Review feedback:\nalso add a test\n\nReview comments on the diff:\n\n- `src/server.ts` line 7:\n> const port = 3000\n  port must come from env',
+      'Review feedback:\nalso add a test\n\nReview comments on the diff:\n\n- `src/server.ts` line 7:\n\n  ```\n  const port = 3000\n  ```\n\n  port must come from env',
     )
     await waitFor(() => expect(commentsCleared(sent)).toBe(true))
     // One instance: the composer chip went with them.

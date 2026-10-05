@@ -86,7 +86,15 @@ export function sortDiffComments(comments: readonly DiffComment[]): DiffComment[
   )
 }
 
-/** What the agent receives: one review block, every comment anchored to file + line. */
+/** The line that opens the review block — what `parseReviewMessage` finds it by. */
+export const REVIEW_HEADING = 'Review comments on the diff:'
+
+/**
+ * What the agent receives: one review block, every comment anchored to file + line, its code in a
+ * fenced block and the note as its own paragraph. The fence is what keeps the two apart: the old
+ * `> quote` form let Markdown fold the note into the quote (a lazy continuation), so the agent and
+ * the transcript both read the user's words as more of the code.
+ */
 export function formatDiffComments(comments: readonly DiffComment[]): string {
   if (comments.length === 0) return ''
   const blocks = sortDiffComments(comments).map((comment) => {
@@ -95,10 +103,91 @@ export function formatDiffComments(comments: readonly DiffComment[]): string {
       comment.side === 'old' ?
         `\`${comment.oldPath ?? comment.path}\` line ${comment.line} (removed line${comment.oldPath ? `, renamed to \`${comment.path}\`` : ''})`
       : `\`${comment.path}\` line ${comment.line}`
-    const excerpt = comment.excerpt.trim() === '' ? '' : `\n${quote(comment.excerpt)}`
-    return `- ${comment.start ? rangeWhere(comment) : where}:${excerpt}\n${indent(comment.body)}`
+    const excerpt = comment.excerpt.trim() === '' ? '' : `\n\n${indent(fence(comment.excerpt))}`
+    return `- ${comment.start ? rangeWhere(comment) : where}:${excerpt}\n\n${indent(comment.body)}`
   })
-  return `Review comments on the diff:\n\n${blocks.join('\n\n')}`
+  return `${REVIEW_HEADING}\n\n${blocks.join('\n\n')}`
+}
+
+/** One comment of a review block, as read back out of a sent message. */
+export interface ReviewItem {
+  /** The file to open — the CURRENT path, also for a removed line of a renamed file. */
+  path: string
+  /** What the comment covers, as written: `line 12`, `lines 12–14`, `line 3 (removed line)`, … */
+  label: string
+  /** Where to jump: the first line it covers, and which side of the diff that number counts. */
+  line?: number
+  side: 'old' | 'new'
+  excerpt: string
+  body: string
+}
+
+const ITEM_HEADER = /^- `([^`]+)` (.+):$/
+
+/**
+ * Read a review block back out of a sent message, so the transcript can render it as comment
+ * cards (file link · code · note) instead of one run of Markdown. Reads the current format and the
+ * earlier `> quote` one, so already-sent reviews render too. Anything it does not recognise as a
+ * review answers `undefined`, and the message renders as the plain Markdown it always was.
+ */
+export function parseReviewMessage(text: string): { lead: string; items: ReviewItem[] } | undefined {
+  const at = text.indexOf(`${REVIEW_HEADING}\n\n`)
+  // At the start of a line: after the typed message (blank line), or straight under a Send back's
+  // `Review feedback:` line when no notes were typed.
+  if (at === -1 || (at > 0 && text[at - 1] !== '\n')) return undefined
+  const lead = text.slice(0, at).trim()
+  const lines = text.slice(at + REVIEW_HEADING.length + 2).split('\n')
+  const items: ReviewItem[] = []
+  let index = 0
+  while (index < lines.length) {
+    const header = ITEM_HEADER.exec(lines[index] ?? '')
+    if (!header) {
+      if ((lines[index] ?? '').trim() === '') {
+        index++
+        continue
+      }
+      return undefined // not one of ours — leave the message alone
+    }
+    index++
+    const content: string[] = []
+    while (index < lines.length && !ITEM_HEADER.test(lines[index] ?? '')) {
+      content.push((lines[index] ?? '').replace(/^ {2}/, ''))
+      index++
+    }
+    items.push(readItem(header[1]!, header[2]!, content))
+  }
+  return items.length > 0 ? { lead, items } : undefined
+}
+
+function readItem(headerPath: string, label: string, content: string[]): ReviewItem {
+  // A renamed file's removed line is headed by its OLD path; the diff lists the file by the new one.
+  const renamed = /renamed to `([^`]+)`/.exec(label)?.[1]
+  const first = /lines? (\d+)/.exec(label)
+  const side: 'old' | 'new' = /^removed |\(removed line/.test(label) ? 'old' : 'new'
+  let rest = content
+  while (rest[0]?.trim() === '') rest = rest.slice(1)
+  let excerpt = ''
+  const open = /^(`{3,})\s*$/.exec(rest[0] ?? '')
+  if (open) {
+    const close = rest.findIndex((line, i) => i > 0 && line.trim() === open[1])
+    excerpt = rest.slice(1, close === -1 ? undefined : close).join('\n')
+    rest = close === -1 ? [] : rest.slice(close + 1)
+  } else {
+    const quoted: string[] = []
+    while (rest[0]?.startsWith('> ')) {
+      quoted.push(rest[0].slice(2))
+      rest = rest.slice(1)
+    }
+    excerpt = quoted.join('\n')
+  }
+  return {
+    path: renamed ?? headerPath,
+    label,
+    ...(first ? { line: Number(first[1]) } : {}),
+    side,
+    excerpt,
+    body: rest.join('\n').trim(),
+  }
 }
 
 /**
@@ -138,13 +227,17 @@ function rangeWhere(comment: DiffComment): string {
   return `\`${comment.path}\` ${linesLabel(comment)}${renamed}`
 }
 
-/** Every excerpt line as a Markdown quote line — a range quotes all the code it covers. */
-function quote(excerpt: string): string {
-  return excerpt
+/** The excerpt as a fenced code block — a range quotes all the code it covers. The fence is
+ *  longer than any backtick run inside, so code that contains ``` cannot close it early. */
+function fence(excerpt: string): string {
+  const longest = Math.max(0, ...(excerpt.match(/`+/g) ?? []).map((run) => run.length))
+  const ticks = '`'.repeat(Math.max(3, longest + 1))
+  const code = excerpt
     .trim()
     .split('\n')
-    .map((line) => `> ${line.trimEnd()}`)
+    .map((line) => line.trimEnd())
     .join('\n')
+  return `${ticks}\n${code}\n${ticks}`
 }
 
 function indent(body: string): string {

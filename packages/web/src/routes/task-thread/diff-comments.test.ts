@@ -6,7 +6,9 @@ import {
   EXCERPT_MAX,
   formatDiffComments,
   parseDiffComments,
+  parseReviewMessage,
   RANGE_EXCERPT_MAX,
+  REVIEW_HEADING,
   slashCommandOf,
   withDiffComments,
   type DiffComment,
@@ -27,20 +29,30 @@ describe('diff comments', () => {
     expect(parseDiffComments('{"id":"a"}')).toEqual([])
   })
 
-  it('formats one review block, ordered by path then line, anchored to file and line', () => {
+  it('formats one review block, ordered by path then line, code fenced and the note its own paragraph', () => {
     expect(formatDiffComments([A, B])).toBe(
       [
         'Review comments on the diff:',
         '',
         '- `src/a.ts` line 3 (removed line):',
+        '',
         '  why remove?',
         '  it was used',
         '',
         '- `src/b.ts` line 12:',
-        '> const x = 1',
+        '',
+        '  ```',
+        '  const x = 1',
+        '  ```',
+        '',
         '  rename this',
       ].join('\n'),
     )
+  })
+
+  it('fences code that itself contains a fence with a longer one', () => {
+    const tricky: DiffComment = { ...A, excerpt: 'const s = ```nested```' }
+    expect(formatDiffComments([tricky])).toContain('  ````\n  const s = ```nested```\n  ````')
   })
 
   it('appends the review after the typed message, and leaves a message without comments alone', () => {
@@ -102,9 +114,13 @@ describe('diff comments', () => {
         'Review comments on the diff:',
         '',
         '- `src/a.ts` lines 12–14:',
-        '> const a = 1',
-        '> const b = 2',
-        '> const c = 3',
+        '',
+        '  ```',
+        '  const a = 1',
+        '  const b = 2',
+        '  const c = 3',
+        '  ```',
+        '',
         '  collapse these',
       ].join('\n'),
     )
@@ -131,5 +147,40 @@ describe('diff comments', () => {
   it('gives a range a longer excerpt cap than a single line', () => {
     expect(capExcerpt('x'.repeat(5000), RANGE_EXCERPT_MAX)).toHaveLength(RANGE_EXCERPT_MAX + 1)
     expect(RANGE_EXCERPT_MAX).toBeGreaterThan(EXCERPT_MAX)
+  })
+
+  it('reads a sent review back: lead text, then one item per comment with its code and note apart', () => {
+    const range: DiffComment = { ...A, id: 'r', line: 14, start: { side: 'new', line: 12 }, excerpt: 'a\nb', body: 'merge these' }
+    const sent = withDiffComments('please fix', [B, range])
+    expect(parseReviewMessage(sent)).toEqual({
+      lead: 'please fix',
+      items: [
+        { path: 'src/a.ts', label: 'line 3 (removed line)', line: 3, side: 'old', excerpt: '', body: 'why remove?\nit was used' },
+        { path: 'src/b.ts', label: 'lines 12–14', line: 12, side: 'new', excerpt: 'a\nb', body: 'merge these' },
+      ],
+    })
+  })
+
+  it('links a removed line of a renamed file to the file as the diff lists it now', () => {
+    const renamed: DiffComment = { ...B, path: 'src/new-name.ts', oldPath: 'src/old-name.ts' }
+    expect(parseReviewMessage(formatDiffComments([renamed]))?.items[0]).toMatchObject({
+      path: 'src/new-name.ts',
+      side: 'old',
+      line: 3,
+    })
+  })
+
+  it('still reads reviews sent in the earlier `> quote` form', () => {
+    const old = ['Review comments on the diff:', '', '- `src/b.ts` line 12:', '> const x = 1', '  rename this'].join('\n')
+    expect(parseReviewMessage(old)?.items).toEqual([
+      { path: 'src/b.ts', label: 'line 12', line: 12, side: 'new', excerpt: 'const x = 1', body: 'rename this' },
+    ])
+  })
+
+  it('reads a Send back with no notes, and leaves anything that is not a review alone', () => {
+    expect(parseReviewMessage(`Review feedback:\n${formatDiffComments([A])}`)?.lead).toBe('Review feedback:')
+    expect(parseReviewMessage('just a message')).toBeUndefined()
+    expect(parseReviewMessage('quoting Review comments on the diff:\n\nmid-sentence')).toBeUndefined()
+    expect(parseReviewMessage(`${REVIEW_HEADING}\n\nnot an item`)).toBeUndefined()
   })
 })

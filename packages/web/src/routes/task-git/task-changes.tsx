@@ -1,19 +1,20 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router'
+import { useParams, useSearchParams } from 'react-router'
 
 import { ApiError, createRunPr, getRunFile, openRunFileInApp, openRunInCli, pushRun, runFileRawUrl } from '@/api/client'
 import { queryKeys, useHealth, useRepo, useRun, useRunChanges } from '@/api/queries'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
-import { Diff, type DiffHandle, type DiffMode } from '@/components/diff'
+import { Diff, type DiffHandle, type DiffMode, type DiffRevealTarget } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 import { gitActionPolicy, type GitActionId } from '@/lib/git-actions'
 import { useIsDesktop } from '@/lib/use-desktop'
 
 import { useDiffComments } from '../task-thread/diff-comments'
 import { useContinueAction } from '../task-thread/follow-up-engine'
+import { revealFromSearch } from '../task-thread/review-comments-block'
 import { TaskComposer, TaskDock } from '../task-thread/task-composer'
 import { useDraft } from '../task-thread/thread-draft'
 import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
@@ -197,6 +198,33 @@ function ChangesView({ run }: { run: ApiRun }) {
     setSelected(path)
     diffRef.current?.scrollToPath(path)
   }
+  /** To one comment or line — the exact spot, not the top of its file — wherever the renderer can. */
+  const revealOrScroll = (target: DiffRevealTarget) => {
+    setSelected(target.path)
+    const handle = diffRef.current
+    if (handle?.reveal) handle.reveal(target)
+    else handle?.scrollToPath(target.path)
+  }
+
+  // Arrived from a link to a comment or a line (a chip on the Session tab, a review in the
+  // transcript): reveal it once the diff has rendered. The renderer is a lazy chunk, so its handle
+  // may appear a moment after the files do — keep checking briefly. Once per target.
+  const [searchParams] = useSearchParams()
+  const searchTarget = useMemo(() => revealFromSearch(searchParams), [searchParams])
+  const revealed = useRef<string | null>(null)
+  useEffect(() => {
+    if (!searchTarget || !diffShown) return
+    const key = searchParams.toString()
+    if (revealed.current === key) return
+    let tries = 0
+    const timer = setInterval(() => {
+      if (!diffRef.current && ++tries < 40) return
+      clearInterval(timer)
+      revealed.current = key
+      revealOrScroll(searchTarget)
+    }, 75)
+    return () => clearInterval(timer)
+  }, [diffShown, searchParams, searchTarget])
 
   return (
     <div data-route="task-changes" className="flex min-h-full flex-col">
@@ -302,7 +330,9 @@ function ChangesView({ run }: { run: ApiRun }) {
             diffComments={diffComments}
             continueAction={continueAction}
             onSendingChange={setSending}
-            onOpenComment={(comment) => selectFile(comment.path)}
+            onOpenComment={(comment) =>
+              revealOrScroll({ path: comment.path, side: comment.side, line: comment.line, commentId: comment.id })
+            }
             getMentionCandidates={() => files.map((file) => file.path)}
           />
         </TaskDock>

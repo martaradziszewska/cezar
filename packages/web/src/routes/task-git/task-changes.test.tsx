@@ -114,10 +114,10 @@ function stubFetch(overrides: Record<string, () => Response> = {}): SentRequest[
   return sent
 }
 
-function renderChangesRoute() {
+function renderChangesRoute(entry = '/tasks/r1/changes') {
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <MemoryRouter initialEntries={['/tasks/r1/changes']}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/tasks/:id/changes" element={<TaskChangesRoute />} />
         </Routes>
@@ -750,5 +750,40 @@ describe('the Changes tab composer dock', () => {
     } finally {
       Element.prototype.scrollIntoView = original
     }
+  })
+})
+
+// ---- jumping to the exact comment or line ----------------------------------------------------
+
+describe('the Changes tab reveals the exact spot', () => {
+  const PROVIDERS = () =>
+    jsonResponse({ providers: [{ provider: 'claude', status: 'connected', enabled: true }] })
+
+  const flashed = () => [...document.querySelectorAll<HTMLElement>('[data-flash="true"]')]
+
+  it('arriving from a link to a line, flashes that very line — not the top of its file', async () => {
+    stubFetch({ 'GET /api/v1/providers/status': PROVIDERS })
+    renderChangesRoute('/tasks/r1/changes?file=src%2Futil%2Fa.ts&side=new&line=3')
+
+    await waitFor(() => expect(flashed()).toHaveLength(1), { timeout: 3000 })
+    const row = flashed()[0]!
+    expect(row.closest<HTMLElement>('[data-slot="diff-file"]')?.dataset.path).toBe('src/util/a.ts')
+    expect(row.dataset.newLine).toBe('3')
+    expect(row.textContent).toContain('two')
+  })
+
+  it('a chip in the docked composer flashes its own comment, not the first one in the file', async () => {
+    const stored = [
+      { id: 'first', path: 'src/util/a.ts', side: 'new', line: 2, body: 'the first one', excerpt: 'one' },
+      { id: 'second', path: 'src/util/a.ts', side: 'new', line: 4, body: 'the second one', excerpt: 'three' },
+    ]
+    stubFetch({ 'GET /api/v1/providers/status': PROVIDERS, 'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(stored) })
+    renderChangesRoute()
+    await screen.findByText('the second one')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show comment on src/util/a.ts line 4' }))
+
+    await waitFor(() => expect(flashed()).toHaveLength(1))
+    expect(flashed()[0]!.dataset.commentId).toBe('second')
   })
 })

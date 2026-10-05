@@ -41,6 +41,22 @@ export interface DiffHandle {
   /** Scroll the file at `path` to the top of the scroll container. A no-op if it isn't in
    *  `files` — a tree selection can race a refetch that dropped the file. */
   scrollToPath: (path: string) => void
+  /**
+   * Bring one comment — or, failing that, one line — into view and flash it: the file is
+   * expanded, scrolled to (through the virtualizer when it is in play), and the target centred
+   * once it has rendered. A target that is not displayed (a line inside a collapsed context gap,
+   * a comment since removed) leaves the view at the top of its file. Absent on the fallback
+   * renderer, which has no line rows to find.
+   */
+  reveal?: (target: DiffRevealTarget) => void
+}
+
+/** What `DiffHandle.reveal` looks for: the comment card first, else the line it counts. */
+export interface DiffRevealTarget {
+  path: string
+  side: 'old' | 'new'
+  line?: number
+  commentId?: string
 }
 
 /**

@@ -46,7 +46,14 @@ import {
   type SplitRow,
   type UnifiedRow,
 } from './parse-patch'
-import type { DiffFileChange, DiffLineAnchor, DiffLineComment, DiffLineEnd, DiffProps } from './types'
+import type {
+  DiffFileChange,
+  DiffLineAnchor,
+  DiffLineComment,
+  DiffLineEnd,
+  DiffProps,
+  DiffRevealTarget,
+} from './types'
 import { overlaySegments } from './word-diff'
 
 /**
@@ -78,6 +85,31 @@ export function findFileElement(root: ParentNode | null, path: string): HTMLElem
     if (element.dataset.path === path) return element
   }
   return undefined
+}
+
+/** The comment card with this id, else the row that counts `line` on `side`, within `path`. */
+export function findRevealElement(root: ParentNode | null, target: DiffRevealTarget): HTMLElement | undefined {
+  const card = findFileElement(root, target.path)
+  if (!card) return undefined
+  if (target.commentId !== undefined) {
+    for (const element of card.querySelectorAll<HTMLElement>('[data-slot="diff-line-comment"]')) {
+      if (element.dataset.commentId === target.commentId) return element
+    }
+  }
+  if (target.line === undefined) return undefined
+  const wanted = String(target.line)
+  for (const row of card.querySelectorAll<HTMLElement>('[data-slot="diff-line"], [data-slot="diff-cell"]')) {
+    if ((target.side === 'old' ? row.dataset.oldLine : row.dataset.newLine) === wanted) return row
+  }
+  return undefined
+}
+
+/** A brief highlight on what a reveal landed on — the eye finds it in a screen of code. */
+function flash(element: HTMLElement) {
+  element.dataset.flash = 'true'
+  setTimeout(() => {
+    delete element.dataset.flash
+  }, 1600)
 }
 
 export function DiffView({
@@ -296,17 +328,45 @@ export function DiffView({
 
   useImperativeHandle(
     viewRef,
-    () => ({
-      scrollToPath: (path: string) => {
+    () => {
+      const scrollToPath = (path: string, behavior: ScrollBehavior = 'smooth') => {
         const index = files.findIndex((file) => file.path === path)
         if (index === -1) return
         const handle = virtualizerRef.current
         // Virtualized: the target may not be mounted, so the scroll goes through the index.
         // Flat: the element is always there, and scrollIntoView keeps the smooth behavior.
         if (handle) handle.scrollToIndex(index, { align: 'start' })
-        else findFileElement(rootRef.current, path)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-      },
-    }),
+        else findFileElement(rootRef.current, path)?.scrollIntoView?.({ block: 'start', behavior })
+      }
+      return {
+        scrollToPath: (path: string) => scrollToPath(path),
+        reveal: (target) => {
+          const file = files.find((candidate) => candidate.path === target.path)
+          if (!file) return
+          // A collapsed card has no rows to find.
+          setCollapsed((previous) => {
+            if (!previous.has(fileKey(file))) return previous
+            const next = new Set(previous)
+            next.delete(fileKey(file))
+            return next
+          })
+          scrollToPath(target.path, 'auto')
+          // The rows may not exist yet — a virtualized card mounts after the scroll, an expanded
+          // one after the next commit — so look for a few frames before settling for the file.
+          let frames = 0
+          const look = () => {
+            const element = findRevealElement(rootRef.current, target)
+            if (element) {
+              element.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+              flash(element)
+              return
+            }
+            if (++frames < 30) requestAnimationFrame(look)
+          }
+          requestAnimationFrame(look)
+        },
+      }
+    },
     [files],
   )
 
@@ -730,6 +790,8 @@ const LINE_BG: Record<HunkLine['kind'], string | undefined> = {
   context: undefined,
 }
 const MARKER: Record<HunkLine['kind'], string> = { add: '+', del: '−', context: ' ' }
+/** What a `reveal` flashes: an inset accent ring, gone after a moment (see `flash`). */
+const FLASH = 'transition-shadow duration-500 data-[flash=true]:ring-2 data-[flash=true]:ring-inset data-[flash=true]:ring-primary'
 
 function HunkHeaderRow({ hunk }: { hunk: Hunk }) {
   return (
@@ -819,12 +881,14 @@ function UnifiedRowView({
       <div
         data-slot="diff-line"
         data-line={line.kind}
+        data-old-line={line.oldLine}
+        data-new-line={line.newLine}
         data-mark={mark}
         {...tap}
         onMouseEnter={
           comments?.selection && order !== undefined ? () => comments.extendSelect(path, order) : undefined
         }
-        className={cn('group/line flex', LINE_BG[line.kind], markClass(mark))}
+        className={cn('group/line flex', LINE_BG[line.kind], markClass(mark), FLASH)}
       >
         <Gutter value={line.oldLine} />
         <Gutter value={line.newLine} />
@@ -893,6 +957,8 @@ function SplitCell({
     <div
       data-slot="diff-cell"
       data-line={line.kind}
+      data-old-line={line.oldLine}
+      data-new-line={line.newLine}
       data-mark={mark}
       {...tapToComment(comments, anchor, line.text)}
       onMouseEnter={
@@ -903,6 +969,7 @@ function SplitCell({
         LINE_BG[line.kind],
         side === 'new' && 'border-l border-border/40',
         markClass(mark),
+        FLASH,
       )}
     >
       <Gutter value={side === 'old' ? line.oldLine : line.newLine} />

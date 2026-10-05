@@ -33,6 +33,8 @@ describe('diff comment chips', () => {
     renderChips([{ ...base, line: 14, start: { side: 'new', line: 12 }, body: 'x'.repeat(4000) }])
     const link = screen.getByRole('link')
     expect(link.getAttribute('aria-label')).toBe('Comment on src/app/page.tsx lines 12–14')
+    // Straight to this comment on the Changes tab, not the top of its file.
+    expect(link.getAttribute('href')).toBe('/tasks/r1/changes?file=src%2Fapp%2Fpage.tsx&side=new&line=14&comment=a')
     expect(screen.getByRole('button', { name: 'Remove comment on page.tsx lines 12–14' })).not.toBeNull()
   })
 

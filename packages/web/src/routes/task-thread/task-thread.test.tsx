@@ -741,7 +741,7 @@ describe('ThreadView', () => {
       fireEvent.click(sendButton())
 
       await waitFor(() =>
-        expect(posted()?.text).toContain('`src/app/page.tsx` line 11:\n> import {\n  use the shared import'),
+        expect(posted()?.text).toContain('`src/app/page.tsx` line 11:\n\n  ```\n  import {\n  ```\n\n  use the shared import'),
       )
       expect(posted()?.text).toContain('`src/lib/util.ts` line 4 (removed line):')
       await waitFor(() => expect(screen.queryByText('page.tsx +11')).toBeNull())

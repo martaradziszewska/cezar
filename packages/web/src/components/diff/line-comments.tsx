@@ -311,7 +311,7 @@ function SavedComment({
       // around it; the lines it covers carry the accent bar in their gutter edge.
       role="group"
       aria-label={`Comment on ${describeLines(comment, comment.start)}`}
-      className="flex flex-col gap-1.5 rounded-md border border-primary/40 bg-card px-3 py-2.5 text-[13px] leading-normal shadow-sm"
+      className="flex flex-col gap-1.5 rounded-md border border-primary/40 bg-card px-3 py-2.5 text-[13px] leading-normal shadow-sm transition-shadow duration-500 data-[flash=true]:ring-2 data-[flash=true]:ring-primary"
     >
       <p className="break-words whitespace-pre-wrap text-foreground">{comment.body}</p>
       {onEdit || onRemove ? (
