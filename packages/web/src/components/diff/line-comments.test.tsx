@@ -242,7 +242,9 @@ describe('Diff line comments on a range of lines', () => {
 
     // The editor opens under the LAST line and names the span.
     expect(last!.nextElementSibling?.querySelector('[data-slot="diff-comment-editor"]')).not.toBeNull()
-    expect(screen.getByText('Commenting on lines 3–5')).not.toBeNull()
+    expect(screen.getByLabelText('Comment on lines 3–5')).not.toBeNull()
+    // No visible caption — the tinted rows already show the span.
+    expect(screen.queryByText(/Commenting on/)).toBeNull()
     const editor = screen.getByPlaceholderText('Add a comment for the AI')
     fireEvent.change(editor, { target: { value: 'this whole block' } })
     fireEvent.keyDown(editor, { key: 'Enter' })
@@ -295,7 +297,7 @@ describe('Diff line comments on a range of lines', () => {
     fireEvent.change(screen.getByPlaceholderText('Add a comment for the AI'), { target: { value: 'typed first' } })
     fireEvent.click(plusOf(rows()[3]!), { shiftKey: true })
 
-    expect(screen.getByText('Commenting on lines 3–5')).not.toBeNull()
+    expect(screen.getByLabelText('Comment on lines 3–5')).not.toBeNull()
     const editor = screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement
     expect(editor.value).toBe('typed first')
     fireEvent.keyDown(editor, { key: 'Enter' })

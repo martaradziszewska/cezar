@@ -13,15 +13,12 @@ import {
   useRun,
   useProjectRepoBase,
   useRuns,
-  useSkills,
 } from '@/api/queries'
 import { useRunHistory, type RunHistoryState } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
-import { Composer } from '@/components/composer/composer'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
-import { toast } from '@/components/ui/toaster'
 import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
 import { budgetStop } from '@/lib/attention'
 import { isUnread } from '@/lib/read-state'
@@ -30,10 +27,9 @@ import { cn, isHttpUrl } from '@/lib/utils'
 
 import { AutoResumeHint } from './auto-resume-hint'
 import { useDraft } from './thread-draft'
-import { DiffCommentChips } from './diff-comment-chips'
-import { commentsRideWith, slashCommandOf, useDiffComments, withDiffComments } from './diff-comments'
+import { useDiffComments } from './diff-comments'
+import { TaskComposer, TaskDock } from './task-composer'
 import { WorkingIndicator } from './thread-items'
-import { useDeliverPrompt } from './deliver-prompt'
 import { useContinueAction } from './follow-up-engine'
 import { AgentsDock } from './agents-dock'
 import { PlanDock, planCounts } from './plan-dock'
@@ -45,7 +41,6 @@ import { queuePosition } from './run-actions'
 import { RunHeader } from './run-header'
 import { AskCard } from './ask-card'
 import { useRunRecordReconcile } from './run-reconcile'
-import { useActiveProviderAvailability } from './active-provider'
 import { ThreadLoading } from './thread-loading'
 import { threadRenderMode } from './thread-scroll'
 import { JumpToLatestPill, useThreadScroll } from './thread-scroller'
@@ -249,33 +244,10 @@ export function ThreadView({
     () => (openAgentId === undefined ? [] : subagentChildren(currentThread.turns, openAgentId)),
     [currentThread.turns, openAgentId],
   )
-  // One delivery path for both modes, because the record that picks between them can be stale:
-  // a 409 refetches it and, when the truth names the other endpoint, delivers there instead
-  // (deliver-prompt.ts). Without that, a lost record update meant every send bounced until the
-  // page was reloaded.
-  const deliverPrompt = useDeliverPrompt(run, continueAction)
   // The reply composer's unsent content (#939) — server-side, per run, restored on return.
   const draft = useDraft(run.id, 'composer')
   // Line comments left on the Changes tab — draft items that ride the next message (self-review).
   const diffComments = useDiffComments(run.id)
-  const hasDiffComments = diffComments.comments.length > 0
-  // Only to tell a registry skill from a backend's own slash command (`commentsRideWith`) —
-  // fetched only while there are comments to protect.
-  const skillCatalog = useSkills(hasDiffComments)
-  // Read defensively: the body is whatever the wire carried, and a non-list must never take the
-  // thread down — it only means "catalog unknown", which keeps a slash message's comments.
-  const skillNames = useMemo(
-    () => (Array.isArray(skillCatalog.data) ? skillCatalog.data.map((skill) => skill.name) : undefined),
-    [skillCatalog.data],
-  )
-  const activeProvider = useActiveProviderAvailability(run)
-  // A queued send only amends the persisted prompt; it invokes no provider and therefore
-  // remains available even when provider discovery cannot authorize a live session. Once the
-  // session is open, mirror the server's active-backend gate as before.
-  const activeProviderBlocked = sessionOpen && !activeProvider.usable
-  const continuationProviderBlocked = hasContinuation && !continueAction.canContinue
-  const providerBlocked = activeProviderBlocked || continuationProviderBlocked
-  const providerReason = activeProviderBlocked ? activeProvider.reason : continueAction.reason
 
   // The queued-run affordances (#472), passed only while the run is queued — so the bubbles
   // go read-only on the next `run` SSE frame once it starts. The bubbles await these promises
@@ -454,129 +426,70 @@ export function ThreadView({
       {/* The dock region (mockup `.dock`): plan dock, paused hint, then the composer.
           `bottom: var(--kb)` is the iOS keyboard lift — 0 until the visualViewport watcher
           publishes an inset. */}
-      <div
-        data-slot="thread-dock"
-        className="sticky bottom-[var(--kb,0px)] z-10 bg-background px-3 pt-1 pb-2 max-md:border-t max-md:border-border md:px-6 md:pt-1.5 md:pb-4"
+      <TaskDock
+        // The jump pill floats over the thread, just above the dock, centered.
+        overlay={
+          scroll.pillVisible ? (
+            <div className="pointer-events-none absolute inset-x-0 -top-12 flex justify-center">
+              <JumpToLatestPill onJump={scroll.jumpToLatest} />
+            </div>
+          ) : null
+        }
       >
-        {/* The jump pill floats over the thread, just above the dock, centered. */}
-        {scroll.pillVisible ? (
-          <div className="pointer-events-none absolute inset-x-0 -top-12 flex justify-center">
-            <JumpToLatestPill onJump={scroll.jumpToLatest} />
+        {/* Agents above the plan: the fan-out is the more urgent "what is happening now",
+            and it is transient — the plan outlives it. Keyed by run id like the plan dock. */}
+        <AgentsDock key={`agents:${run.id}`} runId={run.id} agents={agents} onSelect={setOpenAgentId} />
+
+        {/* Below the agents: a skill is standing context for the whole run, not the volatile
+            "what is happening now" the fan-out reports (#1202). */}
+        <SkillsDock skills={skills} />
+
+        {plan !== undefined && plan.length > 0 ? (
+          // Keyed by run id: the collapse default re-derives per task (see PlanDock). Settled
+          // on the same rule as the Agents dock: a closed session never advances the plan.
+          <PlanDock key={run.id} runId={run.id} entries={plan} settled={runIsTerminal} />
+        ) : null}
+
+        {/* A usage-limit stop is the one `failed` state that is still going somewhere — the
+            dock says so before the composer offers a Continue nobody needs to press. */}
+        <AutoResumeHint run={run} />
+
+        {budget ? (
+          <div
+            data-slot="budget-hint"
+            className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
+          >
+            <StatusDot tone="pending" pulse />
+            Budget reached — spent ${budget.spent.toFixed(2)} of ${budget.ceiling.toFixed(2)}; send a message to continue.
+          </div>
+        ) : run.status === 'waiting' ? (
+          <div
+            data-slot="paused-hint"
+            className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
+          >
+            <StatusDot tone="pending" pulse />
+            The agent is paused, waiting for your reply
           </div>
         ) : null}
-        <div className="mx-auto flex w-full max-w-[var(--measure)] flex-col gap-1.5 md:gap-2.5">
-          {/* Agents above the plan: the fan-out is the more urgent "what is happening now",
-              and it is transient — the plan outlives it. Keyed by run id like the plan dock. */}
-          <AgentsDock key={`agents:${run.id}`} runId={run.id} agents={agents} onSelect={setOpenAgentId} />
 
-          {/* Below the agents: a skill is standing context for the whole run, not the volatile
-              "what is happening now" the fan-out reports (#1202). */}
-          <SkillsDock skills={skills} />
+        {queued ? (
+          <div
+            data-slot="queued-hint"
+            className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
+          >
+            <StatusDot tone="pending" />
+            Messages you add now are folded into the prompt before the run starts.
+          </div>
+        ) : null}
 
-          {plan !== undefined && plan.length > 0 ? (
-            // Keyed by run id: the collapse default re-derives per task (see PlanDock). Settled
-            // on the same rule as the Agents dock: a closed session never advances the plan.
-            <PlanDock key={run.id} runId={run.id} entries={plan} settled={runIsTerminal} />
-          ) : null}
-
-          {/* A usage-limit stop is the one `failed` state that is still going somewhere — the
-              dock says so before the composer offers a Continue nobody needs to press. */}
-          <AutoResumeHint run={run} />
-
-          {budget ? (
-            <div
-              data-slot="budget-hint"
-              className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
-            >
-              <StatusDot tone="pending" pulse />
-              Budget reached — spent ${budget.spent.toFixed(2)} of ${budget.ceiling.toFixed(2)}; send a message to continue.
-            </div>
-          ) : run.status === 'waiting' ? (
-            <div
-              data-slot="paused-hint"
-              className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
-            >
-              <StatusDot tone="pending" pulse />
-              The agent is paused, waiting for your reply
-            </div>
-          ) : null}
-
-          {queued ? (
-            <div
-              data-slot="queued-hint"
-              className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
-            >
-              <StatusDot tone="pending" />
-              Messages you add now are folded into the prompt before the run starts.
-            </div>
-          ) : null}
-
-          <Composer
-            // The draft store's first host (#939). The composer is controlled on BOTH seams here
-            // — text and attachments — so leaving the task mid-sentence and coming back restores
-            // the message exactly as it was left, screenshots included. `draft.submit` wraps the
-            // real send: the optimistic clear only becomes a cleared draft once the message has
-            // actually landed, and a rejection leaves the draft (and its blobs) intact.
-            value={draft.text}
-            onValueChange={draft.setText}
-            images={draft.images}
-            onImagesChange={draft.setImages}
-            // The send itself is `deliverPrompt`, not a branch on `continuable`: the record that
-            // would pick the endpoint can be stale, so the re-route on a 409 decides it from the
-            // truth instead. The two compose exactly as they read — the draft stays open until
-            // the message has actually landed, wherever it turned out to land.
-            // The diff comments are folded in at send time and dropped only once the message has
-            // landed, on the same terms as the draft that wraps them.
-            // A quick reply (Alt+A / Alt+C, fired from anywhere on the page) never carries them:
-            // the user did not see the review leave.
-            onSubmit={(text, images, meta) =>
-              draft.submit<unknown>(() => {
-                if (meta?.quickReply) return deliverPrompt(text, images)
-                if (hasDiffComments && !commentsRideWith(text, skillNames)) {
-                  toast(`Diff comments kept — /${slashCommandOf(text)} is a command, so they go with your next message.`)
-                  return deliverPrompt(text, images)
-                }
-                return diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images))
-              })
-            }
-            draftItems={
-              hasDiffComments ?
-                <DiffCommentChips runId={run.id} comments={diffComments.comments} onRemove={diffComments.remove} />
-              : undefined
-            }
-            disabled={providerBlocked || (!sessionOpen && !queued && !continuable)}
-            // Only reachable now by a closed run with NO session to resume — which is exactly
-            // the one case where Continue is not on offer either. Left honest rather than
-            // rewritten: "closed" is all such a run can be told.
-            disabledReason={providerBlocked ? providerReason : 'Session closed — no session to resume.'}
-            // The engine pills ride the enabled footer, so the picked runner/model and the
-            // typed prompt reach `POST /continue` in one request.
-            footerEnd={
-              providerBlocked && !continueAction.providerPending ? (
-                <Link
-                  to="/settings/agents#providers"
-                  className="text-xs font-medium text-foreground underline underline-offset-4"
-                >
-                  Configure providers
-                </Link>
-              ) : continuable ? continueAction.pills : undefined
-            }
-            // Continuing with nothing typed is the legacy one-click Continue.
-            // …and pending diff comments are a message on their own.
-            allowEmptySubmit={continuable || hasDiffComments}
-            sendAriaLabel={continuable ? 'Continue' : 'Send'}
-            placeholder={
-              queued ? 'Add to the prompt — sent when the run starts…'
-              : continuable ? 'Continue — add a prompt, or send to just reopen the session…'
-              : run.status === 'waiting' ? 'Reply — / for skills, @ for files…'
-              : 'Message the agent — / for skills, @ for files…'
-            }
-            autocompleteSkills
-            quickReplies
-            getMentionCandidates={() => threadFilePaths(thread)}
-          />
-        </div>
-      </div>
+        <TaskComposer
+          run={run}
+          draft={draft}
+          diffComments={diffComments}
+          continueAction={continueAction}
+          getMentionCandidates={() => threadFilePaths(thread)}
+        />
+      </TaskDock>
     </div>
   )
 }

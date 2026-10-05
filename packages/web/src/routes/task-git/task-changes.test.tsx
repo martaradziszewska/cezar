@@ -186,8 +186,11 @@ describe('the Changes tab route', () => {
 
     await waitFor(() => expect(document.querySelector('[data-slot="changes-tree-pane"]')).not.toBeNull())
     const pane = document.querySelector('[data-slot="changes-tree-pane"]') as HTMLElement
-    // Bounded by the room left under the sticky chrome — an unbounded pane cannot scroll at all.
-    expect(pane.className).toContain('max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)]')
+    // Bounded by the room left under the sticky chrome and above the floating composer dock (0
+    // while no dock shows) — an unbounded pane cannot scroll at all, and one that ignored the dock
+    // would park its last files underneath it.
+    expect(pane.className).toContain('max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_var(--changes-dock,0px)_-_1rem)]')
+    expect(pane.parentElement?.style.getPropertyValue('--changes-dock')).toBe('0px')
     expect(pane.className).toContain('overflow-y-auto')
     // …and a wheel that bottoms out inside the tree must not chain into the diff.
     expect(pane.className).toContain('overscroll-contain')
@@ -593,5 +596,74 @@ describe('the Changes tab line comments', () => {
     fireEvent.click(document.querySelector('[data-slot="tree-dir"]')!)
     expect(countOf('[data-slot="tree-dir"]')).toBeNull()
     expect(document.querySelector('[data-slot="tree-file"][data-path="notes.md"] [data-slot="comment-count"]')?.getAttribute('aria-label')).toBe('1 comment')
+  })
+
+})
+
+// ---- the floating composer (self-review from the Changes tab) --------------------------------
+
+describe('the Changes tab composer dock', () => {
+  const PROVIDERS = () =>
+    jsonResponse({ providers: [{ provider: 'claude', status: 'connected', enabled: true }] })
+  const STORED = [{ id: 'c1', path: 'notes.md', side: 'new', line: 1, body: 'tighten this', excerpt: 'one' }]
+
+  it('floats no composer while nothing is drafted', async () => {
+    stubFetch({ 'GET /api/v1/providers/status': PROVIDERS })
+    renderChangesRoute()
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
+    expect(document.querySelector('[data-slot="thread-dock"]')).toBeNull()
+  })
+
+  /** The whole loop without leaving the diff: the chips sit in the docked composer, a message can
+   *  be written beside them, and one send carries both — then the comments are gone. */
+  it('docks the session composer with the drafted comments, and sends them from here', async () => {
+    const sent = stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+    })
+    renderChangesRoute()
+
+    const chip = await screen.findByText('notes.md +1')
+    const dock = chip.closest('[data-slot="thread-dock"]')!
+    expect(dock).not.toBeNull()
+    // The same composer the Session tab docks: same grammar, same placeholder family.
+    const composer = dock.querySelector<HTMLTextAreaElement>('textarea')!
+    fireEvent.change(composer, { target: { value: 'and run the tests' } })
+    // RUN is at `review` with a resumable session — the send is a Continue.
+    const send = dock.querySelector<HTMLButtonElement>('button[aria-label="Continue"]')!
+    await waitFor(() => expect(send.disabled).toBe(false))
+    fireEvent.click(send)
+
+    await waitFor(() =>
+      expect(sent.find((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/continue')?.body).toMatchObject({
+        text: expect.stringMatching(/^and run the tests\n\nReview comments on the diff:\n\n- `notes.md` line 1:/),
+      }),
+    )
+    await waitFor(() =>
+      expect(
+        sent.some(
+          (r) =>
+            r.method === 'PUT' &&
+            r.path === '/api/v1/runs/r1/drafts/diff-comments' &&
+            (r.body as { text?: string }).text === '',
+        ),
+      ).toBe(true),
+    )
+  })
+
+  it('keeps the dock while a typed message is unsent, even after the last comment goes', async () => {
+    stubFetch({
+      'GET /api/v1/providers/status': PROVIDERS,
+      'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+    })
+    renderChangesRoute()
+
+    await screen.findByText('notes.md +1')
+    const composer = document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')!
+    fireEvent.change(composer, { target: { value: 'half-written' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove comment on notes.md line 1' }))
+
+    expect(screen.queryByText('notes.md +1')).toBeNull()
+    expect(document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')?.value).toBe('half-written')
   })
 })

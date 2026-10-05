@@ -364,9 +364,8 @@ function CommentEditor({
 
   return (
     <div data-slot="diff-comment-editor" className="flex flex-col gap-2">
-      {editing.start ? (
-        <p className="text-[11px] font-semibold text-primary">Commenting on {describeLines(editing.anchor, editing.start)}</p>
-      ) : null}
+      {/* No visible "Commenting on lines…" caption: the covered rows are tinted right above, and
+          the textarea's accessible name still says it. */}
       <textarea
         ref={ref}
         rows={3}

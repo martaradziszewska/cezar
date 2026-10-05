@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileDiffIcon, GitCommitHorizontalIcon, MessageSquareIcon } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 
 import { ApiError, createRunPr, getRunFile, openRunFileInApp, openRunInCli, pushRun, runFileRawUrl } from '@/api/client'
@@ -10,10 +10,12 @@ import { CenteredState } from '@/components/centered-state'
 import { Diff, type DiffHandle, type DiffMode } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 import { gitActionPolicy, type GitActionId } from '@/lib/git-actions'
-import { Link } from '@/lib/project-router'
 import { useIsDesktop } from '@/lib/use-desktop'
 
 import { useDiffComments } from '../task-thread/diff-comments'
+import { useContinueAction } from '../task-thread/follow-up-engine'
+import { TaskComposer, TaskDock } from '../task-thread/task-composer'
+import { useDraft } from '../task-thread/thread-draft'
 import { isRunActive, lastSessionId } from '../task-thread/run-actions'
 import { RunHeader } from '../task-thread/run-header'
 import { ChangesTree } from './changes-tree'
@@ -56,9 +58,30 @@ function ChangesView({ run }: { run: ApiRun }) {
   const [selected, setSelected] = useState<string | null>(null)
   const [commitOpen, setCommitOpen] = useState(false)
   const diffRef = useRef<DiffHandle | null>(null)
-  // Line comments for the agent (self-review): drafted here, sent from the thread composer.
+  // Line comments for the agent (self-review): drafted here, and sent from the SAME composer the
+  // Session tab docks — floated here while there is something to send, so the review can be given
+  // a message (or a skill) without leaving the diff. This route is the one host of both drafts.
   const diffComments = useDiffComments(run.id)
   const commentCount = diffComments.comments.length
+  const composerDraft = useDraft(run.id, 'composer')
+  const continueAction = useContinueAction(run)
+  // Shown once there are comments, and kept while a typed message is unsent — so deleting the last
+  // comment never whisks away a half-written reply.
+  const showDock = commentCount > 0 || composerDraft.hasDraft
+  // The dock floats over the bottom of the view; the sticky file tree's own scroller is capped to
+  // leave room for it, or its last files would sit under the dock with no way to reach them.
+  const [dockHeight, setDockHeight] = useState(0)
+  const dockRef = useCallback((element: HTMLDivElement | null) => {
+    if (!element) {
+      setDockHeight(0)
+      return
+    }
+    setDockHeight(element.offsetHeight)
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setDockHeight(element.offsetHeight))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
   const commentCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const comment of diffComments.comments) counts.set(comment.path, (counts.get(comment.path) ?? 0) + 1)
@@ -179,22 +202,6 @@ function ChangesView({ run }: { run: ApiRun }) {
         </p>
       ) : null}
 
-      {commentCount > 0 ? (
-        <p
-          data-slot="diff-comments-note"
-          className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground md:px-6"
-        >
-          <MessageSquareIcon aria-hidden="true" className="size-3.5 shrink-0" />
-          {commentCount} {commentCount === 1 ? 'comment' : 'comments'} drafted — they are sent with your next message.
-          <Link
-            to={`/tasks/${run.id}`}
-            className="font-medium text-foreground underline-offset-2 hover:underline"
-          >
-            Go to chat
-          </Link>
-        </p>
-      ) : null}
-
       {changes.isPending ? (
         <p data-slot="changes-loading" className="px-4 py-6 text-center text-xs text-soft-foreground md:px-6">
           Loading changes…
@@ -216,7 +223,10 @@ function ChangesView({ run }: { run: ApiRun }) {
           subtitle="The worktree matches its base branch. Changes appear here as the agent works."
         />
       ) : (
-        <div className="flex min-h-0 flex-1 items-start gap-5 px-4 py-4 [--diff-sticky-top:10rem] md:px-6">
+        <div
+          className="flex min-h-0 flex-1 items-start gap-5 px-4 py-4 [--diff-sticky-top:10rem] md:px-6"
+          style={{ '--changes-dock': `${showDock ? dockHeight : 0}px` } as React.CSSProperties}
+        >
           {/* The tree column: sticky under the header so long diffs scroll beside it, and its OWN
               scroller. Sticky alone is not enough — a tree taller than the viewport grows the page
               instead, so the only way to reach its last file was to drag the shared `main` scroller
@@ -225,7 +235,7 @@ function ChangesView({ run }: { run: ApiRun }) {
               inside it from chaining into the diff once it bottoms out. */}
           <aside
             data-slot="changes-tree-pane"
-            className="sticky top-40 hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)] w-60 shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72"
+            className="sticky top-40 hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_var(--changes-dock,0px)_-_1rem)] w-60 shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72"
           >
             <ChangesTree root={tree} selected={selected} onSelect={selectFile} commentCounts={commentCounts} />
           </aside>
@@ -252,6 +262,19 @@ function ChangesView({ run }: { run: ApiRun }) {
           />
         </div>
       )}
+
+      {showDock ? (
+        // `mt-auto` so a short view still parks it at the bottom, exactly where the Session tab's is.
+        <TaskDock ref={dockRef} className="mt-auto">
+          <TaskComposer
+            run={run}
+            draft={composerDraft}
+            diffComments={diffComments}
+            continueAction={continueAction}
+            getMentionCandidates={() => files.map((file) => file.path)}
+          />
+        </TaskDock>
+      ) : null}
 
       <CommitDialog run={run} open={commitOpen} onOpenChange={setCommitOpen} />
     </div>
