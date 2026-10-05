@@ -32,8 +32,8 @@ This is a low-risk text-only change; interpolation must preserve existing wordin
 
 ### Phase 1: Fix and test runner guidance
 
-- [ ] 1.1 Derive all four runner lists from `RUNNER_IDS`.
-- [ ] 1.2 Add regression coverage with word-boundary assertions, including the short `pi` id.
+- [x] 1.1 Derive all four runner lists from `RUNNER_IDS`. — 318825f0
+- [x] 1.2 Add regression coverage with word-boundary assertions, including the short `pi` id. — 318825f0
 
 ### Phase 2: Validate and hand off
 
