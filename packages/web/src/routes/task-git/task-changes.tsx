@@ -91,16 +91,6 @@ function ChangesView({ run }: { run: ApiRun }) {
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
-  // The scroller keeps whatever it scrolls into view (a just-opened comment editor) clear of the
-  // floating dock, which covers the bottom of the viewport.
-  useEffect(() => {
-    const scroller = document.querySelector<HTMLElement>('[data-slot="main"]')
-    if (!scroller || !showDock) return
-    scroller.style.scrollPaddingBottom = `${dockHeight}px`
-    return () => {
-      scroller.style.scrollPaddingBottom = ''
-    }
-  }, [dockHeight, showDock])
   const commentCounts = useMemo(() => {
     const counts = new Map<string, number>()
     for (const comment of diffComments.comments) counts.set(comment.path, (counts.get(comment.path) ?? 0) + 1)
@@ -310,7 +300,10 @@ function ChangesView({ run }: { run: ApiRun }) {
             onAddComment={diffComments.ready ? diffComments.add : undefined}
             onEditComment={diffComments.update}
             onRemoveComment={diffComments.remove}
-            className="min-w-0 flex-1"
+            // Reserve the dock's covered area on diff targets only. Scroll padding on `main`
+            // also affects the dock textarea: Chromium scrolls the page on every keystroke
+            // trying to bring its caret above the very dock it lives in.
+            className="min-w-0 flex-1 [&_[data-slot=diff-comment-editor]]:scroll-mb-[var(--changes-dock,0px)] [&_[data-slot=diff-line-comment]]:scroll-mb-[var(--changes-dock,0px)] [&_[data-slot=diff-line]]:scroll-mb-[var(--changes-dock,0px)]"
           />
         </div>
       )}

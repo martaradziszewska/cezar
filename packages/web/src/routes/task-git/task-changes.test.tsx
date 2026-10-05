@@ -618,6 +618,45 @@ describe('the Changes tab composer dock', () => {
     expect(sent.some((r) => r.path.startsWith('/api/v1/models'))).toBe(false)
   })
 
+  it('reserves dock clearance on diff targets without applying it to the composer caret', async () => {
+    // jsdom cannot reproduce Chromium's caret scrolling. Pin the layout contract here;
+    // the browser regression is typing at a nonzero main.scrollTop with the dock visible.
+    const main = document.createElement('main')
+    main.dataset.slot = 'main'
+    document.body.append(main)
+    let resize: (() => void) | undefined
+    let height = 150
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resize = callback }
+      observe(element: HTMLElement) {
+        Object.defineProperty(element, 'offsetHeight', { get: () => height })
+      }
+      disconnect() {}
+    })
+    try {
+      stubFetch({
+        'GET /api/v1/providers/status': PROVIDERS,
+        'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(STORED),
+      })
+      renderChangesRoute()
+      await screen.findByText('notes.md +1')
+      act(() => resize?.())
+      const pane = document.querySelector<HTMLElement>('[data-slot="changes-tree-pane"]')!
+      expect(pane.parentElement?.style.getPropertyValue('--changes-dock')).toBe('150px')
+      expect(main.style.scrollPaddingBottom).toBe('')
+      const diff = document.querySelector<HTMLElement>('[data-slot="diff"]')!
+      expect(diff.className).toContain('[&_[data-slot=diff-comment-editor]]:scroll-mb-[var(--changes-dock,0px)]')
+      const composer = document.querySelector<HTMLTextAreaElement>('[data-slot="thread-dock"] textarea')!
+      fireEvent.change(composer, { target: { value: 'first line\nsecond line' } })
+      height = 220
+      act(() => resize?.())
+      expect(pane.parentElement?.style.getPropertyValue('--changes-dock')).toBe('220px')
+      expect(main.style.scrollPaddingBottom).toBe('')
+    } finally {
+      main.remove()
+    }
+  })
+
   it('loads the continue engine once the dock shows', async () => {
     const sent = stubFetch({
       'GET /api/v1/providers/status': PROVIDERS,

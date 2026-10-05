@@ -388,9 +388,9 @@ function CommentEditor({
     api.focusRequest.current = null
     el.focus({ preventScroll: true })
     el.setSelectionRange(el.value.length, el.value.length)
-    // Brought into view on an explicit open only — the scroller's `scroll-padding-bottom` (the
-    // Changes tab sets it to the floating dock's height) keeps it clear of the composer. `?.`:
-    // not every DOM implementation has it.
+    // Brought into view on an explicit open only — the Changes tab gives this editor
+    // scroll margin for its floating dock, keeping the editor clear of the composer.
+    // `?.`: not every DOM implementation has it.
     el.closest<HTMLElement>('[data-slot="diff-comment-editor"]')?.scrollIntoView?.({ block: 'nearest' })
   }, [])
 
