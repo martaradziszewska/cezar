@@ -246,7 +246,7 @@ function CommentEditor({
         rows={3}
         maxLength={COMMENT_MAX}
         value={text}
-        aria-label={`Comment on line ${editing.anchor.line}`}
+        aria-label={`Comment on ${editing.anchor.side === 'old' ? 'removed ' : ''}line ${editing.anchor.line}`}
         placeholder="Add a comment for the AI"
         onChange={(event) => {
           setText(event.target.value)

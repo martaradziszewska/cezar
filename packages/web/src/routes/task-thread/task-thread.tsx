@@ -13,6 +13,7 @@ import {
   useRun,
   useProjectRepoBase,
   useRuns,
+  useSkills,
 } from '@/api/queries'
 import { useRunHistory, type RunHistoryState } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
@@ -20,6 +21,7 @@ import { CenteredState } from '@/components/centered-state'
 import { Composer } from '@/components/composer/composer'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { toast } from '@/components/ui/toaster'
 import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
 import { budgetStop } from '@/lib/attention'
 import { isUnread } from '@/lib/read-state'
@@ -29,7 +31,7 @@ import { cn, isHttpUrl } from '@/lib/utils'
 import { AutoResumeHint } from './auto-resume-hint'
 import { useDraft } from './thread-draft'
 import { DiffCommentChips } from './diff-comment-chips'
-import { useDiffComments, withDiffComments } from './diff-comments'
+import { commentsRideWith, slashCommandOf, useDiffComments, withDiffComments } from './diff-comments'
 import { WorkingIndicator } from './thread-items'
 import { useDeliverPrompt } from './deliver-prompt'
 import { useContinueAction } from './follow-up-engine'
@@ -257,6 +259,15 @@ export function ThreadView({
   // Line comments left on the Changes tab — draft items that ride the next message (self-review).
   const diffComments = useDiffComments(run.id)
   const hasDiffComments = diffComments.comments.length > 0
+  // Only to tell a registry skill from a backend's own slash command (`commentsRideWith`) —
+  // fetched only while there are comments to protect.
+  const skillCatalog = useSkills(hasDiffComments)
+  // Read defensively: the body is whatever the wire carried, and a non-list must never take the
+  // thread down — it only means "catalog unknown", which keeps a slash message's comments.
+  const skillNames = useMemo(
+    () => (Array.isArray(skillCatalog.data) ? skillCatalog.data.map((skill) => skill.name) : undefined),
+    [skillCatalog.data],
+  )
   const activeProvider = useActiveProviderAvailability(run)
   // A queued send only amends the persisted prompt; it invokes no provider and therefore
   // remains available even when provider discovery cannot authorize a live session. Once the
@@ -422,7 +433,9 @@ export function ThreadView({
 
         {/* The review gate (spec 009): a finished run with changes parks here — nothing
             auto-merges. The panel exists exactly while the run rests at `review`. */}
-        {run.status === 'review' ? <ReviewPanel run={run} /> : null}
+        {/* The thread's ONE comments instance: the panel and the composer are on screen together,
+            and two `useDraft` hosts of one surface would each keep their own copy. */}
+        {run.status === 'review' ? <ReviewPanel run={run} diffComments={diffComments} /> : null}
       </div>
 
       <AcceptCelebration status={run.status} />
@@ -517,11 +530,14 @@ export function ThreadView({
             // A quick reply (Alt+A / Alt+C, fired from anywhere on the page) never carries them:
             // the user did not see the review leave.
             onSubmit={(text, images, meta) =>
-              draft.submit<unknown>(() =>
-                meta?.quickReply ?
-                  deliverPrompt(text, images)
-                : diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images)),
-              )
+              draft.submit<unknown>(() => {
+                if (meta?.quickReply) return deliverPrompt(text, images)
+                if (hasDiffComments && !commentsRideWith(text, skillNames)) {
+                  toast(`Diff comments kept — /${slashCommandOf(text)} is a command, so they go with your next message.`)
+                  return deliverPrompt(text, images)
+                }
+                return diffComments.submit((held) => deliverPrompt(withDiffComments(text, held), images))
+              })
             }
             draftItems={
               hasDiffComments ?

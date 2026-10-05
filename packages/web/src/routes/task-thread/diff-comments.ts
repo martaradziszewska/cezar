@@ -96,6 +96,24 @@ export function withDiffComments(text: string, comments: readonly DiffComment[])
   return text.trim() === '' ? review : `${text}\n\n${review}`
 }
 
+/** The command a message opens with (`/compact args` → `compact`), or undefined. The same token
+ *  rule the server's registry expansion uses (`expandRegistrySlashSkillText`). */
+export function slashCommandOf(text: string): string | undefined {
+  return /^\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/.exec(text.trimStart())?.[1]
+}
+
+/**
+ * May the comments ride this message? Not when it opens with a slash command cezar does not know
+ * as a registry skill: that is a BACKEND command (`/compact`, `/clear`, …), and anything appended
+ * becomes its arguments — the send succeeds, the comments are cleared, and the agent never saw a
+ * review. A registry skill is fine: the server expands it and the review stays the request. While
+ * the skill list is unknown, a slash message keeps its comments — losing them is the worse error.
+ */
+export function commentsRideWith(text: string, skillNames: readonly string[] | undefined): boolean {
+  const command = slashCommandOf(text)
+  return command === undefined || (skillNames?.includes(command) ?? false)
+}
+
 function indent(body: string): string {
   return body
     .split('\n')

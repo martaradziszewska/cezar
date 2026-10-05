@@ -457,6 +457,14 @@ describe('GitToolbar renders policy fixtures verbatim', () => {
 
 // ---- line comments (self-review) ------------------------------------------------------------
 
+/** A drafts listing holding `stored` as the run's diff comments. */
+const diffCommentsDraft = (stored: unknown[]) =>
+  jsonResponse({
+    surfaces: {
+      'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
+    },
+  })
+
 describe('the Changes tab line comments', () => {
   /**
    * The draft hook seeds only a PRISTINE input, so a comment added before the stored list arrived
@@ -469,11 +477,7 @@ describe('the Changes tab line comments', () => {
     const sent = stubFetch({
       'GET /api/v1/runs/r1/drafts': (() =>
         draftsLoaded.then(() =>
-          jsonResponse({
-            surfaces: {
-              'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
-            },
-          }),
+          diffCommentsDraft(stored),
         )) as unknown as () => Response,
     })
     renderChangesRoute()
@@ -500,11 +504,7 @@ describe('the Changes tab line comments', () => {
     const stored = [{ id: 'c1', path: 'notes.md', side: 'new', line: 1, body: 'remove this', excerpt: 'one' }]
     const sent = stubFetch({
       'GET /api/v1/runs/r1/drafts': () =>
-        jsonResponse({
-          surfaces: {
-            'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
-          },
-        }),
+        diffCommentsDraft(stored),
     })
     renderChangesRoute()
 
@@ -531,9 +531,10 @@ describe('the Changes tab line comments', () => {
     expect(document.querySelector('[data-slot="diff-add-comment"]')).toBeNull()
   })
 
-  it('refuses a comment that would push the stored list past the draft cap — loudly, editor kept', async () => {
-    // ~30 × 3.5 kB ≈ 105 kB once one more is added: past DRAFT_TEXT_MAX (100 000).
-    const stored = Array.from({ length: 28 }, (_, i) => ({
+  it('accepts comments while the stored list fits, and refuses the one that crosses the cap — loudly, editor kept', async () => {
+    // 27 × 3.5 kB serializes to 96 624 characters: UNDER DRAFT_TEXT_MAX (100 000), so the list
+    // itself is a state the server really holds — it is the next big comment that crosses it.
+    const stored = Array.from({ length: 27 }, (_, i) => ({
       id: `c${i}`,
       path: 'notes.md',
       side: 'new',
@@ -541,28 +542,34 @@ describe('the Changes tab line comments', () => {
       body: 'x'.repeat(3500),
       excerpt: 'two',
     }))
-    const sent = stubFetch({
-      'GET /api/v1/runs/r1/drafts': () =>
-        jsonResponse({
-          surfaces: {
-            'diff-comments': { text: JSON.stringify(stored), images: [], updatedAt: '2026-10-02T00:00:00.000Z' },
-          },
-        }),
-    })
+    expect(JSON.stringify(stored).length).toBeLessThan(100_000)
+    const sent = stubFetch({ 'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(stored) })
     renderChangesRoute()
+    const puts = () => sent.filter((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments')
+    const commentOnLine1 = (text: string) => {
+      const notes = [...document.querySelectorAll<HTMLElement>('[data-slot="diff-file"]')].find(
+        (card) => card.dataset.path === 'notes.md',
+      )!
+      fireEvent.click(notes.querySelector('[aria-label="Comment on line 1"]')!)
+      const editor = screen.getByPlaceholderText('Add a comment for the AI')
+      fireEvent.change(editor, { target: { value: text } })
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    }
 
-    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(28))
-    const notes = [...document.querySelectorAll<HTMLElement>('[data-slot="diff-file"]')].find(
-      (card) => card.dataset.path === 'notes.md',
-    )!
-    fireEvent.click(notes.querySelector('[aria-label="Comment on line 1"]')!)
-    const editor = screen.getByPlaceholderText('Add a comment for the AI')
-    fireEvent.change(editor, { target: { value: 'y'.repeat(3500) } })
-    fireEvent.keyDown(editor, { key: 'Enter' })
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(27))
 
+    // A small one still fits: kept, written, editor closed.
+    commentOnLine1('short note')
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(28)
+    expect(screen.queryByPlaceholderText('Add a comment for the AI')).toBeNull()
+
+    // A big one would cross the cap: refused out loud, the editor keeps the text, nothing written.
+    commentOnLine1('y'.repeat(3500))
     await screen.findByText(/Too many comments to keep as a draft/)
-    expect(screen.getByPlaceholderText('Add a comment for the AI')).not.toBeNull()
+    expect((screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement).value).toHaveLength(3500)
     await new Promise((resolve) => setTimeout(resolve, 600)) // past the draft debounce
-    expect(sent.some((r) => r.method === 'PUT' && r.path === '/api/v1/runs/r1/drafts/diff-comments')).toBe(false)
+    expect(puts()).toHaveLength(1)
+    expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(28)
   })
 })

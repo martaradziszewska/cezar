@@ -24,11 +24,14 @@ export function DiffCommentChips({
       {sortDiffComments(comments).map((comment) => {
         const name = comment.path.split('/').at(-1) ?? comment.path
         const label = `${name} ${comment.side === 'old' ? '−' : '+'}${comment.line}`
+        // Spoken: the side in words (`−4` and `+4` must not sound alike) and never the body —
+        // a 4000-character note read out on every chip. The body is the tooltip.
+        const where = `${comment.side === 'old' ? 'removed ' : ''}line ${comment.line}`
         return (
           <span
             key={comment.id}
             data-slot="diff-comment-chip"
-            title={`${comment.path}:${comment.line}\n\n${comment.body}`}
+            title={`${comment.path} ${where}\n\n${comment.body}`}
             className="flex h-8 max-w-[260px] items-center overflow-hidden rounded-md border border-border bg-muted/40 text-xs text-foreground"
           >
             <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
@@ -37,13 +40,13 @@ export function DiffCommentChips({
             <Link
               to={`/tasks/${runId}/changes`}
               className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={`Comment on ${comment.path} line ${comment.line}: ${comment.body}`}
+              aria-label={`Comment on ${comment.path} ${where}`}
             >
               {label}
             </Link>
             <button
               type="button"
-              aria-label={`Remove comment on ${name} line ${comment.line}`}
+              aria-label={`Remove comment on ${name} ${where}`}
               onClick={() => onRemove(comment.id)}
               className="flex h-full items-center px-1.5 text-soft-foreground hover:bg-muted hover:text-foreground"
             >

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   capExcerpt,
+  commentsRideWith,
   EXCERPT_MAX,
   formatDiffComments,
   parseDiffComments,
+  slashCommandOf,
   withDiffComments,
   type DiffComment,
 } from './diff-comments'
@@ -44,6 +46,22 @@ describe('diff comments', () => {
     expect(withDiffComments('also run the tests', [A])).toBe(`also run the tests\n\n${formatDiffComments([A])}`)
     expect(withDiffComments('', [A])).toBe(formatDiffComments([A]))
     expect(withDiffComments('just this', [])).toBe('just this')
+    // Typed text leads because its first character is load-bearing: a registry `/skill` is only
+    // expanded when the message STARTS with its slash (`expandRegistrySlashSkillText`).
+    expect(withDiffComments('/fix-review please', [A])).toBe(`/fix-review please\n\n${formatDiffComments([A])}`)
+  })
+
+  it('lets comments ride plain text and registry skills, never a backend slash command', () => {
+    expect(commentsRideWith('please fix', ['fix-review'])).toBe(true)
+    expect(commentsRideWith('/fix-review please', ['fix-review'])).toBe(true)
+    expect(commentsRideWith('/compact', ['fix-review'])).toBe(false)
+    expect(commentsRideWith('  /compact focus on tests', ['fix-review'])).toBe(false)
+    // The catalog has not arrived: a slash message keeps its comments rather than risk losing them.
+    expect(commentsRideWith('/fix-review', undefined)).toBe(false)
+    // Not a command at all: a path, or a slash mid-sentence.
+    expect(commentsRideWith('/ is the root', [])).toBe(true)
+    expect(commentsRideWith('see a/b', [])).toBe(true)
+    expect(slashCommandOf('/compact now')).toBe('compact')
   })
 
   it('caps the excerpt, so a minified line cannot push the draft past its size cap', () => {
@@ -51,14 +69,6 @@ describe('diff comments', () => {
     const long = capExcerpt('x'.repeat(50_000))
     expect(long).toHaveLength(EXCERPT_MAX + 1)
     expect(long.endsWith('…')).toBe(true)
-  })
-
-  // A registry skill is expanded only when the message STARTS with its slash
-  // (`expandRegistrySlashSkillText`), so the review must never be put in front of one.
-  it('keeps a /skill message leading, so the skill still expands', () => {
-    const sent = withDiffComments('/fix-review please', [A])
-    expect(sent.startsWith('/fix-review please\n\n')).toBe(true)
-    expect(/^\/([A-Za-z0-9][A-Za-z0-9._-]*)(?=\s|$)/.exec(sent)?.[1]).toBe('fix-review')
   })
 
   it('orders old-file line numbers before new-file ones within a path', () => {
