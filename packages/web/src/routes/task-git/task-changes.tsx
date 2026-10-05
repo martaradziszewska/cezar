@@ -70,7 +70,12 @@ function ChangesView({ run }: { run: ApiRun }) {
   // comment never whisks away a half-written reply — and kept while a send is in flight: the
   // composer clears optimistically, and a box that vanished mid-send could not show the outcome.
   const [sending, setSending] = useState(false)
-  const showDock = commentCount > 0 || composerDraft.hasDraft || sending
+  // The dock opens for COMMENTS. Once open, a typed message keeps it up after the last comment
+  // goes; but a draft left on the Session tab, with no comment here, never pulls it up on its own.
+  const [dockHeld, setDockHeld] = useState(false)
+  if (commentCount > 0 && !dockHeld) setDockHeld(true)
+  if (dockHeld && commentCount === 0 && !composerDraft.hasDraft && !sending) setDockHeld(false)
+  const showDock = commentCount > 0 || sending || (dockHeld && composerDraft.hasDraft)
   // The dock floats OVER the diff and the file tree. It takes no room of its own (a negative top
   // margin cancels its height), so both columns get that height back as bottom padding instead —
   // their last lines can still be scrolled up above the box.
@@ -195,12 +200,12 @@ function ChangesView({ run }: { run: ApiRun }) {
     diffRef.current?.scrollToPath(path)
   }
   /** To one comment or line — the exact spot, not the top of its file — wherever the renderer can. */
-  const revealOrScroll = (target: DiffRevealTarget) => {
+  const revealOrScroll = useCallback((target: DiffRevealTarget) => {
     setSelected(target.path)
     const handle = diffRef.current
     if (handle?.reveal) handle.reveal(target)
     else handle?.scrollToPath(target.path)
-  }
+  }, [])
 
   // Arrived from a link to a comment or a line (a chip on the Session tab, a review in the
   // transcript): reveal it once the diff has rendered. The renderer is a lazy chunk, so its handle
@@ -220,7 +225,7 @@ function ChangesView({ run }: { run: ApiRun }) {
       revealOrScroll(searchTarget)
     }, 75)
     return () => clearInterval(timer)
-  }, [diffShown, searchParams, searchTarget])
+  }, [diffShown, revealOrScroll, searchParams, searchTarget])
 
   return (
     <div data-route="task-changes" className="flex min-h-full flex-col">

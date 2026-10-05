@@ -800,3 +800,16 @@ describe('the Changes tab reveals the exact spot', () => {
     expect(flashed()[0]!.dataset.commentId).toBe('second')
   })
 })
+
+describe('the Changes tab composer dock and a Session draft', () => {
+  it('does not float the composer just because a message is half-typed on the Session tab', async () => {
+    stubFetch({
+      'GET /api/v1/runs/r1/drafts': () =>
+        jsonResponse({ surfaces: { composer: { text: 'half a reply', images: [], updatedAt: '2026-10-05T00:00:00.000Z' } } }),
+    })
+    renderChangesRoute()
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.querySelector('[data-slot="thread-dock"]')).toBeNull()
+  })
+})
