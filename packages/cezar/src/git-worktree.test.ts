@@ -217,33 +217,6 @@ describe('worktreeShortstat (real git)', () => {
     expect(await worktreeShortstat(r, 'main')).toEqual({ adds: 1, dels: 0, files: 1 });
   });
 
-  it('measures a STAGED merge (MERGE_HEAD set) the same as the committed one', async () => {
-    // The live case behind the stale header: the agent's `git merge origin/main` was left
-    // staged, so HEAD still sat on the pre-merge commit while the tree already held main's
-    // changes. Anchored on HEAD alone, main's commits counted as the task's work.
-    const r = mkdtempSync(join(tmpdir(), 'cez-midmerge-'));
-    worktreeRoots.push(r);
-    await run('git', ['init', '-q', '-b', 'main'], { cwd: r });
-    writeFileSync(join(r, 'f.txt'), 'base\n');
-    await run('git', ['add', '-A'], { cwd: r });
-    await run('git', [...GIT_ID, 'commit', '-q', '-m', 'c0'], { cwd: r });
-    await run('git', ['checkout', '-q', '-b', 'cez/x'], { cwd: r });
-    writeFileSync(join(r, 'task.txt'), 'task-change\n'); // the one real change
-    await run('git', ['add', '-A'], { cwd: r });
-    await run('git', [...GIT_ID, 'commit', '-q', '-m', 'task work'], { cwd: r });
-    await run('git', ['checkout', '-q', 'main'], { cwd: r });
-    writeFileSync(join(r, 'upstream.txt'), 'u1\nu2\nu3\nu4\nu5\n'); // 5 lines that are main's
-    await run('git', ['add', '-A'], { cwd: r });
-    await run('git', [...GIT_ID, 'commit', '-q', '-m', 'upstream'], { cwd: r });
-    await run('git', ['checkout', '-q', 'cez/x'], { cwd: r });
-    await run('git', [...GIT_ID, 'merge', '-q', '--no-commit', '--no-ff', 'main'], { cwd: r });
-
-    // Pre-fix this read `+6 / 2 files`, main's upstream.txt included.
-    expect(await worktreeShortstat(r, 'main', { taskBranch: 'cez/x' })).toEqual({ adds: 1, dels: 0, files: 1 });
-    await run('git', [...GIT_ID, 'commit', '-q', '--no-edit'], { cwd: r });
-    expect(await worktreeShortstat(r, 'main', { taskBranch: 'cez/x' })).toEqual({ adds: 1, dels: 0, files: 1 });
-  });
-
   /**
    * #751: a review/QA task checks the branch under review out into its own
    * worktree, which repoints HEAD off the task's branch. Anchoring at the

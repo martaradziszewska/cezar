@@ -4745,7 +4745,7 @@ export function createApp(deps: ServerDeps) {
     })
 
     .post('/runs/:id/git/commit', jsonZodValidator(gitCommitSchema), async (c) => {
-      const { store, manager } = c.get('project');
+      const { store } = c.get('project');
       const run = store.getRun(c.req.param('id'));
       if (!run) return c.json({ error: 'not found' }, 404);
       const worktree = worktreeOf(run);
@@ -4753,9 +4753,6 @@ export function createApp(deps: ServerDeps) {
       const parsed = { data: c.req.valid('json') };
       const result = await commitAll(worktree, parsed.data.message);
       if (!result.ok) return c.json({ error: result.error }, 409);
-      // The commit dialog closes on this answer and the header reads `diffStat` from the
-      // record, so re-measure before answering: committing a staged merge moves the anchor.
-      await manager.refreshDiffStat(run.id);
       return c.json({ committed: true, sha: result.sha });
     })
 
@@ -4804,9 +4801,6 @@ export function createApp(deps: ServerDeps) {
         run,
         handoffText: readHandoff(dataDir, id),
       });
-      // The pre-PR autosave may have committed (whether or not the publish then succeeded),
-      // and a commit can move the diff anchor — re-measure the header's line count.
-      await manager.refreshDiffStat(id);
       if (!outcome.ok) {
         return c.json({ error: outcome.error, manual: `git merge ${run.branch}` }, 409);
       }

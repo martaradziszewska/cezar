@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunStore, type RunRecord } from '../runs/store.ts';
-import { RunManager } from '../workflows/run.ts';
+import type { RunManager } from '../workflows/run.ts';
 import {
   FILE_CONTENT_CAP,
   assemblePayload,
@@ -511,7 +511,6 @@ describe('session git API routes', () => {
   let app: Hono;
   let run: RunRecord;
   let repoBaseSha: string;
-  let manager: RunManager;
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-gitapi-'));
@@ -522,9 +521,12 @@ describe('session git API routes', () => {
     g(repoRoot, 'commit', '-m', 'root base');
     repoBaseSha = g(repoRoot, 'rev-parse', 'HEAD').trim();
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
-    // Real, because git/commit re-measures `diffStat` through it; nothing here starts a run.
-    manager = new RunManager(store, repoRoot);
-    app = createApp({ repoRoot, store, manager, version: '0.0.0-test' });
+    app = createApp({
+      repoRoot,
+      store,
+      manager: {} as unknown as RunManager, // these routes never touch it
+      version: '0.0.0-test',
+    });
     // The "worktree" fixture is a plain repo — the routes only need a git
     // dir the record points at, not a literal `git worktree add` product.
     worktree = join(repoRoot, 'wt');
@@ -539,7 +541,6 @@ describe('session git API routes', () => {
   });
 
   afterEach(() => {
-    manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -835,28 +836,6 @@ describe('session git API routes', () => {
 
     expect((await commit(run.id, { message: '   ' })).status).toBe(400);
     expect((await commit(run.id, {})).status).toBe(400);
-  });
-
-  it('POST git/commit re-measures diffStat, so the header matches the Changes tab after a merge', async () => {
-    // The task's own work, then main moves on and the task merges it — left STAGED, the way
-    // the live run's `git merge origin/main` was when its turn ended.
-    writeFileSync(join(worktree, 'mine.txt'), 'mine\n');
-    g(worktree, 'add', '-A');
-    g(worktree, 'commit', '-m', 'task work');
-    g(worktree, 'checkout', 'main');
-    writeFileSync(join(worktree, 'upstream.txt'), 'u1\nu2\nu3\nu4\n');
-    g(worktree, 'add', '-A');
-    g(worktree, 'commit', '-m', 'upstream');
-    g(worktree, 'checkout', 'task');
-    g(worktree, 'merge', '--no-commit', '--no-ff', 'main');
-    // What the pre-merge turn-end measurement stored: main's 4 lines counted as the task's.
-    store.updateRun(run.id, { diffStat: { adds: 5, dels: 0, files: 2 } });
-
-    expect((await commit(run.id, { message: 'merge main' })).status).toBe(200);
-
-    const changes = (await (await apiRequest(app, `/api/v1/runs/${run.id}/changes`)).json()) as ChangesPayload;
-    expect(changes.stat).toEqual({ adds: 1, dels: 0, files: 1 });
-    expect(store.getRun(run.id)?.diffStat).toEqual(changes.stat);
   });
 
   it('POST git/push with no remote is a 409 with a human reason', async () => {

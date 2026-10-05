@@ -195,14 +195,7 @@ export async function resolveTaskDiffBase(
 ): Promise<TaskDiffBase> {
   const base = await freshestBaseRef(runGit, baseBranch);
   const mergeBase = async (): Promise<string> => {
-    // Mid-merge (`MERGE_HEAD` set — typically a `git merge origin/main` left staged), the tree
-    // already holds the incoming side while HEAD is still the pre-merge commit. Anchoring on
-    // HEAD alone would count everything the merge brings in as the task's work; with
-    // MERGE_HEAD added, `git merge-base` answers for the hypothetical merge commit, i.e. the
-    // same anchor the measurement gets once the merge is committed.
-    const merging = await runGit(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD^{commit}']);
-    const heads = merging.ok && merging.stdout.trim() ? ['HEAD', merging.stdout.trim()] : ['HEAD'];
-    const res = await runGit(['merge-base', base, ...heads]);
+    const res = await runGit(['merge-base', base, 'HEAD']);
     return res.ok && res.stdout.trim() ? res.stdout.trim() : base;
   };
 
