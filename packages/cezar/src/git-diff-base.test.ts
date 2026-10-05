@@ -43,6 +43,20 @@ describe('resolveTaskDiffBase — the freshest base ref', () => {
     expect(calls).toContainEqual(['merge-base', 'main', 'HEAD']);
   });
 
+  it('anchors a mid-merge tree at the merge-base of the merge-to-be (HEAD + MERGE_HEAD)', async () => {
+    const { run } = stubGit({
+      ...NO_REMOTE,
+      [HEAD_BRANCH]: { ok: true, stdout: 'cez/ab12cd34\n' },
+      'rev-parse --verify --quiet MERGE_HEAD^{commit}': { ok: true, stdout: 'feedfacefeedface\n' },
+      'merge-base main HEAD feedfacefeedface': { ok: true, stdout: 'feedfacefeedface\n' },
+      [MERGE_BASE]: { ok: true, stdout: 'oldforkoldfork00\n' }, // the pre-merge anchor — wrong mid-merge
+    });
+
+    expect(await resolveTaskDiffBase(run, 'main', { taskBranch: 'cez/ab12cd34' })).toEqual({
+      base: 'feedfacefeedface',
+    });
+  });
+
   it('measures against origin/<base> when the local base ref has fallen behind', async () => {
     // The stale-local-base trap: nothing pulls the user's `main`, so the merge-base
     // collapses onto its tip and every upstream commit counts as the task's work.
@@ -107,7 +121,7 @@ describe('resolveTaskDiffBase — the freshest base ref', () => {
 
     expect(await resolveTaskDiffBase(run, 'origin/develop')).toEqual({ base: 'abc123abc123' });
     // No `origin/origin/develop` probe — the ref is already the remote's answer.
-    expect(calls).toEqual([['merge-base', 'origin/develop', 'HEAD']]);
+    expect(calls).toEqual([['rev-parse', '--verify', '--quiet', 'MERGE_HEAD^{commit}'], ['merge-base', 'origin/develop', 'HEAD']]);
   });
 
   it('falls back to the base branch name when the merge-base cannot be resolved', async () => {
@@ -312,6 +326,6 @@ describe('resolveTaskDiffBase — degradation', () => {
     });
     // No `origin/--upload-pack=evil` probe: the caller's `isSafeGitRef` gate rejects the
     // ref before it ever reaches git, and this helper must not smuggle it in either.
-    expect(calls).toEqual([['merge-base', '--upload-pack=evil', 'HEAD']]);
+    expect(calls).toEqual([['rev-parse', '--verify', '--quiet', 'MERGE_HEAD^{commit}'], ['merge-base', '--upload-pack=evil', 'HEAD']]);
   });
 });

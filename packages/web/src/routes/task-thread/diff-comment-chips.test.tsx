@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -34,5 +34,31 @@ describe('diff comment chips', () => {
     const link = screen.getByRole('link')
     expect(link.getAttribute('aria-label')).toBe('Comment on src/app/page.tsx lines 12–14')
     expect(screen.getByRole('button', { name: 'Remove comment on page.tsx lines 12–14' })).not.toBeNull()
+  })
+
+  it("explains the comment in the cockpit's tooltip, not the browser's title", async () => {
+    // Radix positions the tooltip with floating-ui, which measures — jsdom has no observer.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    renderChips([{ ...base, line: 14, start: { side: 'new', line: 12 }, body: 'collapse these\ninto one' }])
+    const chip = document.querySelector<HTMLElement>('[data-slot="diff-comment-chip"]')!
+    expect(chip.hasAttribute('title')).toBe(false)
+
+    // Keyboard focus opens it as well as hover.
+    fireEvent.focus(screen.getByRole('link'))
+    const tooltip = await waitFor(() => {
+      const found = document.querySelector('[data-slot="diff-comment-tooltip"]')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    expect(tooltip.textContent).toContain('src/app/page.tsx · lines 12–14')
+    expect(tooltip.textContent).toContain('collapse these')
+    vi.unstubAllGlobals()
   })
 })
