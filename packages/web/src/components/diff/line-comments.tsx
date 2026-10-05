@@ -5,8 +5,15 @@ import { Button } from '@/components/ui/button'
 import { isSubmitShortcut } from '@/lib/use-submit-shortcut'
 import { cn } from '@/lib/utils'
 
+import { describeLines } from './line-label'
 import type { HunkLine } from './parse-patch'
-import { COMMENT_MAX, type DiffLineAnchor, type DiffLineComment, type DiffNewLineComment } from './types'
+import {
+  COMMENT_MAX,
+  type DiffLineAnchor,
+  type DiffLineComment,
+  type DiffLineEnd,
+  type DiffNewLineComment,
+} from './types'
 
 /**
  * Line comments inside the diff renderer — the self-review flow: hover a line, press "+", leave
@@ -28,6 +35,55 @@ export function anchorKey(anchor: DiffLineAnchor): string {
   return `${anchor.side}:${anchor.line}\u0000${anchor.path}`
 }
 
+/**
+ * What a drag (or shift-click) from row `a` to row `b` of one file comments on: anchored at the
+ * LAST line (where the editor and the comment render), `start` at the first, and every covered
+ * line's text as the excerpt. Rows are positions in the file's displayed line list, so a range
+ * may cross removed and added lines. `undefined` when the last line has no number to anchor to.
+ */
+export function rangeTarget(
+  path: string,
+  lines: readonly HunkLine[],
+  a: number,
+  b: number,
+): { anchor: DiffLineAnchor; start?: DiffLineEnd; excerpt: string } | undefined {
+  const from = Math.max(0, Math.min(a, b))
+  const to = Math.min(lines.length - 1, Math.max(a, b))
+  const last = lines[to]
+  const anchor = last ? anchorForLine(path, last) : undefined
+  if (!anchor) return undefined
+  const covered = lines.slice(from, to + 1)
+  if (from === to) return { anchor, excerpt: last!.text }
+  const first = anchorForLine(path, lines[from]!)
+  return {
+    anchor,
+    ...(first ? { start: { side: first.side, line: first.line } } : {}),
+    excerpt: covered.map((line) => line.text).join('\n'),
+  }
+}
+
+/**
+ * The file a row belongs to, provided by the file body: its displayed line list (hunks plus
+ * expanded context, in order), each line's position in it, and how each position is marked.
+ */
+export interface FileLines {
+  path: string
+  lines: readonly HunkLine[]
+  orderOf: ReadonlyMap<HunkLine, number>
+  /** `selected` — inside the drag or the open editor's range; `commented` — under a saved comment. */
+  markAt: (order: number) => 'selected' | 'commented' | undefined
+}
+
+export const FileLinesContext = createContext<FileLines | null>(null)
+
+/** The row classes for a mark: a tint over the line for the live selection, a bar in the gutter
+ *  edge for lines a saved comment covers — so commented code reads as commented at a glance. */
+export function markClass(mark: 'selected' | 'commented' | undefined): string | undefined {
+  if (mark === 'selected') return 'relative before:pointer-events-none before:absolute before:inset-0 before:bg-primary/15'
+  if (mark === 'commented') return 'shadow-[inset_3px_0_0_0_var(--color-primary)]'
+  return undefined
+}
+
 /** The one open editor (one at a time, like a review tool): a new comment, or a saved one being
  *  edited in place (`commentId` set). */
 export interface LineCommentEditing {
@@ -36,17 +92,32 @@ export interface LineCommentEditing {
   /** The row the editor hangs under (`anchorKey`). */
   threadKey: string
   anchor: DiffLineAnchor
+  /** First line of a range; absent for one line. */
+  start?: DiffLineEnd
   excerpt: string
   commentId?: string
   initial?: string
   oldPath?: string
 }
 
+/** A drag in progress: from where the "+" was pressed to the row under the pointer. */
+export interface LineSelection {
+  path: string
+  from: number
+  to: number
+}
+
 export interface LineCommentsApi {
+  comments: readonly DiffLineComment[]
   byKey: ReadonlyMap<string, readonly DiffLineComment[]>
   editing: LineCommentEditing | null
+  selection: LineSelection | null
   canAdd: boolean
-  open: (anchor: DiffLineAnchor, excerpt: string) => void
+  open: (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd) => void
+  /** Press on a "+": start a range at that row. Releasing anywhere opens the editor for it. */
+  beginSelect: (path: string, order: number, lines: readonly HunkLine[]) => void
+  /** The pointer entered another row while a range is being dragged. */
+  extendSelect: (path: string, order: number) => void
   /** Absent ⇒ saved comments are read-only. */
   edit?: (comment: DiffLineComment) => void
   cancel: () => void
@@ -95,26 +166,73 @@ export function tapToComment(api: LineCommentsApi | null, anchor: DiffLineAnchor
   }
 }
 
-/** The hover "+" in a line's marker column. Rendered only when the host can take a comment. */
-export function AddCommentButton({ anchor, excerpt }: { anchor: DiffLineAnchor | undefined; excerpt: string }) {
+/**
+ * The hover "+" in a line's marker column. Press and drag across rows to comment on a RANGE
+ * (releasing opens the editor under the last line); a plain click is a one-line range. With an
+ * editor already open for a new comment in this file, shift-click stretches its range to here.
+ * Keyboard activation (Enter/Space — a click with `detail === 0`) opens the one line.
+ */
+export function AddCommentButton({
+  anchor,
+  excerpt,
+  line,
+}: {
+  anchor: DiffLineAnchor | undefined
+  excerpt: string
+  line: HunkLine
+}) {
   const api = useLineComments()
+  const file = useContext(FileLinesContext)
   if (!api?.canAdd || anchor === undefined) return null
+  const order = file?.orderOf.get(line)
+  const editing = api.editing
+  const stretchable =
+    editing !== null && editing.commentId === undefined && editing.anchor.path === anchor.path && file !== null
   return (
     <button
       type="button"
       data-slot="diff-add-comment"
       aria-label={`Comment on ${anchor.side === 'old' ? 'removed ' : ''}line ${anchor.line}`}
-      title="Add a comment for the agent"
-      onClick={() => api.open(anchor, excerpt)}
+      title="Add a comment for the agent — drag to cover several lines, or shift-click to extend"
+      onMouseDown={(event) => {
+        if (event.button !== 0) return
+        // No text selection while dragging across code.
+        event.preventDefault()
+        if (event.shiftKey && stretchable) return // the click stretches the open range
+        if (file && order !== undefined) api.beginSelect(anchor.path, order, file.lines)
+      }}
+      onClick={(event) => {
+        if (event.shiftKey && stretchable && order !== undefined && editing) {
+          const startAt = editing.start ?? editing.anchor
+          const fromOrder = orderOfEnd(file!, anchor.path, startAt) ?? order
+          const target = rangeTarget(anchor.path, file!.lines, fromOrder, order)
+          if (target) api.open(target.anchor, target.excerpt, target.start)
+          return
+        }
+        // A pointer click was already handled by press → release (`beginSelect`); only keyboard
+        // activation, which has no press, opens from here.
+        if (event.detail === 0) api.open(anchor, excerpt)
+      }}
       className={cn(
-        'absolute top-1/2 -left-2.5 z-[1] flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm',
+        // Inside the 1rem marker column it sits in — never over the line numbers beside it.
+        'absolute top-1/2 left-0 z-[1] flex size-4 -translate-y-1/2 items-center justify-center rounded-sm',
         'bg-primary text-primary-foreground opacity-0 shadow-xs transition-opacity',
         'group-hover/line:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
     >
-      <PlusIcon aria-hidden="true" className="size-3" strokeWidth={2.5} />
+      <PlusIcon aria-hidden="true" className="size-2.5" strokeWidth={3} />
     </button>
   )
+}
+
+/** Where a range end sits in the file's displayed lines, if it is displayed at all. */
+export function orderOfEnd(file: FileLines, path: string, end: DiffLineEnd): number | undefined {
+  const key = anchorKey({ path, side: end.side, line: end.line })
+  for (const [line, order] of file.orderOf) {
+    const at = anchorForLine(path, line)
+    if (at && anchorKey(at) === key) return order
+  }
+  return undefined
 }
 
 /**
@@ -131,7 +249,7 @@ export function LineCommentThread({ anchors }: { anchors: readonly (DiffLineAnch
   if (comments.length === 0 && editing === null) return null
   const editingId = editing?.commentId
   return (
-    <div data-slot="diff-line-comments" className="border-y border-border/50 bg-muted/30 py-2 font-sans">
+    <div data-slot="diff-line-comments" className="border-y border-primary/25 bg-primary/5 py-2.5 font-sans">
       {/* Sticky + capped: in no-wrap mode the rows are as wide as the longest line, and the
           editor's buttons must not end up scrolled off to the right of it. */}
       <div className="sticky left-0 flex w-full max-w-2xl flex-col gap-2 px-3 md:pl-24">
@@ -159,7 +277,11 @@ function SavedComment({
   return (
     <div
       data-slot="diff-line-comment"
-      className="flex flex-col gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-[13px] leading-normal"
+      // An accent border on a tinted band is what sets a drafted comment apart from the code
+      // around it; the lines it covers carry the accent bar in their gutter edge.
+      role="group"
+      aria-label={`Comment on ${describeLines(comment, comment.start)}`}
+      className="flex flex-col gap-1.5 rounded-md border border-primary/40 bg-card px-3 py-2.5 text-[13px] leading-normal shadow-sm"
     >
       <p className="break-words whitespace-pre-wrap text-foreground">{comment.body}</p>
       {onEdit || onRemove ? (
@@ -207,6 +329,7 @@ function CommentEditor({
         api.update(editing.commentId, body)
       : api.submit({
           ...editing.anchor,
+          ...(editing.start ? { start: editing.start } : {}),
           ...(editing.oldPath ? { oldPath: editing.oldPath } : {}),
           excerpt: editing.excerpt,
           body,
@@ -241,12 +364,15 @@ function CommentEditor({
 
   return (
     <div data-slot="diff-comment-editor" className="flex flex-col gap-2">
+      {editing.start ? (
+        <p className="text-[11px] font-semibold text-primary">Commenting on {describeLines(editing.anchor, editing.start)}</p>
+      ) : null}
       <textarea
         ref={ref}
         rows={3}
         maxLength={COMMENT_MAX}
         value={text}
-        aria-label={`Comment on ${editing.anchor.side === 'old' ? 'removed ' : ''}line ${editing.anchor.line}`}
+        aria-label={`Comment on ${describeLines(editing.anchor, editing.start)}`}
         placeholder="Add a comment for the AI"
         onChange={(event) => {
           setText(event.target.value)

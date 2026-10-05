@@ -2,7 +2,7 @@ import { FileIcon, XIcon } from 'lucide-react'
 
 import { Link } from '@/lib/project-router'
 
-import { sortDiffComments, type DiffComment } from './diff-comments'
+import { linesLabel, sortDiffComments, type DiffComment } from './diff-comments'
 
 /**
  * The diff comments as draft items in the thread composer — one chip per comment, `file +line`,
@@ -23,10 +23,17 @@ export function DiffCommentChips({
     <>
       {sortDiffComments(comments).map((comment) => {
         const name = comment.path.split('/').at(-1) ?? comment.path
-        const label = `${name} ${comment.side === 'old' ? '−' : '+'}${comment.line}`
+        const sign = (side: 'old' | 'new') => (side === 'old' ? '−' : '+')
+        const span =
+          comment.start && (comment.start.side !== comment.side || comment.start.line !== comment.line) ?
+            comment.start.side === comment.side ?
+              `${sign(comment.side)}${comment.start.line}–${comment.line}`
+            : `${sign(comment.start.side)}${comment.start.line}–${sign(comment.side)}${comment.line}`
+          : `${sign(comment.side)}${comment.line}`
+        const label = `${name} ${span}`
         // Spoken: the side in words (`−4` and `+4` must not sound alike) and never the body —
         // a 4000-character note read out on every chip. The body is the tooltip.
-        const where = `${comment.side === 'old' ? 'removed ' : ''}line ${comment.line}`
+        const where = linesLabel(comment)
         return (
           <span
             key={comment.id}

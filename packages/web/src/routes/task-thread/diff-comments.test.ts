@@ -6,6 +6,7 @@ import {
   EXCERPT_MAX,
   formatDiffComments,
   parseDiffComments,
+  RANGE_EXCERPT_MAX,
   slashCommandOf,
   withDiffComments,
   type DiffComment,
@@ -84,5 +85,51 @@ describe('diff comments', () => {
     expect(formatDiffComments([renamed])).toContain(
       '`src/old-name.ts` line 3 (removed line, renamed to `src/new-name.ts`):',
     )
+  })
+
+  it('formats a range comment with its span and every covered line quoted', () => {
+    const range: DiffComment = {
+      id: 'r',
+      path: 'src/a.ts',
+      side: 'new',
+      line: 14,
+      start: { side: 'new', line: 12 },
+      body: 'collapse these',
+      excerpt: 'const a = 1\nconst b = 2\nconst c = 3',
+    }
+    expect(formatDiffComments([range])).toBe(
+      [
+        'Review comments on the diff:',
+        '',
+        '- `src/a.ts` lines 12–14:',
+        '> const a = 1',
+        '> const b = 2',
+        '> const c = 3',
+        '  collapse these',
+      ].join('\n'),
+    )
+    // A range across removed and added lines names both ends.
+    expect(formatDiffComments([{ ...range, start: { side: 'old', line: 11 } }])).toContain(
+      '`src/a.ts` removed line 11 – line 14:',
+    )
+  })
+
+  it('keeps a range across storage, and drops a malformed start rather than the comment', () => {
+    const range: DiffComment = { ...A, start: { side: 'new', line: 10 } }
+    expect(parseDiffComments(JSON.stringify([range]))).toEqual([range])
+    expect(parseDiffComments(JSON.stringify([{ ...A, start: { side: 'left', line: 'x' } }]))).toEqual([A])
+  })
+
+  it('sorts a range by where it starts', () => {
+    const late: DiffComment = { ...A, id: 'late', line: 5 }
+    const range: DiffComment = { ...A, id: 'range', line: 20, start: { side: 'new', line: 2 } }
+    expect(formatDiffComments([late, range]).indexOf('lines 2–20')).toBeLessThan(
+      formatDiffComments([late, range]).indexOf('line 5:'),
+    )
+  })
+
+  it('gives a range a longer excerpt cap than a single line', () => {
+    expect(capExcerpt('x'.repeat(5000), RANGE_EXCERPT_MAX)).toHaveLength(RANGE_EXCERPT_MAX + 1)
+    expect(RANGE_EXCERPT_MAX).toBeGreaterThan(EXCERPT_MAX)
   })
 })

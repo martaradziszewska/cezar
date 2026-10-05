@@ -1,5 +1,5 @@
-import { ChevronRightIcon, FileIcon, FolderIcon } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronRightIcon, FileIcon, FolderIcon, MessageSquareIcon } from 'lucide-react'
+import { createContext, useContext, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -14,12 +14,17 @@ export function ChangesTree({
   root,
   selected,
   onSelect,
+  commentCounts = NO_COMMENTS,
 }: {
   root: TreeDir
   selected: string | null
   onSelect: (path: string) => void
+  /** Drafted line comments per file path (the self-review flow) — shown on the file's row, and
+   *  summed on a COLLAPSED folder, whose files' own counts are hidden. */
+  commentCounts?: ReadonlyMap<string, number>
 }) {
   return (
+    <CommentCountsContext.Provider value={commentCounts}>
     <nav data-slot="changes-tree" aria-label="Changed files" className="min-w-0 text-[13px]">
       <ul className="flex flex-col gap-px">
         {root.dirs.map((dir) => (
@@ -30,13 +35,41 @@ export function ChangesTree({
         ))}
       </ul>
     </nav>
+    </CommentCountsContext.Provider>
+  )
+}
+
+const NO_COMMENTS: ReadonlyMap<string, number> = new Map()
+/** Context rather than one more prop down the recursion — only the leaf badges read it. */
+const CommentCountsContext = createContext<ReadonlyMap<string, number>>(NO_COMMENTS)
+
+function dirCommentCount(dir: TreeDir, counts: ReadonlyMap<string, number>): number {
+  let total = 0
+  for (const file of dir.files) total += counts.get(file.path) ?? 0
+  for (const child of dir.dirs) total += dirCommentCount(child, counts)
+  return total
+}
+
+/** "💬 2" — how many drafted comments sit in this file (or folder). Nothing at zero. */
+export function CommentCount({ count, className }: { count: number; className?: string }) {
+  if (count === 0) return null
+  return (
+    <span
+      data-slot="comment-count"
+      title={`${count} ${count === 1 ? 'comment' : 'comments'} for the agent`}
+      aria-label={`${count} ${count === 1 ? 'comment' : 'comments'}`}
+      className={cn('flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary tabular-nums', className)}
+    >
+      <MessageSquareIcon aria-hidden="true" className="size-3" />
+      {count}
+    </span>
   )
 }
 
 /** ±12/−3 in miniature — the tree's per-row counts (the aggregate label lives in the toolbar). */
 function Counts({ adds, dels }: { adds: number; dels: number }) {
   return (
-    <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] font-medium tabular-nums">
+    <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums">
       {adds > 0 ? <span className="text-success">+{adds}</span> : null}
       {adds > 0 && dels > 0 ? ' ' : null}
       {dels > 0 ? <span className="text-danger">−{dels}</span> : null}
@@ -56,6 +89,9 @@ function DirNode({
   onSelect: (path: string) => void
 }) {
   const [open, setOpen] = useState(true)
+  // Only while collapsed: an open folder's files show their own counts, so a total here would
+  // just repeat them. Collapsed, it is the one place that says the folder holds comments.
+  const comments = open ? 0 : dirCommentCount(dir, useContext(CommentCountsContext))
   return (
     <li>
       <button
@@ -74,7 +110,10 @@ function DirNode({
         />
         <FolderIcon aria-hidden="true" className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate font-medium">{dir.name}</span>
-        <Counts adds={dir.adds} dels={dir.dels} />
+        <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+          <CommentCount count={comments} />
+          <Counts adds={dir.adds} dels={dir.dels} />
+        </span>
       </button>
       {open ? (
         <ul className="flex flex-col gap-px">
@@ -108,6 +147,7 @@ function FileNode({
   onSelect: (path: string) => void
 }) {
   const active = selected === file.path
+  const comments = useContext(CommentCountsContext).get(file.path) ?? 0
   return (
     <li>
       <button
@@ -124,7 +164,10 @@ function FileNode({
       >
         <FileIcon aria-hidden="true" className={cn('size-3.5 shrink-0', statusTone[file.status])} />
         <span className="min-w-0 truncate">{file.name}</span>
-        <Counts adds={file.adds} dels={file.dels} />
+        <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+          <CommentCount count={comments} />
+          <Counts adds={file.adds} dels={file.dels} />
+        </span>
       </button>
     </li>
   )

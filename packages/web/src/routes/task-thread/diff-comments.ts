@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 
 import { DRAFT_TEXT_MAX } from '@open-mercato/cezar-api-client'
-import { COMMENT_MAX, type DiffLineComment, type DiffNewLineComment } from '@/components/diff'
+import { COMMENT_MAX, describeLines, type DiffLineComment, type DiffLineEnd, type DiffNewLineComment } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 
 import { useDraft } from './thread-draft'
@@ -58,16 +58,32 @@ export function parseDiffComments(text: string): DiffComment[] {
       body: c.body,
       excerpt: typeof c.excerpt === 'string' ? c.excerpt : '',
       ...(typeof c.oldPath === 'string' && c.oldPath !== '' ? { oldPath: c.oldPath } : {}),
+      ...(isLineEnd(c.start) ? { start: { side: c.start.side, line: c.start.line } } : {}),
     })
   }
   return out
 }
 
+function isLineEnd(value: unknown): value is DiffLineEnd {
+  if (value === null || typeof value !== 'object') return false
+  const end = value as Record<string, unknown>
+  return (end.side === 'old' || end.side === 'new') && typeof end.line === 'number'
+}
+
+/** "line 12", "lines 10–14", "removed line 3 – line 5" — for the agent and for the chips. */
+export function linesLabel(comment: Pick<DiffComment, 'side' | 'line' | 'start'>): string {
+  return describeLines(comment, comment.start)
+}
+
 /** Path, then side (old-file numbers before new-file ones — they count different files), then
  *  line: the order a reviewer reads a diff in, whatever order the notes were left. */
 export function sortDiffComments(comments: readonly DiffComment[]): DiffComment[] {
-  const side = (c: DiffComment) => (c.side === 'old' ? 0 : 1)
-  return [...comments].sort((a, b) => a.path.localeCompare(b.path) || side(a) - side(b) || a.line - b.line)
+  const side = (c: DiffLineEnd) => (c.side === 'old' ? 0 : 1)
+  // A range sorts by where it STARTS — that is where a reader meets it.
+  const first = (c: DiffComment) => c.start ?? c
+  return [...comments].sort(
+    (a, b) => a.path.localeCompare(b.path) || side(first(a)) - side(first(b)) || first(a).line - first(b).line,
+  )
 }
 
 /** What the agent receives: one review block, every comment anchored to file + line. */
@@ -79,8 +95,8 @@ export function formatDiffComments(comments: readonly DiffComment[]): string {
       comment.side === 'old' ?
         `\`${comment.oldPath ?? comment.path}\` line ${comment.line} (removed line${comment.oldPath ? `, renamed to \`${comment.path}\`` : ''})`
       : `\`${comment.path}\` line ${comment.line}`
-    const excerpt = comment.excerpt.trim() === '' ? '' : `\n> ${comment.excerpt.trim()}`
-    return `- ${where}:${excerpt}\n${indent(comment.body)}`
+    const excerpt = comment.excerpt.trim() === '' ? '' : `\n${quote(comment.excerpt)}`
+    return `- ${comment.start ? rangeWhere(comment) : where}:${excerpt}\n${indent(comment.body)}`
   })
   return `Review comments on the diff:\n\n${blocks.join('\n\n')}`
 }
@@ -114,6 +130,23 @@ export function commentsRideWith(text: string, skillNames: readonly string[] | u
   return command === undefined || (skillNames?.includes(command) ?? false)
 }
 
+/** A range names its span; removed lines in it are numbered in the old file, so a renamed file
+ *  says which one. */
+function rangeWhere(comment: DiffComment): string {
+  const touchesOld = comment.side === 'old' || comment.start?.side === 'old'
+  const renamed = comment.oldPath && touchesOld ? ` (removed lines numbered in \`${comment.oldPath}\`)` : ''
+  return `\`${comment.path}\` ${linesLabel(comment)}${renamed}`
+}
+
+/** Every excerpt line as a Markdown quote line — a range quotes all the code it covers. */
+function quote(excerpt: string): string {
+  return excerpt
+    .trim()
+    .split('\n')
+    .map((line) => `> ${line.trimEnd()}`)
+    .join('\n')
+}
+
 function indent(body: string): string {
   return body
     .split('\n')
@@ -126,9 +159,12 @@ function indent(body: string): string {
  *  silent by design — so an uncapped excerpt could quietly stop the comments from persisting. */
 export const EXCERPT_MAX = 200
 
-export function capExcerpt(excerpt: string): string {
+/** A range quotes every line it covers, so it gets more room — still bounded, for the same reason. */
+export const RANGE_EXCERPT_MAX = 1000
+
+export function capExcerpt(excerpt: string, max: number = EXCERPT_MAX): string {
   const trimmed = excerpt.trim()
-  return trimmed.length <= EXCERPT_MAX ? trimmed : `${trimmed.slice(0, EXCERPT_MAX)}…`
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}…`
 }
 
 function newId(): string {
@@ -178,7 +214,12 @@ export function useDiffComments(runId: string): DiffComments {
     (comment: DiffNewLineComment) =>
       write([
         ...comments,
-        { ...comment, body: comment.body.slice(0, COMMENT_MAX), excerpt: capExcerpt(comment.excerpt), id: newId() },
+        {
+          ...comment,
+          body: comment.body.slice(0, COMMENT_MAX),
+          excerpt: capExcerpt(comment.excerpt, comment.start ? RANGE_EXCERPT_MAX : EXCERPT_MAX),
+          id: newId(),
+        },
       ]),
     [comments, write],
   )

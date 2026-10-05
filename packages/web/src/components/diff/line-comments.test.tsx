@@ -222,3 +222,99 @@ describe('Diff line comments on touch screens', () => {
     expect(screen.queryByPlaceholderText('Add a comment for the AI')).toBeNull()
   })
 })
+
+describe('Diff line comments on a range of lines', () => {
+  /** The diff's displayed lines, in order: ctx 3, del 4, add 4, ctx 5. */
+  const rows = () => [...document.querySelectorAll<HTMLElement>('[data-slot="diff-line"]')]
+  const plusOf = (row: HTMLElement) => row.querySelector<HTMLButtonElement>('[data-slot="diff-add-comment"]')!
+
+  it('drags the "+" across lines into one comment on the whole range', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    const [first, , , last] = rows()
+    fireEvent.mouseDown(plusOf(first!), { button: 0 })
+    fireEvent.mouseEnter(rows()[2]!)
+    fireEvent.mouseEnter(rows()[3]!)
+    // While dragging, every covered row is marked.
+    expect(rows().map((row) => row.dataset.mark)).toEqual(['selected', 'selected', 'selected', 'selected'])
+    fireEvent.mouseUp(window)
+
+    // The editor opens under the LAST line and names the span.
+    expect(last!.nextElementSibling?.querySelector('[data-slot="diff-comment-editor"]')).not.toBeNull()
+    expect(screen.getByText('Commenting on lines 3–5')).not.toBeNull()
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'this whole block' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith({
+      path: 'src/a.ts',
+      side: 'new',
+      line: 5,
+      start: { side: 'new', line: 3 },
+      excerpt: 'const one = 1\nconst two = 2\nconst two = 3\nconst three = 3',
+      body: 'this whole block',
+    })
+  })
+
+  it('drags upwards just as well — the range is ordered, the comment hangs under its last line', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    fireEvent.mouseDown(plusOf(rows()[3]!), { button: 0 })
+    fireEvent.mouseEnter(rows()[2]!)
+    fireEvent.mouseUp(window)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'up' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment).toHaveBeenCalledWith(
+      expect.objectContaining({ side: 'new', line: 5, start: { side: 'new', line: 4 }, excerpt: 'const two = 3\nconst three = 3' }),
+    )
+  })
+
+  it('press-and-release on one "+" is still a one-line comment', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    fireEvent.mouseDown(plusOf(rows()[2]!), { button: 0 })
+    fireEvent.mouseUp(window)
+    const editor = screen.getByPlaceholderText('Add a comment for the AI')
+    fireEvent.change(editor, { target: { value: 'one' } })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(onAddComment.mock.calls[0]?.[0]).not.toHaveProperty('start')
+    expect(onAddComment.mock.calls[0]?.[0]).toMatchObject({ side: 'new', line: 4 })
+  })
+
+  it('shift-click stretches the open editor to a range, keeping what was typed', async () => {
+    const onAddComment = vi.fn()
+    await renderDiff(<Diff files={[MODIFIED]} onAddComment={onAddComment} />)
+
+    fireEvent.click(plusOf(rows()[0]!)) // keyboard-style activation: one line
+    fireEvent.change(screen.getByPlaceholderText('Add a comment for the AI'), { target: { value: 'typed first' } })
+    fireEvent.click(plusOf(rows()[3]!), { shiftKey: true })
+
+    expect(screen.getByText('Commenting on lines 3–5')).not.toBeNull()
+    const editor = screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement
+    expect(editor.value).toBe('typed first')
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onAddComment).toHaveBeenCalledWith(expect.objectContaining({ line: 5, start: { side: 'new', line: 3 }, body: 'typed first' }))
+  })
+
+  it('marks the lines a saved range comment covers, and names the span on the comment', async () => {
+    const comments: DiffLineComment[] = [
+      { id: 'r1', path: 'src/a.ts', side: 'new', line: 5, start: { side: 'old', line: 4 }, body: 'swap these' },
+    ]
+    await renderDiff(<Diff files={[MODIFIED]} comments={comments} />)
+
+    // del 4 … ctx 5 are covered; ctx 3 above the range is not.
+    expect(rows().map((row) => row.dataset.mark)).toEqual([undefined, 'commented', 'commented', 'commented'])
+    // The span is named for screen readers; on screen the marked lines show it.
+    expect(document.querySelector('[data-slot="diff-line-comment"]')?.getAttribute('aria-label')).toBe(
+      'Comment on removed line 4 – line 5',
+    )
+    // The file header counts it.
+    expect(document.querySelector('[data-slot="diff-file-comments"]')?.textContent).toBe('1')
+  })
+})

@@ -572,4 +572,26 @@ describe('the Changes tab line comments', () => {
     expect(puts()).toHaveLength(1)
     expect(document.querySelectorAll('[data-slot="diff-line-comment"]')).toHaveLength(28)
   })
+
+  it('shows how many comments each file holds in the sidebar, summed on a collapsed folder', async () => {
+    const stored = [
+      { id: 'a', path: 'src/util/a.ts', side: 'new', line: 2, body: 'one', excerpt: 'one' },
+      { id: 'b', path: 'src/util/a.ts', side: 'new', line: 4, start: { side: 'new', line: 2 }, body: 'two', excerpt: '' },
+      { id: 'c', path: 'notes.md', side: 'new', line: 1, body: 'three', excerpt: 'one' },
+    ]
+    stubFetch({ 'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft(stored) })
+    renderChangesRoute()
+
+    const countOf = (selector: string) =>
+      document.querySelector(`${selector} [data-slot="comment-count"]`)?.textContent ?? null
+    await waitFor(() => expect(countOf('[data-slot="tree-file"][data-path="src/util/a.ts"]')).toBe('2'))
+    expect(countOf('[data-slot="tree-file"][data-path="notes.md"]')).toBe('1')
+    // An open folder adds nothing — its files already say it. Collapsed, it carries their total.
+    expect(countOf('[data-slot="tree-dir"]')).toBeNull()
+    fireEvent.click(document.querySelector('[data-slot="tree-dir"]')!)
+    expect(countOf('[data-slot="tree-dir"]')).toBe('2')
+    fireEvent.click(document.querySelector('[data-slot="tree-dir"]')!)
+    expect(countOf('[data-slot="tree-dir"]')).toBeNull()
+    expect(document.querySelector('[data-slot="tree-file"][data-path="notes.md"] [data-slot="comment-count"]')?.getAttribute('aria-label')).toBe('1 comment')
+  })
 })

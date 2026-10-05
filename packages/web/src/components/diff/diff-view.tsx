@@ -1,5 +1,5 @@
-import { ChevronRightIcon } from 'lucide-react'
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRightIcon, MessageSquareIcon } from 'lucide-react'
+import { useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtualizer, type VirtualizerHandle } from 'virtua'
 
 import type { DiffStat } from '@open-mercato/cezar-api-client'
@@ -20,10 +20,15 @@ import {
   anchorForLine,
   anchorKey,
   LineCommentsContext,
+  FileLinesContext,
   LineCommentThread,
+  markClass,
+  rangeTarget,
   tapToComment,
   useLineComments,
+  type FileLines,
   type LineCommentsApi,
+  type LineSelection,
 } from './line-comments'
 
 import {
@@ -40,7 +45,7 @@ import {
   type SplitRow,
   type UnifiedRow,
 } from './parse-patch'
-import type { DiffFileChange, DiffLineAnchor, DiffLineComment, DiffProps } from './types'
+import type { DiffFileChange, DiffLineAnchor, DiffLineComment, DiffLineEnd, DiffProps } from './types'
 import { overlaySegments } from './word-diff'
 
 /**
@@ -132,6 +137,46 @@ export function DiffView({
   const [editing, setEditing] = useState<LineCommentsApi['editing']>(null)
   const pendingText = useRef(new Map<string, string>()).current
   const focusRequest = useRef<string | null>(null)
+  // A range being dragged out with the "+". The dragged file's line list rides a ref: the release
+  // handler needs it, and it never has to re-render anything.
+  const [selection, setSelection] = useState<LineSelection | null>(null)
+  const selectionLines = useRef<readonly HunkLine[]>([])
+  const editingRef = useRef(editing)
+  editingRef.current = editing
+
+  const openEditor = useCallback(
+    (anchor: DiffLineAnchor, excerpt: string, start?: DiffLineEnd) => {
+      const threadKey = anchorKey(anchor)
+      const key = start ? `${threadKey}\u0000${start.side}:${start.line}` : threadKey
+      // Stretching an open range must not lose what was already typed into it.
+      const previous = editingRef.current
+      if (previous && previous.commentId === undefined && previous.key !== key) {
+        const typed = pendingText.get(previous.key)
+        if (typed !== undefined) {
+          pendingText.set(key, typed)
+          pendingText.delete(previous.key)
+        }
+      }
+      // A removed line's number belongs to the pre-rename file, so it travels with its path.
+      const oldPath =
+        anchor.side === 'old' || start?.side === 'old' ? files.find((file) => file.path === anchor.path)?.oldPath : undefined
+      focusRequest.current = key
+      setEditing({ key, threadKey, anchor, excerpt, ...(start ? { start } : {}), ...(oldPath ? { oldPath } : {}) })
+    },
+    [files, pendingText],
+  )
+
+  // Releasing the button ANYWHERE ends the drag — over a row, between rows, or off the diff.
+  useEffect(() => {
+    if (selection === null) return
+    const finish = () => {
+      setSelection(null)
+      const target = rangeTarget(selection.path, selectionLines.current, selection.from, selection.to)
+      if (target) openEditor(target.anchor, target.excerpt, target.start)
+    }
+    window.addEventListener('mouseup', finish)
+    return () => window.removeEventListener('mouseup', finish)
+  }, [openEditor, selection])
   const commentsApi = useMemo((): LineCommentsApi | null => {
     if (!onAddComment && (comments?.length ?? 0) === 0) return null
     const byKey = new Map<string, DiffLineComment[]>()
@@ -140,16 +185,20 @@ export function DiffView({
       byKey.set(key, [...(byKey.get(key) ?? []), comment])
     }
     return {
+      comments: comments ?? [],
       byKey,
       editing,
+      selection,
       canAdd: onAddComment !== undefined,
-      open: (anchor: DiffLineAnchor, excerpt: string) => {
-        const key = anchorKey(anchor)
-        // A removed line's number belongs to the pre-rename file, so it travels with its path.
-        const oldPath = anchor.side === 'old' ? files.find((file) => file.path === anchor.path)?.oldPath : undefined
-        focusRequest.current = key
-        setEditing({ key, threadKey: key, anchor, excerpt, ...(oldPath ? { oldPath } : {}) })
+      open: openEditor,
+      beginSelect: (path, order, lines) => {
+        selectionLines.current = lines
+        setSelection({ path, from: order, to: order })
       },
+      extendSelect: (path, order) =>
+        setSelection((current) =>
+          current === null || current.path !== path || current.to === order ? current : { ...current, to: order },
+        ),
       edit: onEditComment
         ? (comment: DiffLineComment) => {
             focusRequest.current = `edit:${comment.id}`
@@ -157,6 +206,7 @@ export function DiffView({
               key: `edit:${comment.id}`,
               threadKey: anchorKey(comment),
               anchor: comment,
+              ...(comment.start ? { start: comment.start } : {}),
               excerpt: '',
               commentId: comment.id,
               initial: comment.body,
@@ -179,7 +229,7 @@ export function DiffView({
       pendingText,
       focusRequest,
     }
-  }, [comments, editing, files, onAddComment, onEditComment, onRemoveComment, pendingText])
+  }, [comments, editing, onAddComment, onEditComment, onRemoveComment, openEditor, pendingText, selection])
 
   const rowCount = useMemo(() => diffRowCount(files), [files])
   // The `?diff=` override is a measurement/debugging seam, not reactive state — read once so
@@ -375,6 +425,7 @@ function DiffFileCard({
   onOpenInApp?: (path: string) => void
 }) {
   const badge = STATUS_BADGE[file.status]
+  const commentCount = useLineComments()?.comments.filter((comment) => comment.path === file.path).length ?? 0
   return (
     <section
       data-slot="diff-file"
@@ -421,7 +472,18 @@ function DiffFileCard({
               binary
             </span>
           ) : null}
-          <span className="ml-auto shrink-0">
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            {commentCount > 0 ? (
+              <span
+                data-slot="diff-file-comments"
+                aria-label={`${commentCount} ${commentCount === 1 ? 'comment' : 'comments'}`}
+                title={`${commentCount} ${commentCount === 1 ? 'comment' : 'comments'} for the agent`}
+                className="flex items-center gap-1 text-[11px] font-medium text-primary tabular-nums"
+              >
+                <MessageSquareIcon aria-hidden="true" className="size-3" />
+                {commentCount}
+              </span>
+            ) : null}
             <DiffStatLabel stat={{ adds: file.adds, dels: file.dels, files: 1 }} className="text-[11px]" />
           </span>
         </button>
@@ -483,6 +545,37 @@ function DiffFileBody({
   const lineIndex = useMemo(() => new Map(lineList.map((line, index) => [line, index])), [lineList])
   const tokens = useFileTokens(file.path, lineList)
 
+  // Which rows a range or a comment covers, by position in `lineList`. Recomputed when comments,
+  // the open editor or a drag change — never per keystroke (the editor's text is not state).
+  const commentsApi = useLineComments()
+  const fileLines = useMemo((): FileLines | null => {
+    if (!commentsApi) return null
+    const orderByKey = new Map<string, number>()
+    lineList.forEach((line, order) => {
+      const at = anchorForLine(file.path, line)
+      if (at) orderByKey.set(anchorKey(at), order)
+    })
+    const orderOf = (end: DiffLineEnd) => orderByKey.get(anchorKey({ path: file.path, side: end.side, line: end.line }))
+    const marks = new Map<number, 'selected' | 'commented'>()
+    const mark = (a: number, b: number, kind: 'selected' | 'commented') => {
+      for (let order = Math.min(a, b); order <= Math.max(a, b); order++) {
+        if (kind === 'selected' || !marks.has(order)) marks.set(order, kind)
+      }
+    }
+    const markEnds = (end: DiffLineEnd, start: DiffLineEnd | undefined, kind: 'selected' | 'commented') => {
+      const to = orderOf(end)
+      if (to === undefined) return
+      mark(start ? (orderOf(start) ?? to) : to, to, kind)
+    }
+    for (const comment of commentsApi.comments) {
+      if (comment.path === file.path) markEnds(comment, comment.start, 'commented')
+    }
+    const { editing, selection } = commentsApi
+    if (editing && editing.anchor.path === file.path) markEnds(editing.anchor, editing.start, 'selected')
+    if (selection && selection.path === file.path) mark(selection.from, selection.to, 'selected')
+    return { path: file.path, lines: lineList, orderOf: lineIndex, markAt: (order) => marks.get(order) }
+  }, [commentsApi, file.path, lineList, lineIndex])
+
   const rows = useMemo(
     () => (mode === 'unified' ? buildUnifiedRows(parsed.hunks, gaps, expanded) : null),
     [mode, parsed.hunks, gaps, expanded],
@@ -535,6 +628,7 @@ function DiffFileBody({
           node per line is the very cost this is here to remove. The intrinsic-size hint is
           DIFF_ROW_ESTIMATE_PX; `auto` lets a once-rendered row remember its real height.
           `min-inline-size` is the horizontal-scroll floor — see `widestLineChars`. */}
+      <FileLinesContext.Provider value={fileLines}>
       <div
         data-slot="diff-rows"
         style={widthFloor}
@@ -551,6 +645,7 @@ function DiffFileBody({
             ))
           : null}
       </div>
+      </FileLinesContext.Provider>
       {parsed.truncated ? <Note>Patch truncated by the server — counts above remain exact.</Note> : null}
     </div>
   )
@@ -665,21 +760,33 @@ function UnifiedRowView({
   onExpand?: (gap: ContextGap) => void
 }) {
   const comments = useLineComments()
+  const fileLines = useContext(FileLinesContext)
   if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
   const { line } = row.cell
   const anchor = anchorForLine(path, line)
   const tap = tapToComment(comments, anchor, line.text)
+  const order = fileLines?.orderOf.get(line)
+  const mark = order === undefined ? undefined : fileLines?.markAt(order)
   // A fragment, not a wrapper: each row stays a direct child of `diff-rows`, which is what its
   // per-row `content-visibility` selector targets.
   return (
     <>
-      <div data-slot="diff-line" data-line={line.kind} {...tap} className={cn('group/line flex', LINE_BG[line.kind])}>
+      <div
+        data-slot="diff-line"
+        data-line={line.kind}
+        data-mark={mark}
+        {...tap}
+        onMouseEnter={
+          comments?.selection && order !== undefined ? () => comments.extendSelect(path, order) : undefined
+        }
+        className={cn('group/line flex', LINE_BG[line.kind], markClass(mark))}
+      >
         <Gutter value={line.oldLine} />
         <Gutter value={line.newLine} />
         <span className="relative w-4 shrink-0 text-soft-foreground select-none">
           {MARKER[line.kind]}
-          <AddCommentButton anchor={anchor} excerpt={line.text} />
+          <AddCommentButton anchor={anchor} excerpt={line.text} line={line} />
         </span>
         <LineContent cell={row.cell} tokens={tokensFor(line)} wrap={wrap} />
       </div>
@@ -730,22 +837,34 @@ function SplitCell({
   wrap: boolean
 }) {
   const comments = useLineComments()
+  const fileLines = useContext(FileLinesContext)
   if (!cell) {
     // The other side has no counterpart line — an honest hatch-free blank.
     return <div data-slot="diff-cell-empty" className={cn('bg-muted/20', side === 'new' && 'border-l border-border/40')} />
   }
   const { line } = cell
+  const order = fileLines?.orderOf.get(line)
+  const mark = order === undefined ? undefined : fileLines?.markAt(order)
   return (
     <div
       data-slot="diff-cell"
       data-line={line.kind}
+      data-mark={mark}
       {...tapToComment(comments, anchor, line.text)}
-      className={cn('group/line flex min-w-0 overflow-x-auto', LINE_BG[line.kind], side === 'new' && 'border-l border-border/40')}
+      onMouseEnter={
+        comments?.selection && order !== undefined && anchor ? () => comments.extendSelect(anchor.path, order) : undefined
+      }
+      className={cn(
+        'group/line flex min-w-0 overflow-x-auto',
+        LINE_BG[line.kind],
+        side === 'new' && 'border-l border-border/40',
+        markClass(mark),
+      )}
     >
       <Gutter value={side === 'old' ? line.oldLine : line.newLine} />
       <span className="relative w-4 shrink-0 text-soft-foreground select-none">
         {MARKER[line.kind]}
-        <AddCommentButton anchor={anchor} excerpt={line.text} />
+        <AddCommentButton anchor={anchor} excerpt={line.text} line={line} />
       </span>
       <LineContent cell={cell} tokens={tokensFor(line)} wrap={wrap} />
     </div>

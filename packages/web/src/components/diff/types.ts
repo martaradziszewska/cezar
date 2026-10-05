@@ -59,18 +59,29 @@ export interface DiffLineAnchor {
  *  import it without pulling the lazy renderer chunk into the main bundle. */
 export const COMMENT_MAX = 4000
 
-/** A line comment as the diff renders it — the host owns storage and identity. */
+/** One end of a line range — a side and a number, in the same file as its anchor. */
+export interface DiffLineEnd {
+  side: 'old' | 'new'
+  line: number
+}
+
+/** A line comment as the diff renders it — the host owns storage and identity. A RANGE comment
+ *  is anchored at its LAST line (where it renders) and carries its first in `start`. */
 export interface DiffLineComment extends DiffLineAnchor {
   id: string
   body: string
+  start?: DiffLineEnd
 }
 
 /** What the inline editor hands back: the anchor, the commented line's text, and the note. */
 export interface DiffNewLineComment extends DiffLineAnchor {
+  /** First line of a range comment; absent for a single line. */
+  start?: DiffLineEnd
   /** The file's pre-rename path, set for a removed line of a renamed file — its line number
    *  belongs to the OLD file. */
   oldPath?: string
-  /** The commented line's text, so the comment still reads in context once the file moves on. */
+  /** The commented line's text (every line's, newline-joined, for a range), so the comment still
+   *  reads in context once the file moves on. */
   excerpt: string
   body: string
 }

@@ -5,11 +5,13 @@
  */
 export { Diff } from './diff'
 export { COMMENT_MAX } from './types'
+export { describeLines } from './line-label'
 export type {
   DiffFileChange,
   DiffHandle,
   DiffLineAnchor,
   DiffLineComment,
+  DiffLineEnd,
   DiffMode,
   DiffNewLineComment,
   DiffProps,

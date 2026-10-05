@@ -59,6 +59,11 @@ function ChangesView({ run }: { run: ApiRun }) {
   // Line comments for the agent (self-review): drafted here, sent from the thread composer.
   const diffComments = useDiffComments(run.id)
   const commentCount = diffComments.comments.length
+  const commentCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const comment of diffComments.comments) counts.set(comment.path, (counts.get(comment.path) ?? 0) + 1)
+    return counts
+  }, [diffComments.comments])
 
   const queryClient = useQueryClient()
   const invalidateRuns = () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
@@ -222,7 +227,7 @@ function ChangesView({ run }: { run: ApiRun }) {
             data-slot="changes-tree-pane"
             className="sticky top-40 hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)] w-60 shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72"
           >
-            <ChangesTree root={tree} selected={selected} onSelect={selectFile} />
+            <ChangesTree root={tree} selected={selected} onSelect={selectFile} commentCounts={commentCounts} />
           </aside>
           <Diff
             // Keyed by run: the open comment editor and its unsent text are keyed by path + line
