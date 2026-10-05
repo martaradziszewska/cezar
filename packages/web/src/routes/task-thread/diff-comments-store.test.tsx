@@ -72,7 +72,9 @@ describe('diff comments shared across hosts', () => {
   })
 
   it('keeps a comment added, or edited, while the send was in flight', async () => {
-    const puts = stubServer([C1, C2])
+    // A server that keeps what it is sent: one that ignored writes would look, to the three-way
+    // merge, exactly like another window removing those comments.
+    const server = statefulServer([C1, C2])
     const { changes } = mountChangesHost()
     await waitFor(() => expect(changes.result.current.comments).toHaveLength(2))
 
@@ -92,7 +94,7 @@ describe('diff comments shared across hosts', () => {
     })
     // c1 went as it was sent; c2 changed after it was captured; the new one was never sent.
     expect(changes.result.current.comments.map((c) => c.body)).toEqual(['two, edited after it went', 'added meanwhile'])
-    await waitFor(() => expect(JSON.parse(puts.at(-1)!).map((c: DiffComment) => c.body)).toEqual(['two, edited after it went', 'added meanwhile']))
+    await waitFor(() => expect(server.stored().map((c) => c.body)).toEqual(['two, edited after it went', 'added meanwhile']))
   })
 
   it('a failed send keeps every comment', async () => {
@@ -199,5 +201,76 @@ describe('diff comments across windows', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
     expect(a.view.result.current.ready).toBe(true)
+  })
+
+  // The review's reproduction (#1283): a comment sent or removed in one window must not come back
+  // through another window's next save.
+  const OLD: DiffComment = { id: 'old', path: 'src/a.ts', side: 'new', line: 1, body: 'old', excerpt: '' }
+
+  it('a comment SENT in one window is not written back by another window’s next save', async () => {
+    const server = statefulServer([OLD])
+    const a = openWindow()
+    const b = openWindow()
+    await waitFor(() => expect(a.view.result.current.comments).toHaveLength(1))
+    await waitFor(() => expect(b.view.result.current.comments).toHaveLength(1))
+
+    await act(async () => {
+      await a.view.result.current.submit(async () => 'delivered')
+    })
+    await waitFor(() => expect(server.stored()).toEqual([]))
+
+    act(() => {
+      b.view.result.current.add({ ...NEW, line: 5, body: 'new in B' })
+    })
+    await waitFor(() => expect(server.stored().map((c) => c.body)).toEqual(['new in B']))
+    expect(b.view.result.current.comments.map((c) => c.body)).toEqual(['new in B'])
+  })
+
+  it('a comment REMOVED in one window is not restored by another window’s next save', async () => {
+    const server = statefulServer([OLD])
+    const a = openWindow()
+    const b = openWindow()
+    await waitFor(() => expect(b.view.result.current.comments).toHaveLength(1))
+    await waitFor(() => expect(a.view.result.current.comments).toHaveLength(1))
+
+    act(() => a.view.result.current.remove('old'))
+    await waitFor(() => expect(server.stored()).toEqual([]))
+
+    act(() => {
+      b.view.result.current.add({ ...NEW, line: 5, body: 'new in B' })
+    })
+    await waitFor(() => expect(server.stored().map((c) => c.body)).toEqual(['new in B']))
+  })
+
+  it('coming back to a window drops a chip another window already sent', async () => {
+    statefulServer([OLD])
+    const a = openWindow()
+    const b = openWindow()
+    await waitFor(() => expect(b.view.result.current.comments).toHaveLength(1))
+    await waitFor(() => expect(a.view.result.current.comments).toHaveLength(1))
+
+    await act(async () => {
+      await a.view.result.current.submit(async () => 'delivered')
+    })
+    // B has no unsaved change; focusing it re-reads the listing and merges the send in.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect(b.view.result.current.comments).toEqual([]))
+  })
+
+  it('takes another window’s edit of a comment this window did not touch', async () => {
+    const server = statefulServer([OLD])
+    const a = openWindow()
+    const b = openWindow()
+    await waitFor(() => expect(b.view.result.current.comments).toHaveLength(1))
+    await waitFor(() => expect(a.view.result.current.comments).toHaveLength(1))
+
+    act(() => a.view.result.current.update('old', 'edited in A'))
+    await waitFor(() => expect(server.stored()[0]?.body).toBe('edited in A'))
+    act(() => {
+      b.view.result.current.add({ ...NEW, line: 5, body: 'new in B' })
+    })
+    await waitFor(() => expect(server.stored().map((c) => c.body)).toEqual(['edited in A', 'new in B']))
   })
 })

@@ -320,10 +320,14 @@ export interface DiffComments {
  * Each write still mirrors into the cache, so a fresh load reads what was written. Keyed by the
  * query client, so every client (and every test) has its own lists.
  *
- * Every save MERGES with the server's list first: another window (or browser) on the same task
- * keeps a list of its own, and saving this one's whole list would overwrite every comment that
- * window added. Comments this window removed or sent are remembered (`removed`), so a merge never
- * brings them back. Two windows editing the SAME comment: the last save wins.
+ * Every save is a THREE-WAY merge against the server's list: another window (or browser) on the
+ * same task keeps a list of its own. `base` is the server list as this window last read or wrote
+ * it, so a save can tell "the other window removed or sent this" (in `base`, gone from the server
+ * — drop it) from "this window added it" (local, not in `base` — keep it). Comments this window
+ * removed or sent are remembered (`removed`), so a merge never brings them back either. A fresh
+ * listing (window focus, any refetch) is merged into the live list whenever no save is in flight,
+ * so a chip the other window already sent disappears here too. Two windows editing the SAME
+ * comment: an edit made here wins; otherwise the server's version is taken.
  */
 interface CommentsStore {
   lists: Map<string, DiffComment[]>
@@ -332,12 +336,16 @@ interface CommentsStore {
   chains: Map<string, Promise<unknown>>
   /** Per run: ids this window removed or sent — never merged back in from the server. */
   removed: Map<string, Set<string>>
+  /** Per run: the server's list as this window last read or wrote it — the merge's common base. */
+  base: Map<string, DiffComment[]>
+  /** Per run: saves queued or in flight. A listing that arrives meanwhile is left to them. */
+  pending: Map<string, number>
 }
 const stores = new WeakMap<object, CommentsStore>()
 function storeFor(client: object): CommentsStore {
   let store = stores.get(client)
   if (!store) {
-    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map() }
+    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map(), base: new Map(), pending: new Map() }
     stores.set(client, store)
   }
   return store
@@ -366,13 +374,43 @@ export function useDiffComments(runId: string): DiffComments {
   )
   const live = useSyncExternalStore(subscribe, () => store.lists.get(runId))
 
-  // Seed once, from the first listing that arrives. After that the list is the user's alone.
+  // Seed from the first listing that arrives; after that, MERGE every newer listing into the live
+  // list (three-way, against `base`) — unless a save is queued or in flight, which does its own
+  // merge against a fresher read. Removals and sends made in another window land here this way.
   useEffect(() => {
-    if (drafts.isSuccess && !store.lists.has(runId)) {
+    if (!drafts.isSuccess) return
+    const local = store.lists.get(runId)
+    if (local === undefined) {
       store.lists.set(runId, serverComments)
+      store.base.set(runId, serverComments)
+      store.listeners.get(runId)?.forEach((listener) => listener())
+      return
+    }
+    if ((store.pending.get(runId) ?? 0) > 0) return
+    const merged = mergeComments(local, serverComments, store.base.get(runId) ?? [], store.removed.get(runId))
+    store.base.set(runId, serverComments)
+    if (merged !== local) {
+      store.lists.set(runId, merged)
       store.listeners.get(runId)?.forEach((listener) => listener())
     }
   }, [drafts.isSuccess, runId, serverComments, store])
+
+  // Coming back to this window re-reads the listing, so what another window sent or removed
+  // meanwhile is merged in (above) before the user acts on a stale chip.
+  useEffect(() => {
+    if (runId === '') return
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.runs.drafts(runId) })
+      }
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [queryClient, runId])
 
   const comments = live ?? (drafts.isSuccess ? serverComments : NO_COMMENTS)
 
@@ -415,8 +453,10 @@ export function useDiffComments(runId: string): DiffComments {
       }
       publish(next)
       // In order, and silent on failure, like every draft write — it must never be louder than
-      // the review it carries. Each step saves the list as it stands WHEN IT RUNS, merged with the
-      // server's, so a burst of edits coalesces and nothing another window saved is overwritten.
+      // the review it carries. Each step saves the list as it stands WHEN IT RUNS, three-way merged
+      // with the server's, so a burst of edits coalesces and nothing another window saved — or
+      // removed — is undone.
+      store.pending.set(runId, (store.pending.get(runId) ?? 0) + 1)
       const chained = (store.chains.get(runId) ?? Promise.resolve())
         .catch(() => {})
         .then(async () => {
@@ -425,7 +465,8 @@ export function useDiffComments(runId: string): DiffComments {
           try {
             const listing = await getRunDrafts(runId)
             const text = listing.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
-            merged = mergeComments(local, parseDiffComments(typeof text === 'string' ? text : ''), store.removed.get(runId))
+            const server = parseDiffComments(typeof text === 'string' ? text : '')
+            merged = mergeComments(local, server, store.base.get(runId) ?? [], store.removed.get(runId))
           } catch {
             // Unreadable: save what this window has — no worse than before the merge existed.
           }
@@ -433,8 +474,12 @@ export function useDiffComments(runId: string): DiffComments {
           const text = serialize(merged)
           if (text.length > DRAFT_TEXT_MAX) return // the other window's comments pushed it over; keep what's stored
           await putRunDraft(runId, DIFF_COMMENTS_SURFACE, { text, images: [] })
+          store.base.set(runId, merged)
         })
         .catch(() => {})
+        .finally(() => {
+          store.pending.set(runId, Math.max(0, (store.pending.get(runId) ?? 1) - 1))
+        })
       store.chains.set(runId, chained)
       return true
     },
@@ -500,16 +545,36 @@ function serialize(comments: readonly DiffComment[]): string {
 }
 
 /**
- * This window's list, plus every comment the server holds that this window has never seen and
- * did not remove — another window's additions. Returns `local` itself when there is nothing to
- * add, so callers can tell a merge that changed nothing.
+ * Three-way merge of this window's list (`local`) with the server's (`server`), against the list
+ * both last agreed on (`base`):
+ * - a comment in `base` that is gone from the server was removed or sent ELSEWHERE — dropped;
+ * - a comment only in `local` was added here — kept;
+ * - a comment only on the server was added elsewhere — taken, unless this window removed it;
+ * - a comment in both: this window's version when it edited it (its body differs from `base`),
+ *   else the server's (another window's edit).
+ * Returns `local` itself when nothing changes, so callers can tell a no-op merge.
  */
 export function mergeComments(
   local: readonly DiffComment[],
   server: readonly DiffComment[],
+  base: readonly DiffComment[],
   removed: ReadonlySet<string> | undefined,
 ): DiffComment[] {
+  const baseById = new Map(base.map((c) => [c.id, c]))
+  const serverById = new Map(server.map((c) => [c.id, c]))
+  const out: DiffComment[] = []
+  for (const comment of local) {
+    const atBase = baseById.get(comment.id)
+    const onServer = serverById.get(comment.id)
+    if (atBase && !onServer) continue // removed or sent in another window
+    const editedHere = !atBase || atBase.body !== comment.body
+    out.push(onServer && !editedHere ? onServer : comment)
+  }
   const known = new Set(local.map((c) => c.id))
-  const extra = server.filter((c) => !known.has(c.id) && !removed?.has(c.id))
-  return extra.length === 0 ? (local as DiffComment[]) : [...local, ...extra]
+  for (const comment of server) {
+    if (!known.has(comment.id) && !removed?.has(comment.id)) out.push(comment)
+  }
+  const same =
+    out.length === local.length && out.every((c, i) => c === local[i] || JSON.stringify(c) === JSON.stringify(local[i]))
+  return same ? (local as DiffComment[]) : out
 }
