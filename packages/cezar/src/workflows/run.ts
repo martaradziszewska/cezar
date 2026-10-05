@@ -930,6 +930,8 @@ interface PersistedAttachments {
  */
 export class RunManager {
   private readonly active = new Map<string, ActiveRun>();
+  // Per-run generation of in-flight `diffStat` measurements — see refreshDiffStat.
+  private readonly diffStatGeneration = new Map<string, number>();
   // Queue + `starting` set (spec 006, janitor's pump() pattern): `starting`
   // covers the window between shifting a run off the queue and the run
   // registering in `active`, so parallel-slot counting is never racy.
@@ -3936,7 +3938,11 @@ export class RunManager {
       this.clearIdleTimer(state);
       this.clearAutosaveTimer(state);
       if (!state.cancelled && this.active.get(runId) === state && state.cwd !== this.repoRoot) {
-        await autosaveCommit(state.cwd, 'turn end');
+        // A commit can move the diff anchor (a staged merge is the case), so the turn-end
+        // measurement taken before it is stale once it lands.
+        if ((await autosaveCommit(state.cwd, 'turn end')) === 'committed') {
+          await this.refreshDiffStat(runId, state);
+        }
       }
       this.dropActive(runId, state);
     }
@@ -4266,7 +4272,9 @@ export class RunManager {
     // Final autosave: the branch always ends holding the finished state.
     this.clearAutosaveTimer(state);
     if (!state.cancelled && this.active.get(runId) === state && state.cwd !== this.repoRoot) {
-      await autosaveCommit(state.cwd, 'run finalize');
+      if ((await autosaveCommit(state.cwd, 'run finalize')) === 'committed') {
+        await this.refreshDiffStat(runId, state); // see the turn-end flush in runContinuation
+      }
     }
 
     // The cancellation grace timer may have retired this owner while the async
@@ -4967,21 +4975,47 @@ export class RunManager {
       // Titles are the namer's job (task auto-naming spec) — turn text is
       // deliberately NEVER a title source; see maybeRefreshTitle below. The
       // one exception is an explicit CEZ:TITLE declaration (applied above).
-      if (run.worktreePath && existsSync(run.worktreePath)) {
-        // `taskBranch` + `runStartedAt` are what keep this number *this task's* (#751): a
-        // review/QA run repoints the worktree onto the branch under review, and without the
-        // branch to compare HEAD against and the moment it was checked out, the stat would
-        // claim that whole branch's diff.
-        const stat = await worktreeShortstat(run.worktreePath, run.baseBranch ?? 'HEAD', {
-          taskBranch: run.branch,
-          runStartedAt: run.startedAt,
-        });
-        if (!owner || this.active.get(runId) === owner) {
-          if (stat) this.store.updateRun(runId, { diffStat: stat });
-          else this.store.appendEvent(runId, { type: 'note', message: 'diff stat unavailable — git diff --shortstat failed in the worktree' });
-        }
-      }
+      await this.refreshDiffStat(runId, owner);
       await this.maybeRefreshTitle(runId, turnText);
+    } catch {
+      // Bookkeeping only — nothing here may disturb the run.
+    }
+  }
+
+  /**
+   * Re-measure `RunRecord.diffStat` — the ONE writer of that field. Called at every turn end
+   * (`recordTurnEnd`), after every autosave that actually committed, and by the cockpit's
+   * commit / draft-PR routes. A commit can move the anchor, not just the tree: a turn that
+   * ended mid-merge (merge staged, `MERGE_HEAD` set) is measured from the OLD fork point
+   * against a tree already holding the base's changes, and it is the autosave committing that
+   * merge that moves the merge-base forward. Measured only at turn end, the header kept
+   * counting the merged-in upstream commits as the task's own work while the Changes tab —
+   * which measures on read — did not.
+   *
+   * Turn-end measurement is fire-and-forget, so two measurements can overlap; the
+   * generation counter lets only the most recently STARTED one write, so a slow pre-commit
+   * measurement can never land on top of the post-commit one. Never throws.
+   */
+  async refreshDiffStat(runId: string, owner?: ActiveRun): Promise<void> {
+    try {
+      const run = this.store.getRun(runId);
+      if (!run?.worktreePath || !existsSync(run.worktreePath)) return;
+      if (owner && this.active.get(runId) !== owner) return;
+      const generation = (this.diffStatGeneration.get(runId) ?? 0) + 1;
+      this.diffStatGeneration.set(runId, generation);
+      // `taskBranch` + `runStartedAt` are what keep this number *this task's* (#751): a
+      // review/QA run repoints the worktree onto the branch under review, and without the
+      // branch to compare HEAD against and the moment it was checked out, the stat would
+      // claim that whole branch's diff.
+      const stat = await worktreeShortstat(run.worktreePath, run.baseBranch ?? 'HEAD', {
+        taskBranch: run.branch,
+        runStartedAt: run.startedAt,
+      });
+      if (this.diffStatGeneration.get(runId) !== generation) return; // a newer measurement owns it
+      this.diffStatGeneration.delete(runId);
+      if (owner && this.active.get(runId) !== owner) return;
+      if (stat) this.store.updateRun(runId, { diffStat: stat });
+      else this.store.appendEvent(runId, { type: 'note', message: 'diff stat unavailable — git diff --shortstat failed in the worktree' });
     } catch {
       // Bookkeeping only — nothing here may disturb the run.
     }
