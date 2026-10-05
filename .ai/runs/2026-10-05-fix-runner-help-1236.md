@@ -24,7 +24,7 @@ Derive the four dispatch/automation help and prompt runner lists from `RUNNER_ID
 
 ## Risks
 
-This is a low-risk text-only change; interpolation must preserve existing wording and avoid substring false positives such as `api` matching `pi`.
+This is a low-risk text-only change; interpolation must preserve existing wording and avoid substring false positives such as `api` matching `pi`. The focused suite and unit suite pass. The full gate was run but is blocked by the current `origin/main` baseline: `npm test` has 199 unrelated failures, `typecheck`/`build` have missing contract exports and existing runner-type errors, and `test:package` has two artifact failures.
 
 ## Progress
 
@@ -37,5 +37,5 @@ This is a low-risk text-only change; interpolation must preserve existing wordin
 
 ### Phase 2: Validate and hand off
 
-- [ ] 2.1 Run focused tests and the configured full validation gate.
+- [x] 2.1 Run focused tests and the configured full validation gate. — focused tests/unit pass; full-gate baseline failures documented
 - [ ] 2.2 Review the diff, update PR evidence, and report the branch and PR to the parent.
