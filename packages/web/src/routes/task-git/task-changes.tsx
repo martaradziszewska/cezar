@@ -260,8 +260,9 @@ function ChangesView({ run }: { run: ApiRun }) {
           subtitle="The worktree matches its base branch. Changes appear here as the agent works."
         />
       ) : (
+        // The run header scrolls away on mobile; only desktop reserves space for it.
         <div
-          className="flex min-h-0 flex-1 items-start gap-5 px-4 py-4 [--diff-sticky-top:10rem] md:px-6"
+          className="flex min-h-0 flex-1 items-start gap-5 px-4 py-4 [--diff-sticky-top:0px] md:[--diff-sticky-top:10rem] md:px-6"
           style={
             {
               '--changes-dock': `${showDock ? dockHeight : 0}px`,
