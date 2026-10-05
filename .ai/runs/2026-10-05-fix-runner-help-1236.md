@@ -14,13 +14,15 @@ Derive the four dispatch/automation help and prompt runner lists from `RUNNER_ID
 
 ### Phase 1: Fix and test runner guidance
 
-- [ ] 1.1 Derive all four runner lists from `RUNNER_IDS`.
-- [ ] 1.2 Add regression coverage with word-boundary assertions, including the short `pi` id.
+- [x] 1.1 Derive all four runner lists from `RUNNER_IDS`. — 318825f0
+- [x] 1.2 Add regression coverage with word-boundary assertions, including the short `pi` id. — 318825f0
 
 ### Phase 2: Validate and hand off
 
-- [ ] 2.1 Run focused tests and the configured full validation gate.
-- [ ] 2.2 Review the diff, update PR evidence, and report the branch and PR to the parent.
+- [x] 2.1 Run focused tests and the configured full validation gate. — 10eb62c0
+- [x] 2.2 Review the diff, update PR evidence, and report the branch and PR to the parent. — 10eb62c0
+
+Status: complete. Independent review approved at exact head `3db4666c`; focused automation/dispatch/task-help tests 47/47 and remote CI/CodeQL/package checks pass.
 
 ## Risks
 
