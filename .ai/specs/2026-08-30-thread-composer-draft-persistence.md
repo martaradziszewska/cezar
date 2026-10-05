@@ -151,7 +151,7 @@ unchanged while the thread uses the server store.
 | --- | --- | --- |
 | `composer` | The thread reply composer — text + images | 1 / 2 |
 | `review-notes` | Review panel, "Notes for the agent" | 3 |
-| `diff-comments` | Changes-tab line comments (self-review) — `text` holds their JSON list; the thread composer shows them as chips and sends them with the next message | later (2026-10-02) |
+| `diff-comments` | Changes-tab line comments (self-review) — `text` holds their JSON list; the thread composer shows them as chips and sends them with the next message | later (2026-10-05) |
 | `task-prompt` | The queued run's prompt, inline editor | 3 |
 | `message:<msgId>` | A queued message's inline editor | 3 |
 | `title` | The header's rename input | 3 |
