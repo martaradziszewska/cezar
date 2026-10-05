@@ -164,7 +164,9 @@ function readItem(headerPath: string, label: string, content: string[]): ReviewI
   // A renamed file's removed line is headed by its OLD path; the diff lists the file by the new one.
   const renamed = /renamed to `([^`]+)`/.exec(label)?.[1]
   const first = /lines? (\d+)/.exec(label)
-  const side: 'old' | 'new' = /^removed |\(removed line/.test(label) ? 'old' : 'new'
+  // Old side when the label leads with it (`removed line 11 – line 14`) or notes it
+  // (`line 3 (removed line)`). Two plain checks rather than one half-anchored regex.
+  const side: 'old' | 'new' = label.startsWith('removed ') || label.includes('(removed line') ? 'old' : 'new'
   let rest = content
   while (rest[0]?.trim() === '') rest = rest.slice(1)
   let excerpt = ''
