@@ -172,9 +172,13 @@ describe('the repo view Changes segment', () => {
     // …including its own bounded scroller, so a long list never drags the diff down with it.
     await waitFor(() => expect(document.querySelector('[data-slot="changes-tree-pane"]')).not.toBeNull())
     const pane = document.querySelector('[data-slot="changes-tree-pane"]') as HTMLElement
-    expect(pane.className).toContain('max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)]')
     expect(pane.className).toContain('overflow-y-auto')
     expect(pane.className).toContain('overscroll-contain')
+    // …beside the diff's own scroller (the split layout: no height math, see task-changes.tsx).
+    const diffPane = document.querySelector('[data-slot="diff-pane"]') as HTMLElement
+    expect(diffPane.hasAttribute('data-diff-scroller')).toBe(true)
+    expect(diffPane.className).toContain('md:overflow-y-auto')
+    expect(document.querySelector('[data-route="repo-git"]')?.className).toContain('md:h-full')
     await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
     expect(document.querySelector('[data-slot="changes-stat"]')?.textContent).toContain('+5')
     // The view toggles are the shared control, wired to the facade's mode.

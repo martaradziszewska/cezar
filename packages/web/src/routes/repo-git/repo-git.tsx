@@ -4,6 +4,7 @@ import { useRepo } from '@/api/queries'
 import type { RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { TabLink } from '@/components/tab-link'
+import { cn } from '@/lib/utils'
 
 import { BranchChip } from '../task-git/diff-controls'
 import { RepoBranchesSection } from './repo-branches'
@@ -59,7 +60,9 @@ export function RepoGitRoute({ tab }: { tab: RepoTab }) {
 
 function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab: RepoTab }) {
   return (
-    <div data-route="repo-git" className="flex min-h-full flex-col">
+    // Changes fills `main` from md up so its tree and diff can be two scrollers of their own
+    // (see `RepoChangesSection`); the other tabs scroll with the page.
+    <div data-route="repo-git" className={cn('flex min-h-full flex-col', tab === 'changes' && 'md:h-full')}>
       <header
         data-slot="repo-header"
         className="sticky top-0 z-20 border-b border-border bg-background/95 px-4 pt-3 backdrop-blur md:px-6"
