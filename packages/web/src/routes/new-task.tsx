@@ -404,6 +404,17 @@ export function NewTaskRoute() {
       setAutoStarting(false)
       return
     }
+    // A saved bookmarklet has no runner choice of its own: it implicitly targets the
+    // project's configured default. `resolveRunner` deliberately falls back to another
+    // connected runner for the editable composer, but that fallback must not turn an
+    // unattended launch into a task on a different subscription (or hide an unauthorized
+    // default behind a successful-looking start). Leave the prompt in the composer so the
+    // user can explicitly choose what should run.
+    if (runner !== defaultRunner) {
+      setNotice({ kind: 'prefill' })
+      setAutoStarting(false)
+      return
+    }
     void (async () => {
       let launchKey = ''
       try {
@@ -456,7 +467,7 @@ export function NewTaskRoute() {
       ?.focus()
   }, [notice, sourcesReady]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const submit = async (text: string, images: AttachmentInput[]) => {
+  const submit = async (text: string, submitted: AttachmentInput[]) => {
     if (!providersReady || runner === null) {
       throw new Error(
         providers.isPending
@@ -477,8 +488,9 @@ export function NewTaskRoute() {
       // overlay is deliberate: it's where steps are edited and saved as a reusable chain.
       setPlanning(true)
       try {
-        setPlan(pendingPlanOf(text, images, await postPlan(text)))
+        setPlan(pendingPlanOf(text, submitted, await postPlan(text)))
         update({ text })
+        setImages(images)
       } finally {
         setPlanning(false)
       }
@@ -495,7 +507,7 @@ export function NewTaskRoute() {
         agentProfile,
         defaultRunner,
         variants,
-        images,
+        images: submitted,
         worktree: worktreeOn,
         autonomous: autonomousOn,
         generateFollowups: generateFollowupsOn,
@@ -566,6 +578,7 @@ export function NewTaskRoute() {
           .catch(() => {})
       }
       clearStartedDraft(draftProjectId)
+      setImages([])
       setPlan(null)
       void queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
       navigate(startedRunPath(created))
