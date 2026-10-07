@@ -2500,19 +2500,23 @@ describe('the follow-up prompt template menu (#413)', () => {
   }
 
   /**
-   * Open the menu and click a specific template. Waits for *that* option to
-   * mount before clicking it, so a stale option from the previous (closing)
-   * popover can never satisfy the wait while the wanted one is still absent —
-   * the race that made this suite flake in CI (#413).
+   * Open the menu and click a specific template, retrying until the prompt provably CHANGED.
+   * An option unmounting is not that proof: the previous (closing) popover can unmount the
+   * option on its own, and a slow runner then returned here with nothing inserted — the race
+   * that made this suite flake in CI (#413). Re-open only while the trigger reports closed, so a
+   * retry never toggles an opening menu shut.
    */
   async function chooseTemplate(id: string): Promise<void> {
     const textarea = () => screen.getByLabelText('Custom prompt') as HTMLTextAreaElement
+    const trigger = () => document.querySelector<HTMLElement>('[data-slot="prompt-template-trigger"]')!
     const before = textarea().value
-    fireEvent.click(document.querySelector('[data-slot="prompt-template-trigger"]')!)
     await waitFor(() => {
-      if (!option(id)) throw new Error(`template option "${id}" not mounted yet`)
+      if (textarea().value !== before) return // the insert landed
+      const node = option(id)
+      if (node) fireEvent.click(node)
+      else if (trigger().getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger())
+      throw new Error(`template "${id}" not inserted yet`)
     })
-    await selectOption(id)
   }
 
   it('an untouched ui-state shows the built-in templates, and inserting one fills the custom prompt', async () => {
