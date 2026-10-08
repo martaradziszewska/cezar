@@ -147,6 +147,7 @@ describe('the Files tab route', () => {
     const preview = document.querySelector('[data-slot="file-preview-pane"]') as HTMLElement
     expect(preview.className).toContain('md:overflow-y-auto')
     expect(preview.tabIndex).toBe(0)
+    expect(preview.getAttribute('role')).toBe('region')
     expect(preview.getAttribute('aria-label')).toBe('File preview')
   })
 

@@ -81,7 +81,10 @@ export function RepoChangesSection() {
           subtitle="No uncommitted changes in the main working tree. Edits show up here as they happen."
         />
       ) : (
-        <div className="flex min-h-0 flex-1 gap-5 px-4 py-4 md:px-6 md:py-0">
+        // Below md the diff scrolls in `main` under the repo header, which (unlike the task tabs'
+        // run header) stays sticky at every width — so its file headers must still park below
+        // it there. From md up they stick to their own column's top, so no offset.
+        <div className="flex min-h-0 flex-1 gap-5 px-4 py-4 max-md:[--diff-sticky-top:7rem] md:px-6 md:py-0">
           {/* Same split as the task Changes tab: from md up the tree and the diff are two
               independent scrollers under the header, laid out in CSS alone. */}
           <aside
@@ -96,7 +99,6 @@ export function RepoChangesSection() {
             className="min-w-0 flex-1 md:overflow-y-auto md:overscroll-contain"
           >
             <Diff
-              key={desktop ? 'split' : 'page'}
               files={files}
               viewRef={diffRef}
               mode={effectiveMode}

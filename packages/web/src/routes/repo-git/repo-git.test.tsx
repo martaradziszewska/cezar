@@ -179,6 +179,10 @@ describe('the repo view Changes segment', () => {
     expect(diffPane.hasAttribute('data-diff-scroller')).toBe(true)
     expect(diffPane.className).toContain('md:overflow-y-auto')
     expect(document.querySelector('[data-route="repo-git"]')?.className).toContain('md:h-full')
+    // Below md the diff scrolls in `main` under the repo header, which stays sticky at every
+    // width, so its file headers must still park below that header there (and only there).
+    expect(pane.parentElement?.className).toContain('max-md:[--diff-sticky-top:7rem]')
+    expect(pane.parentElement?.className).not.toMatch(/(^|\s)(md:)?\[--diff-sticky-top/)
     await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(2))
     expect(document.querySelector('[data-slot="changes-stat"]')?.textContent).toContain('+5')
     // The view toggles are the shared control, wired to the facade's mode.

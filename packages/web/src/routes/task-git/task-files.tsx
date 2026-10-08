@@ -6,6 +6,7 @@ import { ApiError } from '@/api/client'
 import { useRun, useRunFile } from '@/api/queries'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
+import { useIsDesktop } from '@/lib/use-desktop'
 
 import { RunHeader } from '../task-thread/run-header'
 import { FilePreview } from './file-preview'
@@ -38,6 +39,7 @@ function FilesView({ run }: { run: ApiRun }) {
   // server's answer for the whole view, same stance as the Changes tab's /changes 409.
   const root = useRunFile(run.id, '')
   const [selected, setSelected] = useState<string | null>(null)
+  const desktop = useIsDesktop()
 
   const refused = root.isError && root.error instanceof ApiError && root.error.status === 409
 
@@ -69,13 +71,13 @@ function FilesView({ run }: { run: ApiRun }) {
           >
             <FilesTree runId={run.id} selected={selected} onSelect={setSelected} />
           </aside>
-          {/* Focusable because it scrolls on its own and a text preview holds nothing else to
-              focus: WebKit (the desktop app) never makes a scroller focusable by itself, so
-              without this a keyboard user could not scroll a long file. */}
+          {/* From md up a focusable region, because it scrolls on its own and a text preview
+              holds nothing else to focus: WebKit (the desktop app) never makes a scroller
+              focusable by itself. Below md the page is the scroller, so no extra tab stop. Same
+              pattern as the transcript viewport (`role="region"` + label + tab stop). */}
           <div
             data-slot="file-preview-pane"
-            tabIndex={0}
-            aria-label="File preview"
+            {...(desktop ? { role: 'region', 'aria-label': 'File preview', tabIndex: 0 } : {})}
             className="min-w-0 flex-1 md:overflow-y-auto md:overscroll-contain"
           >
             {/* Padding on this wrapper, not on the scroller: sticky offsets count from the

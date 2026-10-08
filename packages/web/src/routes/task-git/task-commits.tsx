@@ -142,16 +142,15 @@ function CommitDiffView({ runId, sha }: { runId: string; sha: string }) {
             />
           ) : (
             // The diff's own scroller from md up: its file headers stick to ITS top, so a run
-            // header of any height never covers them. Keyed on the breakpoint because the
-            // virtualizer binds its scroller at mount (below md that is `main`). Vertical padding sits
-            // on the Diff, not here, so a stuck header meets the column's top edge.
+            // header of any height never covers them; below md the diff scrolls in `main` again,
+            // and the Diff rebinds its virtualized list across that swap itself. Vertical padding
+            // sits on the Diff, not here, so a stuck header meets the column's top edge.
             <div
               data-slot="diff-pane"
               data-diff-scroller={desktop ? '' : undefined}
               className="px-4 md:min-h-0 md:flex-1 md:overflow-y-auto md:overscroll-contain md:px-6"
             >
               <Diff
-                key={desktop ? 'split' : 'page'}
                 files={commit.data.files}
                 mode={effectiveMode}
                 wrap={effectiveWrap}

@@ -186,6 +186,13 @@ export function DiffView({
   // from the top of the page after every comment.
   const returnFocus = useRef<{ element: HTMLElement | null; commentId?: string }>({ element: null })
   const rootForFocus = useRef<HTMLDivElement | null>(null)
+  // The scroller the virtualized list is bound to. virtua reads its scroll element once, at
+  // mount, so when the consumer's layout swaps it (the Changes tab's own column from md up, the
+  // app shell's `main` below) only the LIST is remounted, under a fresh key — never this view,
+  // whose state (the open comment editor and its unsent text, collapsed files, expanded context)
+  // must survive a window crossing the breakpoint.
+  const boundScroller = useRef<HTMLElement | null>(null)
+  const [scrollerEpoch, setScrollerEpoch] = useState(0)
   const captureOpener = (commentId?: string) => {
     const active = document.activeElement
     returnFocus.current = {
@@ -411,7 +418,11 @@ export function DiffView({
       ref={(el) => {
         rootRef.current = el
         rootForFocus.current = el
-        if (el) scrollElRef.current = diffScroller(el)
+        if (!el) return
+        const scroller = diffScroller(el)
+        scrollElRef.current = scroller
+        if (boundScroller.current && boundScroller.current !== scroller) setScrollerEpoch((epoch) => epoch + 1)
+        boundScroller.current = scroller
       }}
       data-slot="diff"
       data-mode={mode}
@@ -424,7 +435,7 @@ export function DiffView({
         <DiffStatLabel stat={stat} />
       </p>
       {renderMode === 'virtual' ? (
-        <VirtualFiles files={files} handleRef={virtualizerRef} scrollElRef={scrollElRef} card={card} />
+        <VirtualFiles key={scrollerEpoch} files={files} handleRef={virtualizerRef} scrollElRef={scrollElRef} card={card} />
       ) : (
         <div data-slot="diff-files" data-virtualized="false">
           {files.map((file) => (

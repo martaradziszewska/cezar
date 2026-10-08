@@ -297,9 +297,9 @@ function ChangesView({ run }: { run: ApiRun }) {
             <Diff
               // Keyed by run: the open comment editor and its unsent text are keyed by path + line
               // only, so a half-written note must not reappear on the same path + line of another
-              // task. And by breakpoint: the virtualizer binds its scroller at mount, and below md
-              // that is `main` again.
-              key={`${run.id}:${desktop ? 'split' : 'page'}`}
+              // task. NOT keyed by breakpoint: crossing md swaps the scroller (this column ↔ `main`),
+              // and the Diff rebinds its virtualized list itself, keeping an unsent note.
+              key={run.id}
               files={files}
               viewRef={diffRef}
               mode={effectiveMode}

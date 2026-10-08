@@ -514,6 +514,40 @@ const diffCommentsDraft = (stored: unknown[]) =>
   })
 
 describe('the Changes tab line comments', () => {
+  // Crossing md swaps the diff's scroller (its own column ↔ `main`). That must not remount the
+  // Diff: its open comment editor and the unsent text live in it, and rotating a tablet, docking
+  // devtools or resizing the desktop app window would silently drop a half-written note.
+  it('keeps a half-written comment when the window crosses the md breakpoint', async () => {
+    const listeners = new Set<(event: MediaQueryListEvent) => void>()
+    let wide = true
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      get matches() { return query === '(min-width: 768px)' ? wide : false },
+      media: query,
+      addEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => {
+        if (query === '(min-width: 768px)') listeners.add(listener)
+      },
+      removeEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }))
+    stubFetch({ 'GET /api/v1/runs/r1/drafts': () => diffCommentsDraft([]) })
+    renderChangesRoute()
+    await waitFor(() => expect(document.querySelector('[aria-label="Comment on notes.md line 1"]')).not.toBeNull())
+    expect(document.querySelector('[data-slot="diff-pane"]')?.hasAttribute('data-diff-scroller')).toBe(true)
+    fireEvent.click(document.querySelector('[aria-label="Comment on notes.md line 1"]')!)
+    fireEvent.change(screen.getByPlaceholderText('Add a comment for the AI'), { target: { value: 'half-written' } })
+    const diff = document.querySelector('[data-slot="diff"]')
+
+    // To a phone width: the column stops being the scroller.
+    wide = false
+    act(() => listeners.forEach((listener) => listener({ matches: false } as MediaQueryListEvent)))
+    await waitFor(() => expect(document.querySelector('[data-slot="diff-pane"]')?.hasAttribute('data-diff-scroller')).toBe(false))
+    expect(document.querySelector('[data-slot="diff"]')).toBe(diff)
+    expect((screen.getByPlaceholderText('Add a comment for the AI') as HTMLTextAreaElement).value).toBe('half-written')
+  })
+
   /**
    * The draft hook seeds only a PRISTINE input, so a comment added before the stored list arrived
    * would mark it dirty, skip the seed, and write a one-item list over every stored comment.
