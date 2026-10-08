@@ -58,6 +58,7 @@ import {
   getTrackerItems,
   getUiState,
   getWorkflows,
+  getWorkflowNodes,
   getWorkspaceConfig,
   getWorkspaceUiState,
   getSkillsUpdate,
@@ -187,6 +188,9 @@ export const queryKeys = {
   },
   get workflows() {
     return [queryScope(), 'workflows'] as const
+  },
+  get workflowNodes() {
+    return [queryScope(), 'workflow-nodes'] as const
   },
   get skills() {
     return [queryScope(), 'skills'] as const
@@ -1188,9 +1192,19 @@ export function useTodos(enabled = true) {
   })
 }
 
-export function useWorkflows() {
+/** The graph editor's node catalog — static per server build, so it never refetches. */
+export function useWorkflowNodes() {
+  return useQuery({
+    queryKey: queryKeys.workflowNodes,
+    queryFn: ({ signal }) => getWorkflowNodes({ signal }),
+    staleTime: Infinity,
+  })
+}
+
+export function useWorkflows(opts: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.workflows,
+    enabled: opts.enabled ?? true,
     queryFn: ({ signal }) => getWorkflows({ signal }),
   })
 }
