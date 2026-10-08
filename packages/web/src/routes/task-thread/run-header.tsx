@@ -264,7 +264,12 @@ function RunHeaderView({
           <DispatchParentLine run={run} />
           <DispatchChildrenLine run={run} />
 
-          <div data-slot="run-tabs" className="mt-1.5 flex items-end gap-1 md:mt-2.5">
+          <div
+            data-slot="run-tabs"
+            // Five segments no longer fit a 320px phone (the narrowest viewport this header
+            // supports) — contained scroll here, not page-wide overflow on `main`.
+            className="mt-1.5 flex items-end gap-1 overflow-x-auto md:mt-2.5 md:overflow-x-visible"
+          >
             <TabLink to={`/tasks/${run.id}`} active={tab === 'session'}>
               Session
             </TabLink>
