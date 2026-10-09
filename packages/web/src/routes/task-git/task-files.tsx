@@ -83,7 +83,7 @@ function FilesView({ run }: { run: ApiRun }) {
             {/* Padding on this wrapper, not on the scroller: sticky offsets count from the
                 scroller's padding edge, so padding there would park the stuck header 16px down. */}
             <div className="md:py-4">
-              <FilePreview runId={run.id} path={selected} className="min-w-0" />
+              <FilePreview source={{ kind: 'run', runId: run.id }} path={selected} className="min-w-0" />
             </div>
           </div>
         </div>
