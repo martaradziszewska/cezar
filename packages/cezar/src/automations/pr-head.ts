@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process';
 import { z } from 'zod';
 import { collectSecretValues, redactSecrets } from '../core/secret-redaction.ts';
-import { resolveTaskRemotes } from '../git-remotes.ts';
-import { parseRemote } from '../server/forge/index.ts';
+import { parseRemote, resolveTaskRemotes } from '../git-remotes.ts';
 
 /**
  * Pull-request head checkouts for automations (spec 2026-10-06-agentic-e2e-checks Phase 3).
@@ -76,8 +75,7 @@ function unavailable(what: string, stderr: string): PrHeadResolution {
   return { kind: 'failed', reason: `pr-head-unavailable: ${what}${detail ? ` — ${detail}` : ''}` };
 }
 
-/** The remote whose URL is `repo` (owner/name, case-insensitive), else the base remote, else
- *  `origin` — which then fails the fetch with git's own message, as it always did. */
+/** The remote whose URL is `repo`, else the base remote, else `origin` (the old default). */
 async function remoteForRepo(exec: CommandRunner, root: string, repo: string): Promise<string> {
   const remotes = await resolveTaskRemotes((args) => exec('git', args, root));
   for (const name of remotes.names) {
@@ -133,8 +131,7 @@ export async function resolvePrHead(options: {
   const untrusted = headRepo.toLowerCase() !== repo.toLowerCase();
   if (untrusted && !options.allowForkHeads) return { kind: 'skipped', reason: 'fork-head' };
 
-  // `refs/pull/N/head` lives on the repo the PR was opened against — the base
-  // remote (`upstream` on a fork clone), not necessarily `origin`.
+  // `refs/pull/N/head` lives on the PR's repo, not necessarily `origin` (#1383).
   const remote = await remoteForRepo(exec, root, repo);
   const fetched = await exec('git', ['fetch', '--no-tags', remote, `+refs/pull/${number}/head:${ref}`], root);
   if (!fetched.ok) return unavailable(`could not fetch refs/pull/${number}/head`, fetched.stderr);

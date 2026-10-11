@@ -1,27 +1,12 @@
+import { execFile } from 'node:child_process';
+import { isSafeGitRef } from './git-refs.ts';
+
 /**
- * Which remote is the PR target, and which one the task branch is pushed to.
- *
- * A clone is not always `origin` = the repo PRs go to. The common fork layout
- * is `origin` = your fork and `upstream` = the canonical repo, and there a
- * task forked from `origin/main` starts from a fork that lags the repo the PR
- * is opened against — `gh pr create` already prefers `upstream` — so the PR
- * drags stale history and conflicts. The opposite layout (`origin` = canonical,
- * `fork` = yours) works by accident today. Both must work with zero config, so
- * both questions are answered once, here, from what git already knows:
- *
- * - **base remote** (PR target, the one new tasks fork from and diffs measure
- *   against): the remote `gh repo set-default` marked (`remote.<name>.gh-resolved
- *   = base`), else the first of `upstream`, `github`, `origin` — the order `gh`
- *   itself resolves a base repo in — else the only/first remote.
- * - **push remote** (where `cez/<id8>` goes): `remote.pushDefault` when it names
- *   a remote, else `origin`, else the base remote.
- *
- * Pure decision over a caller-supplied runner (same shape as `git-diff-base.ts`),
- * so every caller keeps its own process-spawning. Never throws; null when the
- * repo has no remotes.
+ * The PR-target ("base") remote and the push remote, so nothing hard-codes `origin` (#1383).
+ * Base: `gh repo set-default`, else a remote GitHub confirms is `origin`'s fork parent, else
+ * `origin`, else the first remote. Push: `remote.pushDefault`, else `origin`, else base.
  */
 
-/** What a caller's `git` runner must answer with. */
 export interface RemoteGitRunResult {
   ok: boolean;
   stdout: string;
@@ -32,45 +17,133 @@ export type RemoteGitRunner = (args: string[]) => Promise<RemoteGitRunResult>;
 export interface TaskRemotes {
   /** The PR-target remote, or null when the repo has no remotes. */
   base: string | null;
-  /** The remote the task branch is pushed to, or null when the repo has no remotes. */
+  /** The remote task branches are pushed to, or null when the repo has no remotes. */
   push: string | null;
   /** Every configured remote name — what `splitRemoteRef` recognizes as a prefix. */
   names: string[];
 }
 
-/** gh's own base-repo preference among conventional remote names. */
-const BASE_REMOTE_ORDER = ['upstream', 'github', 'origin'];
+export interface ParsedRemote {
+  host: string;
+  owner: string;
+  repo: string;
+}
+
+/**
+ * Parse a git remote URL into host/owner/repo. Handles the scheme forms
+ * (`https://`, `ssh://`, `git://`, with optional credentials and port) and the
+ * scp-like form (`git@host:owner/repo.git`). Null for local paths and anything
+ * else that doesn't look like a forge remote.
+ */
+export function parseRemote(remote: string): ParsedRemote | null {
+  const r = remote.trim().replace(/\/+$/, '');
+  let host: string | undefined;
+  let path: string | undefined;
+  const url = /^(?:https?|ssh|git|git\+ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(r);
+  if (url) {
+    [, host, path] = url;
+  } else {
+    // scp-like: [user@]host:owner/repo(.git) — a leading '/' (local path)
+    // can't match the host group, so plain directories fall through to null.
+    const scp = /^(?:[^@/:]+@)?([^:/]+):(.+)$/.exec(r);
+    if (!scp) return null;
+    [, host, path] = scp;
+  }
+  if (!host || !path) return null;
+  const parts = path.replace(/\.git$/i, '').split('/').filter(Boolean);
+  const owner = parts[parts.length - 2];
+  const repo = parts[parts.length - 1];
+  if (!owner || !repo) return null;
+  return { host: host.toLowerCase(), owner, repo };
+}
+
+/** `owner/name` of a GitHub repo's fork parent, or null (not a fork, no `gh`, offline). */
+export type ForkParentLookup = (repo: ParsedRemote) => Promise<string | null>;
+
+const PARENT_TIMEOUT_MS = 10_000;
+/** A failed lookup (offline, gh signed out) is retried after this long; an answer is kept. */
+const PARENT_RETRY_MS = 10 * 60_000;
+const parentCache = new Map<string, { value: Promise<string | null>; expires: number }>();
+
+const ghForkParent: ForkParentLookup = (repo) => {
+  const key = `${repo.host}/${repo.owner}/${repo.repo}`.toLowerCase();
+  const hit = parentCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.value;
+  const value = new Promise<string | null>((resolve) => {
+    execFile(
+      'gh',
+      ['api', '--hostname', repo.host, `repos/${repo.owner}/${repo.repo}`, '--jq', '.parent.full_name // ""'],
+      { timeout: PARENT_TIMEOUT_MS, encoding: 'utf8', env: { ...process.env, GH_PROMPT_DISABLED: '1' } },
+      (err, stdout) => resolve(err ? null : stdout.trim()),
+    );
+  });
+  // '' = "not a fork", a real answer; null = no answer, ask again later.
+  const entry = { value: value.then((v) => v || null), expires: Number.POSITIVE_INFINITY };
+  parentCache.set(key, entry);
+  void value.then((v) => {
+    if (v === null) entry.expires = Date.now() + PARENT_RETRY_MS;
+  });
+  return entry.value;
+};
+
+let forkParentLookup: ForkParentLookup = ghForkParent;
+
+/** Test seam: replace the GitHub fork-parent lookup; `null` restores the real one. */
+export function setForkParentLookup(lookup: ForkParentLookup | null): void {
+  forkParentLookup = lookup ?? ghForkParent;
+  parentCache.clear();
+}
 
 export async function resolveTaskRemotes(runGit: RemoteGitRunner): Promise<TaskRemotes> {
-  const listed = await runGit(['remote']);
-  const names = listed.ok ? listed.stdout.split('\n').map((n) => n.trim()).filter(Boolean) : [];
+  // One process: every `remote.*` key — urls (raw, before insteadOf), gh-resolved, pushDefault.
+  const res = await runGit(['config', '--get-regexp', '^remote\\.']);
+  const urls = new Map<string, string>();
+  let ghResolved: string | null = null;
+  let pushDefault = '';
+  for (const line of res.ok ? res.stdout.split('\n') : []) {
+    const m = /^remote\.(.+)\.(url|gh-resolved) (.*)$/.exec(line.trim());
+    if (m) {
+      const [, name = '', key, value = ''] = m;
+      if (key === 'url' && !urls.has(name)) urls.set(name, value);
+      else if (key === 'gh-resolved' && value === 'base') ghResolved ??= name;
+      continue;
+    }
+    const pd = /^remote\.pushdefault (.*)$/.exec(line.trim());
+    if (pd) pushDefault = pd[1] ?? '';
+  }
+  // Dash-guard (#431): names become positional git operands.
+  const names = [...urls.keys()].filter(isSafeGitRef);
   if (names.length === 0) return { base: null, push: null, names };
 
-  let base: string | null = null;
-  const resolved = await runGit(['config', '--get-regexp', '^remote\\..*\\.gh-resolved$']);
-  if (resolved.ok) {
-    for (const line of resolved.stdout.split('\n')) {
-      const m = /^remote\.(.+)\.gh-resolved\s+(\S+)\s*$/.exec(line.trim());
-      if (m && m[2] === 'base' && names.includes(m[1] as string)) {
-        base = m[1] as string;
-        break;
-      }
-    }
-  }
-  base ??= BASE_REMOTE_ORDER.find((n) => names.includes(n)) ?? (names[0] as string);
+  let base: string | null = ghResolved && names.includes(ghResolved) ? ghResolved : null;
+  if (!base && names.includes('origin')) base = await forkParentRemote(urls, names);
+  base ??= names.includes('origin') ? 'origin' : (names[0] as string);
 
-  const pushDefault = await runGit(['config', '--get', 'remote.pushDefault']);
-  const configuredPush = pushDefault.ok ? pushDefault.stdout.trim() : '';
-  const push = names.includes(configuredPush) ? configuredPush : names.includes('origin') ? 'origin' : base;
+  const push = names.includes(pushDefault) ? pushDefault : names.includes('origin') ? 'origin' : base;
   return { base, push, names };
 }
 
 /**
- * Split `upstream/main` into `{ remote: 'upstream', branch: 'main' }` when the
- * prefix is a configured remote; a plain branch name (or a branch whose name
- * merely contains a slash, `feat/x`) comes back with `remote: null`. The
- * longest matching remote name wins, so a remote called `a/b` is not mistaken
- * for `a`.
+ * The remote whose repo GitHub reports as `origin`'s fork parent. Name alone proves nothing:
+ * `upstream` is the canonical repo on a contributor's fork but the vendored project on a
+ * downstream fork — only the parent link tells them apart. Skipped under `CEZ_DRY_RUN=1`.
+ */
+async function forkParentRemote(urls: Map<string, string>, names: string[]): Promise<string | null> {
+  if (names.length < 2 || process.env.CEZ_DRY_RUN === '1') return null;
+  const origin = parseRemote(urls.get('origin') ?? '');
+  if (!origin) return null;
+  const parent = (await forkParentLookup(origin))?.toLowerCase();
+  if (!parent) return null;
+  for (const name of names) {
+    const r = name === 'origin' ? null : parseRemote(urls.get(name) ?? '');
+    if (r && r.host === origin.host && `${r.owner}/${r.repo}`.toLowerCase() === parent) return name;
+  }
+  return null;
+}
+
+/**
+ * Split `upstream/main` into `{ remote: 'upstream', branch: 'main' }` when the prefix is a
+ * configured remote; anything else (`feat/x`) is `remote: null`. Longest remote name wins.
  */
 export function splitRemoteRef(ref: string, names: readonly string[]): { remote: string | null; branch: string } {
   let best: string | null = null;

@@ -50,7 +50,7 @@ function git(
 /** Upper bound on the pre-fork fetch; a slow or unreachable remote must not stall task start. */
 const FETCH_TIMEOUT_MS = 15_000;
 
-/** `resolveTaskRemotes` bound to a repo directory — the base (PR-target) and push remotes. */
+/** The base (PR-target) and push remotes of `dir` (`git-remotes.ts`). */
 export function taskRemotes(dir: string): Promise<TaskRemotes> {
   return resolveTaskRemotes((args) => git(dir, args));
 }
@@ -58,11 +58,10 @@ export function taskRemotes(dir: string): Promise<TaskRemotes> {
 /**
  * Refresh `<remote>/<base>` so a new task forks from the newest upstream tip,
  * not whatever the remote-tracking ref happened to hold at the last manual
- * fetch. `remote` is the base (PR-target) remote from `taskRemotes` — on a fork
- * clone that is `upstream`, not the fork behind `origin`. Best effort: offline,
- * auth required or a timeout all leave the existing refs untouched. The
- * explicit refspec updates the tracking ref even when the remote has a narrowed
- * fetch config. Skipped under `CEZ_DRY_RUN=1`, which must stay network-free.
+ * fetch. Best effort: offline, auth required or a timeout all leave the
+ * existing refs untouched. The explicit refspec updates the tracking ref even
+ * when the remote has a narrowed fetch config. Skipped under `CEZ_DRY_RUN=1`,
+ * which must stay network-free.
  */
 async function fetchBase(repoRoot: string, remote: string, base: string): Promise<void> {
   if (process.env.CEZ_DRY_RUN === '1') return;
@@ -87,8 +86,7 @@ export function branchFor(runId: string): string {
  * fork from: the local branch, its remote-tracking ref, or null — the caller
  * falls back to the current branch with a note. Never throws.
  *
- * "The remote" below is the BASE remote (`taskRemotes`, `git-remotes.ts`): the
- * repo PRs are opened against — `upstream` on a fork clone, usually `origin`.
+ * "The remote" is the base (PR-target) remote, `taskRemotes` (#1383).
  *
  * When BOTH the local branch and `<remote>/<base>` exist, prefer whichever is up
  * to date. A stale LOCAL base (behind the remote, because nothing fetched it into
@@ -118,12 +116,12 @@ export function branchFor(runId: string): string {
 export async function resolveBaseRef(
   repoRoot: string,
   base: string,
-  opts: { keepDiverged?: boolean } = {},
+  opts: { keepDiverged?: boolean; remotes?: TaskRemotes } = {},
 ): Promise<string | null> {
   if (!isSafeGitRef(base)) return null;
   const verify = (ref: string) =>
     git(repoRoot, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).then((r) => r.ok);
-  const { base: baseRemote } = await taskRemotes(repoRoot);
+  const { base: baseRemote } = opts.remotes ?? (await taskRemotes(repoRoot));
   if (!baseRemote) return (await verify(base)) ? base : null;
   const remoteRef = `${baseRemote}/${base}`;
   if (!opts.keepDiverged || (await verify(remoteRef))) await fetchBase(repoRoot, baseRemote, base);
@@ -142,14 +140,8 @@ export async function resolveBaseRef(
   return null;
 }
 
-/**
- * Is `branch` the PR-target repo's default branch? Read from
- * `refs/remotes/<base remote>/HEAD` when the clone recorded it; a remote added
- * later (`git remote add upstream …`) usually has no HEAD ref, so `main` /
- * `master` stand in for it then.
- */
-async function isDefaultBranch(repoRoot: string, branch: string): Promise<boolean> {
-  const { base: baseRemote } = await taskRemotes(repoRoot);
+/** `<base remote>/HEAD` names `branch`; `main`/`master` when the remote recorded no HEAD. */
+async function isDefaultBranch(repoRoot: string, branch: string, baseRemote: string | null): Promise<boolean> {
   if (baseRemote) {
     const head = await git(repoRoot, ['symbolic-ref', '--quiet', '--short', `refs/remotes/${baseRemote}/HEAD`]);
     const name = head.ok ? head.stdout.trim() : '';
@@ -161,12 +153,9 @@ async function isDefaultBranch(repoRoot: string, branch: string): Promise<boolea
 /**
  * The ref a NEW task forks from: the configured base branch when it resolves,
  * else the checked-out branch — itself refreshed against the base remote, but
- * keeping local work that diverged from it (`keepDiverged`). The repo's DEFAULT
- * branch is the exception: commits that exist only on a local `main` are an
- * accident (a stray commit, a run that wrote to it), never the base a task is
- * meant to build on, so a diverged local default branch yields to the remote
- * exactly like a configured base does. A detached HEAD stays `HEAD`;
- * `createWorktree` pins it to the commit. Never throws.
+ * keeping local work that diverged from it (`keepDiverged`) — except on the
+ * default branch, where local-only commits are strays, not a base (#1383). A
+ * detached HEAD stays `HEAD`; `createWorktree` pins it to the commit. Never throws.
  */
 export async function chooseForkBase(
   repoRoot: string,
@@ -174,14 +163,15 @@ export async function chooseForkBase(
   configured: string | undefined,
   note: (message: string) => void,
 ): Promise<string> {
+  const remotes = await taskRemotes(repoRoot);
   if (configured) {
-    const resolved = await resolveBaseRef(repoRoot, configured);
+    const resolved = await resolveBaseRef(repoRoot, configured, { remotes });
     if (resolved) return resolved;
     note(`configured base branch "${configured}" not found (locally or on the base remote) — using "${currentBranch}"`);
   }
   if (currentBranch === 'HEAD') return currentBranch;
-  const keepDiverged = !(await isDefaultBranch(repoRoot, currentBranch));
-  return (await resolveBaseRef(repoRoot, currentBranch, { keepDiverged })) ?? currentBranch;
+  const keepDiverged = !(await isDefaultBranch(repoRoot, currentBranch, remotes.base));
+  return (await resolveBaseRef(repoRoot, currentBranch, { keepDiverged, remotes })) ?? currentBranch;
 }
 
 export function worktreePathFor(repoRoot: string, runId: string): string {
@@ -728,11 +718,10 @@ export async function pushBranch(dir: string, branch: string): Promise<{ ok: tru
 
 /**
  * Merge the freshest base into the worktree (the graph `git.sync-base` node): `<remote>/<base>`
- * on the base (PR-target) remote after a fetch when it has the branch, else the local base. A
- * recorded base that already names a remote (`upstream/main`) is fetched from that remote. A
- * conflicted merge is LEFT IN PROGRESS and reported with its files — the next node (an agent)
- * resolves it; autosave refuses a mid-merge tree, so nothing half-resolved gets committed
- * meanwhile. Never throws.
+ * after a fetch when the base remote (or the remote a recorded `upstream/main` names) has it,
+ * else the local base. A conflicted merge is LEFT IN PROGRESS and reported with its files — the
+ * next node (an agent) resolves it; autosave refuses a mid-merge tree, so nothing half-resolved
+ * gets committed meanwhile. Never throws.
  */
 export async function syncWithBase(
   dir: string,

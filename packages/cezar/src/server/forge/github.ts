@@ -3,8 +3,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { REFERENCE_STATUS_MAX } from '@open-mercato/cezar-contract';
 import { autosaveCommit, taskRemotes } from '../../git-worktree.ts';
-import { splitRemoteRef } from '../../git-remotes.ts';
-import { parseRemote } from './index.ts';
+import { parseRemote, splitRemoteRef } from '../../git-remotes.ts';
 import type {
   DraftPrInput,
   DraftPrOutcome,
@@ -2610,7 +2609,8 @@ function mockGithubComments(kind: 'issue' | 'pr'): ForgeCommentsData {
 
 // ---- draft-PR creation (review gate, spec 009) ------------------------------
 // Final autosave-commit → `git push -u <push remote> cez/<id8>` → `gh pr create
-// --draft --repo <base remote's repo>`, all executed in the task worktree. Every failure maps to a one-line human error — the GUI
+// --draft --repo <base repo>`, all executed in the task worktree. Every failure
+// maps to a one-line human error — the GUI
 // shows it as a toast plus the manual `git merge <branch>` fallback. Never throws.
 
 const PR_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/;
@@ -2647,9 +2647,7 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
     return { ok: true, url: 'https://github.com/open-mercato/demo/pull/777', dryRun: true };
   }
 
-  // Push to the push remote, open the PR on the base remote (`git-remotes.ts`):
-  // on a fork clone those differ — branch to your fork, PR to `upstream` — and
-  // the PR must target the same repo the task forked from.
+  // Push to the push remote, open the PR on the base remote the task forked from (#1383).
   const remotes = await taskRemotes(worktree);
   if (!remotes.push || !remotes.base) {
     return { ok: false, error: 'no git remote — add one (git remote add origin <url>) or merge the branch locally' };
@@ -2690,12 +2688,7 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
   return { ok: true, url: match[0], dryRun: false };
 }
 
-/**
- * `--repo` / `--head` for `gh pr create`: always name the base remote's repo, so gh
- * cannot pick a different one than the task forked from, and qualify the head with
- * the push remote's owner when the branch lives in another repo (a fork). Plain
- * `--head <branch>` when either URL is not a parseable forge remote.
- */
+/** `gh pr create` target: `--repo <base repo>`, head owner-qualified when pushed to a fork. */
 export async function prRepoArgs(worktree: string, baseRemote: string, pushRemote: string, branch: string): Promise<string[]> {
   const url = async (name: string) => {
     const res = await execTool(['remote', 'get-url', name], worktree, 'git');

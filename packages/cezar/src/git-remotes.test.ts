@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
-import { splitRemoteRef } from './git-remotes.ts';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setForkParentLookup, splitRemoteRef } from './git-remotes.ts';
 import { chooseForkBase, pushBranch, syncWithBase, taskRemotes, worktreeShortstat } from './git-worktree.ts';
 import { prRepoArgs } from './server/forge/github.ts';
 
@@ -18,7 +18,12 @@ const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
 const roots: string[] = [];
 
+const PARENTS: Record<string, string> = { 'marta/shop': 'acme/shop' };
+
+beforeEach(() => setForkParentLookup(async (r) => PARENTS[`${r.owner}/${r.repo}`] ?? null));
+
 afterEach(() => {
+  setForkParentLookup(null);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -36,10 +41,13 @@ async function commit(repo: string, content: string, message: string): Promise<v
   await run('git', [...GIT_ID, 'commit', '-q', '-m', message], { cwd: repo });
 }
 
+const CANONICAL_URL = 'https://github.com/acme/shop.git';
+const FORK_URL = 'https://github.com/marta/shop.git';
+
 /**
- * `canonical` (the repo PRs go to) moves on after `fork` was cloned from it, so
- * the fork's `main` is stale. `work` is a clone with both as remotes; `layout`
- * says which name each one has.
+ * `canonical` (the repo PRs go to) moves on after `fork` was cloned from it, so the fork's
+ * `main` is stale. `work` has both as GitHub-style remotes (`insteadOf` maps them to the local
+ * repos) and GitHub — the stubbed lookup — reports the fork's parent as the canonical repo.
  */
 async function forkFixture(layout: 'origin-is-fork' | 'origin-is-canonical') {
   const canonical = tempDir('cez-canonical-');
@@ -52,9 +60,16 @@ async function forkFixture(layout: 'origin-is-fork' | 'origin-is-canonical') {
 
   const work = tempDir('cez-forkwork-');
   const [originUrl, otherName, otherUrl] =
-    layout === 'origin-is-fork' ? [fork, 'upstream', canonical] : [canonical, 'fork', fork];
-  await run('git', ['clone', '-q', '-c', 'gc.auto=0', originUrl, work], { cwd: tmpdir() });
+    layout === 'origin-is-fork' ? [FORK_URL, 'upstream', CANONICAL_URL] : [CANONICAL_URL, 'fork', FORK_URL];
+  await git(work, 'init', '-q', '-b', 'main');
+  await git(work, 'config', 'gc.auto', '0');
+  await git(work, 'config', `url.${canonical}.insteadOf`, CANONICAL_URL);
+  await git(work, 'config', `url.${fork}.insteadOf`, FORK_URL);
+  await git(work, 'remote', 'add', 'origin', originUrl);
   await git(work, 'remote', 'add', otherName, otherUrl);
+  await git(work, 'fetch', '-q', 'origin');
+  await git(work, 'checkout', '-q', '-b', 'main', 'origin/main');
+  await git(work, 'remote', 'set-head', 'origin', 'main');
   return { canonical, fork, work, canonicalTip };
 }
 
@@ -96,12 +111,49 @@ describe('taskRemotes (real git)', () => {
   });
 
   it('a lone remote with an unconventional name is both; no remote is null', async () => {
-    const { canonical } = await forkFixture('origin-is-canonical');
     const solo = tempDir('cez-solo-');
     await run('git', ['init', '-q', '-b', 'main'], { cwd: solo });
     expect(await taskRemotes(solo)).toEqual({ base: null, push: null, names: [] });
-    await git(solo, 'remote', 'add', 'gitlab', canonical);
+    await git(solo, 'remote', 'add', 'gitlab', CANONICAL_URL);
     expect(await taskRemotes(solo)).toMatchObject({ base: 'gitlab', push: 'gitlab' });
+  });
+
+  it('downstream fork: an `upstream` that is NOT origin\'s GitHub parent leaves origin as the base', async () => {
+    // A company's own copy of an OSS project: PRs go to origin, `upstream` is only synced from.
+    const repo = tempDir('cez-downstream-');
+    await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    await git(repo, 'remote', 'add', 'origin', 'git@github.com:company/shop.git');
+    await git(repo, 'remote', 'add', 'upstream', 'https://github.com/oss/shop.git');
+    expect(await taskRemotes(repo)).toMatchObject({ base: 'origin', push: 'origin' });
+  });
+
+  it('an unanswered lookup (no gh, offline) keeps origin — never worse than before', async () => {
+    setForkParentLookup(async () => null);
+    const { work } = await forkFixture('origin-is-fork');
+    expect((await taskRemotes(work)).base).toBe('origin');
+  });
+
+  it('skips the GitHub lookup entirely under CEZ_DRY_RUN=1', async () => {
+    const { work } = await forkFixture('origin-is-fork');
+    let asked = false;
+    setForkParentLookup(async () => ((asked = true), 'acme/shop'));
+    const prev = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '1';
+    try {
+      expect((await taskRemotes(work)).base).toBe('origin');
+    } finally {
+      if (prev === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = prev;
+    }
+    expect(asked).toBe(false);
+  });
+
+  it('ignores option-like remote names (#431 dash-guard)', async () => {
+    const repo = tempDir('cez-dashremote-');
+    await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    await git(repo, 'config', 'remote.--upload-pack=evil.url', CANONICAL_URL);
+    await git(repo, 'remote', 'add', 'origin', FORK_URL);
+    expect(await taskRemotes(repo)).toEqual({ base: 'origin', push: 'origin', names: ['origin'] });
   });
 });
 

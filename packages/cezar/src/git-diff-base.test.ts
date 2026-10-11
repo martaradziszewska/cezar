@@ -21,7 +21,9 @@ function stubGit(answers: Record<string, { ok: boolean; stdout: string }>): {
     calls.push(args);
     const key = args.join(' ');
     // A clone with one remote, `origin` — the base remote unless a case says otherwise.
-    if (key === 'remote' && !(key in answers)) return { ok: true, stdout: 'origin\n' };
+    if (key === 'config --get-regexp ^remote\\.' && !(key in answers)) {
+      return { ok: true, stdout: 'remote.origin.url https://github.com/acme/shop.git\n' };
+    }
     return answers[key] ?? { ok: false, stdout: '' };
   };
   return { run, calls };
@@ -147,8 +149,8 @@ describe('resolveTaskDiffBase — the freshest base ref', () => {
 
     expect(await resolveTaskDiffBase(run, 'origin/develop')).toEqual({ base: 'abc123abc123' });
     // No `origin/origin/develop` probe — the ref is already the remote's answer.
-    // (Remote discovery — `git remote` / `git config` — is the only other traffic.)
-    expect(calls.filter(([cmd]) => cmd !== 'remote' && cmd !== 'config')).toEqual([
+    // (Remote discovery — one `git config` read — is the only other traffic.)
+    expect(calls.filter(([cmd]) => cmd !== 'config')).toEqual([
       ['merge-base', 'origin/develop', 'HEAD'],
     ]);
   });
