@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { resolveTaskDiffBase, type RepointedHead } from '../git-diff-base.ts';
 import { isSafeGitRef } from '../git-refs.ts';
-import { resolveTaskRemotes } from '../git-remotes.ts';
+import { resolveTaskRemotes, splitRemoteRef } from '../git-remotes.ts';
 import { gitHasIdentity, unresolvedConflicts } from '../git-worktree.ts';
 
 /**
@@ -793,13 +793,17 @@ export async function worktreeGitStatus(dir: string, baseBranch?: string): Promi
 }
 
 /** Commits on the base branch the worktree's HEAD does not contain — the freshest base ref
- *  first (`origin/<base>`, then the local `<base>`; agents fetch, they never pull — the same
- *  reasoning as `resolveTaskDiffBase`). `null` when there is no named base: none recorded, a raw
- *  sha (a detached-HEAD fork point has no "latest" to be behind), or a ref this repo lacks. */
+ *  first (`<base remote>/<base>`, then the local `<base>`; agents fetch, they never pull — the same
+ *  reasoning as `resolveTaskDiffBase`). The base remote is the PR target (`git-remotes.ts`, #1383),
+ *  or the remote a recorded `upstream/main` names. `null` when there is no named base: none
+ *  recorded, a raw sha (a detached-HEAD fork point has no "latest" to be behind), or a ref this
+ *  repo lacks. */
 async function commitsBehindBase(dir: string, baseBranch: string | undefined): Promise<number | null> {
   if (!baseBranch || !isSafeGitRef(baseBranch) || /^[0-9a-f]{7,40}$/i.test(baseBranch)) return null;
-  const name = baseBranch.replace(/^origin\//, '');
-  for (const ref of [`origin/${name}`, name]) {
+  const remotes = await resolveTaskRemotes((args) => git(dir, args));
+  const split = splitRemoteRef(baseBranch, remotes.names);
+  const remote = split.remote ?? remotes.base;
+  for (const ref of remote ? [`${remote}/${split.branch}`, split.branch] : [split.branch]) {
     const exists = await git(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
     if (!exists.ok) continue;
     const count = await git(dir, ['rev-list', '--count', `HEAD..${ref}`]);
