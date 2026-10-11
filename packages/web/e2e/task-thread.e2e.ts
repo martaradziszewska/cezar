@@ -33,7 +33,7 @@ const OVERFLOW_TOKEN = 'X'.repeat(180) + '_END'
 const OVERFLOW_RUN = {
   ...RUN,
   id: 'abec1200-0000-4000-8000-000000000001',
-  task: `Overflow fixture\n\n1) Numbered token:\n${OVERFLOW_TOKEN}\n\n2) Box rule:\n┌${'─'.repeat(140)}┐\n\n- Nested token:\n  - ${OVERFLOW_TOKEN}\n\nStandalone token:\n\n${OVERFLOW_TOKEN}`,
+  task: `Overflow fixture\n\n1) Numbered token:\n${OVERFLOW_TOKEN}\n\n2) Box rule:\n┌${'─'.repeat(140)}┐\n\n- Nested token:\n  - ${OVERFLOW_TOKEN}\n\nStandalone token:\n\n${OVERFLOW_TOKEN}\n\n> ${OVERFLOW_TOKEN}`,
 }
 
 function freePort(): Promise<number> {
@@ -544,12 +544,23 @@ describe('task thread', () => {
             return moved
           }),
           markers: [...bubble.querySelectorAll('li')].every(el => getComputedStyle(el).display === 'list-item'),
+          quoteOverflow: getComputedStyle(bubble.querySelector('blockquote')).overflowX,
+          quoteScrolls: (() => {
+            const paragraph = bubble.querySelector('blockquote p')
+            paragraph.scrollLeft = 200
+            const moved = paragraph.scrollLeft > 0
+            paragraph.scrollLeft = 0
+            return moved
+          })(),
         }
-      })()`) as { contained: boolean; blocks: boolean[]; markers: boolean }
+      })()`) as { contained: boolean; blocks: boolean[]; markers: boolean; quoteOverflow: string; quoteScrolls: boolean }
       expect(result.contained).toBe(true)
       expect(result.blocks.length).toBeGreaterThan(2)
       expect(result.blocks.every(Boolean)).toBe(true)
       expect(result.markers).toBe(true)
+      expect(result.quoteOverflow).toBe('visible')
+      expect(result.quoteScrolls).toBe(true)
+      browser.screenshot(join(artifactsDir, `thread-overflow-${width}.png`), { viewport: true })
     }
   })
 
