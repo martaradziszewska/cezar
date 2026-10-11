@@ -38,15 +38,20 @@ export function GitToolbar({
   stat,
   mode,
   wrap,
+  preview,
   onModeChange,
   onWrapChange,
+  onPreviewChange,
 }: {
   branch?: string
   stat?: DiffStat
   mode: DiffMode
   wrap: boolean
+  preview?: boolean
   onModeChange: (mode: DiffMode) => void
   onWrapChange: (wrap: boolean) => void
+  /** Present only when the diff has a Markdown file to preview — see `DiffViewToggles`. */
+  onPreviewChange?: (preview: boolean) => void
 }) {
   return (
     <div
@@ -60,7 +65,14 @@ export function GitToolbar({
         {/* View toggles — layout preferences, not git actions, so not the policy's business.
             Hidden below md: phones force unified+wrap (the parent owns that rule). */}
         <span className="hidden items-center gap-1 md:flex">
-          <DiffViewToggles mode={mode} wrap={wrap} onModeChange={onModeChange} onWrapChange={onWrapChange} />
+          <DiffViewToggles
+            mode={mode}
+            wrap={wrap}
+            preview={preview}
+            onModeChange={onModeChange}
+            onWrapChange={onWrapChange}
+            onPreviewChange={onPreviewChange}
+          />
         </span>
 
       </span>
