@@ -1,3 +1,8 @@
+# Unreleased
+
+## ✨ Features
+- ✨ Branch naming instructions in Settings → Agents: task branches are named from the first prompt under your convention (`mr/fix-login-redirect`), with a short wait before the fork and a skeleton in the branch cell meanwhile; empty keeps `cez/<id>`. *(@martaradziszewska)*
+
 # 0.15.0 (2026-10-11)
 
 ## Highlights

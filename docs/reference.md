@@ -716,7 +716,10 @@ never blocks startup):
   "defaultRunner": "claude", // agent backend: "claude" (default) · "codex" · "junie" · "opencode" · "pi"
   "modelsLocked": true,      // optional: native per-runner model is fixed/read-only; runner stays selectable
   "plannerModel": "sonnet",  // model the "Plan first" button uses to draft chains
-  "baseBranch": "develop"    // branch worktrees fork from + PRs target (also settable in the Git tab)
+  "baseBranch": "develop",   // branch worktrees fork from + PRs target (also settable in the Git tab)
+  "branchNaming": "start with mr/, then a short lowercase feature name with dashes"
+                             // optional: task branches are named from the first prompt under these
+                             // instructions (Settings → Agents); absent = cez/<id8>
 }
 ```
 

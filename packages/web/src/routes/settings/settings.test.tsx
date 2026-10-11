@@ -70,6 +70,7 @@ const AGENTS_CONFIG = {
   baseBranch: null,
   defaultRunner: 'claude',
   systemPrompt: null,
+  branchNaming: null,
   defaultModels: {},
   maxParallel: 2,
   memoryLimitMb: null,

@@ -42,6 +42,7 @@ import { Segmented } from '@/components/segmented'
 import { StatusDot } from '@/components/status-dot'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from '@/components/ui/toaster'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { UnreadMarker } from '@/components/unread-marker'
@@ -938,7 +939,7 @@ function TaskTableCell({
     case 'branch':
       return (
         <td data-column-id={column.id} className={TD_BASE}>
-          {run.branch ? <BranchChip branch={run.branch} /> : <Dash />}
+          {run.branch ? <BranchChip branch={run.branch} /> : branchPending(run) ? <BranchSkeleton /> : <Dash />}
         </td>
       )
     case 'diff':
@@ -1273,6 +1274,11 @@ function TaskCard({
                 <Sep />
                 <span>{run.branch}</span>
               </>
+            ) : branchPending(run) ? (
+              <>
+                <Sep />
+                <BranchSkeleton />
+              </>
             ) : null}
             {/* Branch · ±diff · IN/OUT · cost — the compact card's meta order. */}
             {run.diffStat ? (
@@ -1322,6 +1328,16 @@ function BranchChip({ branch }: { branch: string }) {
       {branch}
     </span>
   )
+}
+
+/** A started isolated run with no branch yet is forking — possibly waiting for its generated
+ *  name (spec 2026-10-11-branch-naming-instructions). Queued and in-place runs keep the dash. */
+function branchPending(run: RunRecord): boolean {
+  return run.status === 'running' && !run.branch && run.worktree !== false
+}
+
+function BranchSkeleton() {
+  return <Skeleton data-slot="branch-skeleton" aria-label="naming branch" className="inline-block h-4 w-24 align-middle" />
 }
 
 /**

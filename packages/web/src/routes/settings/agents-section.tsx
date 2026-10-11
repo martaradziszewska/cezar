@@ -46,6 +46,8 @@ import { ProviderSettings } from './provider-settings'
 /** The server's validation cap for the system prompt (src/config.ts) — enforced here too so an
  *  over-limit draft is a disabled Save with a reason, not a 400 round-trip. */
 const SYSTEM_PROMPT_MAX = 20_000
+/** Same for the branch naming instructions (spec 2026-10-11-branch-naming-instructions). */
+const BRANCH_NAMING_MAX = 4_000
 
 export function AgentsSection() {
   const config = useConfig()
@@ -113,6 +115,20 @@ function AgentsForm({
       {
         onSuccess: () =>
           toast(trimmedPrompt === '' ? 'System prompt cleared' : 'System prompt saved'),
+      },
+    )
+
+  // Branch naming instructions: the same edit-locally, save-explicitly shape.
+  const [branchNaming, setBranchNaming] = useState(config.branchNaming ?? '')
+  const trimmedBranchNaming = branchNaming.trim()
+  const branchNamingSaved = trimmedBranchNaming === (config.branchNaming ?? '')
+  const branchNamingOverLimit = trimmedBranchNaming.length > BRANCH_NAMING_MAX
+  const saveBranchNaming = () =>
+    save.mutate(
+      { branchNaming: trimmedBranchNaming === '' ? null : trimmedBranchNaming },
+      {
+        onSuccess: () =>
+          toast(trimmedBranchNaming === '' ? 'Branch naming cleared' : 'Branch naming saved'),
       },
     )
 
@@ -247,6 +263,42 @@ function AgentsForm({
           ) : (
             <p className="text-[11px] text-soft-foreground">
               Leave empty and save to clear. Applied to new runs only.
+            </p>
+          )}
+        </div>
+      </Field>
+
+      <Field
+        title="Branch naming"
+        hint="How task branches are named, derived from the first prompt when a task starts. Empty keeps the default cez/<id> branches."
+      >
+        <Textarea
+          aria-label="Branch naming"
+          data-slot="agents-branch-naming"
+          value={branchNaming}
+          onChange={(event) => setBranchNaming(event.target.value)}
+          placeholder="e.g. start with mr/, then a short lowercase feature name with dashes: mr/fix-login-redirect"
+          className="min-h-24 max-w-xl"
+        />
+        <div className="flex max-w-xl items-center gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-action="agents-save-branch-naming"
+            disabled={branchNamingSaved || branchNamingOverLimit || save.isPending}
+            onClick={saveBranchNaming}
+          >
+            Save
+          </Button>
+          {branchNamingOverLimit ? (
+            <p data-slot="agents-branch-naming-limit" className="text-[11px] text-danger">
+              {trimmedBranchNaming.length.toLocaleString()} characters — the limit is{' '}
+              {BRANCH_NAMING_MAX.toLocaleString()}.
+            </p>
+          ) : (
+            <p className="text-[11px] text-soft-foreground">
+              A task waits a few seconds for its name before it forks. Existing branches are never renamed.
             </p>
           )}
         </div>

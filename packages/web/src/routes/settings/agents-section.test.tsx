@@ -121,6 +121,7 @@ function serve({
     baseBranch: null,
     defaultRunner: 'claude',
     systemPrompt: null,
+    branchNaming: null,
     defaultModels: {},
     modelsLocked: false,
     maxParallel: 2,
@@ -157,6 +158,9 @@ function serve({
         if (body?.baseBranch !== undefined) state.baseBranch = (body.baseBranch as string | null) || null
         if (body?.systemPrompt !== undefined) {
           state.systemPrompt = (body.systemPrompt as string | null) || null
+        }
+        if (body?.branchNaming !== undefined) {
+          state.branchNaming = (body.branchNaming as string | null) || null
         }
         if (body?.liveTitleUpdates !== undefined) {
           state.liveTitleUpdates = body.liveTitleUpdates as boolean | null
@@ -520,6 +524,34 @@ describe('the agents form', () => {
     fireEvent.click(saveButton())
     await waitFor(() => expect(puts()).toHaveLength(2))
     expect(puts()[1]?.body).toEqual({ systemPrompt: null })
+  })
+
+  it('branch naming saves trimmed on its own button and clears with null (spec 2026-10-11-branch-naming-instructions)', async () => {
+    serve({ config: { branchNaming: 'start with mr/' } })
+    renderAt('/settings/agents')
+    await waitFor(() => expect(form()).not.toBeNull())
+
+    const box = screen.getByLabelText<HTMLTextAreaElement>('Branch naming')
+    expect(box.value).toBe('start with mr/')
+    const saveButton = () => document.querySelector<HTMLButtonElement>('[data-action="agents-save-branch-naming"]')!
+    expect(saveButton().disabled).toBe(true)
+
+    fireEvent.change(box, { target: { value: '  initials/area/slug  ' } })
+    expect(saveButton().disabled).toBe(false)
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]?.body).toEqual({ branchNaming: 'initials/area/slug' })
+    await waitFor(() => expect(saveButton().disabled).toBe(true))
+
+    fireEvent.change(box, { target: { value: '' } })
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(puts()).toHaveLength(2))
+    expect(puts()[1]?.body).toEqual({ branchNaming: null })
+
+    // Over the cap: Save is disabled with the reason and nothing leaves.
+    fireEvent.change(box, { target: { value: 'x'.repeat(4_001) } })
+    expect(saveButton().disabled).toBe(true)
+    expect(document.querySelector('[data-slot="agents-branch-naming-limit"]')?.textContent).toContain('4,000')
   })
 
   it('an over-limit prompt disables Save with the reason — no request leaves', async () => {
