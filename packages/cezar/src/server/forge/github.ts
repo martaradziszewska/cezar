@@ -2667,7 +2667,7 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
   const baseArgs = prBase && !/^[0-9a-f]{7,40}$/i.test(prBase) ? ['--base', prBase] : [];
   const repoArgs = await prRepoArgs(worktree, remotes.base, remotes.push, branch);
   const pr = await execTool(
-    ['pr', 'create', '--draft', ...repoArgs, ...baseArgs, '--title', run.title, '--body', body],
+    ['pr', 'create', ...(input.draft === false ? [] : ['--draft']), ...repoArgs, ...baseArgs, '--title', run.title, '--body', body],
     worktree,
     'gh',
     PUSH_TIMEOUT_MS,
