@@ -653,7 +653,18 @@ describe('resolveBaseRef (real git)', () => {
       // `develop` is origin's default branch in this fixture (origin/HEAD → origin/develop).
       await divergeDevelop(work);
       await run('git', ['checkout', '-q', 'develop'], { cwd: work });
-      expect(await chooseForkBase(work, 'develop', undefined, note)).toBe('origin/develop');
+      const seen: string[] = [];
+      expect(await chooseForkBase(work, 'develop', undefined, (m) => void seen.push(m))).toBe('origin/develop');
+      expect(seen).toEqual([expect.stringContaining('local-only commits are not in this task')]);
+    });
+
+    it('zero config: a default branch merely BEHIND the remote forks from it without a note', async () => {
+      const work = await repoWithOrigin();
+      await run('git', ['checkout', '-q', 'develop'], { cwd: work });
+      await advanceOrigin(work);
+      const seen: string[] = [];
+      expect(await chooseForkBase(work, 'develop', undefined, (m) => void seen.push(m))).toBe('origin/develop');
+      expect(seen).toEqual([]);
     });
 
     it('zero config: with no recorded remote HEAD, main counts as the default branch', async () => {

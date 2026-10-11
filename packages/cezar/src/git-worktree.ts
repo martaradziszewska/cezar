@@ -171,7 +171,13 @@ export async function chooseForkBase(
   }
   if (currentBranch === 'HEAD') return currentBranch;
   const keepDiverged = !(await isDefaultBranch(repoRoot, currentBranch, remotes.base));
-  return (await resolveBaseRef(repoRoot, currentBranch, { keepDiverged, remotes })) ?? currentBranch;
+  const resolved = (await resolveBaseRef(repoRoot, currentBranch, { keepDiverged, remotes })) ?? currentBranch;
+  // Say so when a diverged default branch's local-only commits are left out of the task.
+  if (!keepDiverged && resolved !== currentBranch) {
+    const contained = await git(repoRoot, ['merge-base', '--is-ancestor', currentBranch, resolved]);
+    if (!contained.ok) note(`local "${currentBranch}" diverged from "${resolved}" — forking from "${resolved}"; local-only commits are not in this task`);
+  }
+  return resolved;
 }
 
 export function worktreePathFor(repoRoot: string, runId: string): string {
