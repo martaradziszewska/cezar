@@ -148,6 +148,17 @@ describe('taskRemotes (real git)', () => {
     expect(asked).toBe(false);
   });
 
+  it('never asks GitHub about a non-GitHub origin', async () => {
+    const repo = tempDir('cez-gitlab-');
+    await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    await git(repo, 'remote', 'add', 'origin', 'git@gitlab.com:marta/shop.git');
+    await git(repo, 'remote', 'add', 'upstream', 'https://gitlab.com/acme/shop.git');
+    let asked = false;
+    setForkParentLookup(async () => ((asked = true), 'acme/shop'));
+    expect((await taskRemotes(repo)).base).toBe('origin');
+    expect(asked).toBe(false);
+  });
+
   it('ignores option-like remote names (#431 dash-guard)', async () => {
     const repo = tempDir('cez-dashremote-');
     await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });

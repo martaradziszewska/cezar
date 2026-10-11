@@ -131,7 +131,8 @@ export async function resolveTaskRemotes(runGit: RemoteGitRunner): Promise<TaskR
 async function forkParentRemote(urls: Map<string, string>, names: string[]): Promise<string | null> {
   if (names.length < 2 || process.env.CEZ_DRY_RUN === '1') return null;
   const origin = parseRemote(urls.get('origin') ?? '');
-  if (!origin) return null;
+  // Only GitHub can answer (`FORGE_HOSTS` in forge/index.ts); never spawn `gh` for GitLab & co.
+  if (origin?.host !== 'github.com') return null;
   const parent = (await forkParentLookup(origin))?.toLowerCase();
   if (!parent) return null;
   for (const name of names) {
