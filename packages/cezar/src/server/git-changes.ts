@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { resolveTaskDiffBase, type RepointedHead } from '../git-diff-base.ts';
 import { isSafeGitRef } from '../git-refs.ts';
+import { resolveTaskRemotes } from '../git-remotes.ts';
 import { gitHasIdentity, unresolvedConflicts } from '../git-worktree.ts';
 
 /**
@@ -780,7 +781,7 @@ export async function pushCurrentBranch(dir: string): Promise<PushResult> {
   if (remotes.length === 0) {
     return { ok: false, error: 'no remote configured — add one with `git remote add origin <url>`' };
   }
-  const remote = remotes.includes('origin') ? 'origin' : (remotes[0] as string);
+  const remote = (await resolveTaskRemotes((args) => git(dir, args))).push ?? (remotes[0] as string);
   const upstream = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   const args = upstream.ok ? ['push'] : ['push', '-u', remote, branch];
   const push = await git(dir, args);
