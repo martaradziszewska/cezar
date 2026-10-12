@@ -79,8 +79,8 @@ export function branchFor(runId: string): string {
 
 /**
  * A generated branch name (spec 2026-10-11-branch-naming-instructions) that no local or
- * `origin/` branch already holds, so the fork can never attach to someone else's branch:
- * the name as given, else `<name>-<id8>`. A name git refuses, or an option-like one, answers
+ * `origin/` branch already holds or blocks as a path prefix, so the fork can never attach to
+ * someone else's branch: the name as given, else `<name>-<id8>`. A name git refuses, or an option-like one, answers
  * null and the caller keeps `cez/<id8>`. Never throws.
  */
 export async function uniqueBranchName(
@@ -91,11 +91,23 @@ export async function uniqueBranchName(
   if (!isSafeGitRef(wanted)) return null;
   const wellFormed = await git(repoRoot, ['check-ref-format', '--branch', wanted]);
   if (!wellFormed.ok) return null;
-  const taken = async (name: string): Promise<boolean> => {
+  const exists = async (name: string): Promise<boolean> => {
     const local = await git(repoRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
     if (local.ok) return true;
     const remote = await git(repoRoot, ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${name}`]);
     return remote.ok;
+  };
+  // Git refs are paths: `feature` blocks `feature/x` and `feature/x/y` blocks `feature/x`.
+  const taken = async (name: string): Promise<boolean> => {
+    if (await exists(name)) return true;
+    const parts = name.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      if (await exists(parts.slice(0, i).join('/'))) return true;
+    }
+    const nested = await git(repoRoot, [
+      'for-each-ref', '--count=1', '--format=%(refname)', `refs/heads/${name}/`, `refs/remotes/origin/${name}/`,
+    ]);
+    return nested.ok && nested.stdout.trim() !== '';
   };
   if (!(await taken(wanted))) return wanted;
   const suffixed = `${wanted}-${runId.slice(0, 8)}`;

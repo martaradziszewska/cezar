@@ -2066,6 +2066,7 @@ export class RunManager {
     this.store.clearRunSecrets(runId);
     this.memoryPausing.delete(runId);
     this.lastNamerKey.delete(runId);
+    this.pendingBranchNames.delete(runId);
     this.forceStarted.delete(runId);
     // The run's slot is gone from busySlots() as of the deletes above — hand it
     // to the workspace's oldest queued run, in ANY project. Every terminal path
@@ -4432,6 +4433,8 @@ export class RunManager {
       // as their stable lower bound while reading the current working copy.
       const startingCommit = await getHeadCommit(repo.root);
       if (startingCommit) this.store.updateRun(runId, { baseBranch: startingCommit });
+      // In-place runs never fork, so nothing will ever read the namer's branch answer.
+      this.pendingBranchNames.delete(runId);
       emit({ type: 'note', message: 'worktree off — running in the repo working tree' });
     } else if (repo) {
       emit({
@@ -4465,7 +4468,26 @@ export class RunManager {
           (await this.awaitGeneratedBranch(runId, config.branchNaming, (message) =>
             emit({ type: 'note', message }),
           ));
-        const wt = await createWorktree(this.repoRoot, runId, base, { branch });
+        // The wait can last the namer's whole timeout; a Cancel during it must not fork.
+        if (state.cancelled) {
+          this.dropActive(runId, state);
+          return;
+        }
+        let wt: Awaited<ReturnType<typeof createWorktree>>;
+        try {
+          wt = await createWorktree(this.repoRoot, runId, base, { branch });
+        } catch (err) {
+          // A generated name git still refuses (ref race, an exotic conflict) must degrade to
+          // `cez/<id8>`, never fail the task. A recorded branch is the run's own: no fallback.
+          const generated = branch !== undefined && recordedRun?.branch === undefined;
+          if (!generated || state.cancelled) throw err;
+          const reason = err instanceof Error ? err.message : String(err);
+          emit({
+            type: 'note',
+            message: `generated branch "${branch}" could not be created (${reason}) — using the default cez/ branch`,
+          });
+          wt = await createWorktree(this.repoRoot, runId, base);
+        }
         state.cwd = wt.path;
         this.store.updateRun(runId, {
           worktreePath: wt.path,
@@ -4499,6 +4521,7 @@ export class RunManager {
         return;
       }
     } else {
+      this.pendingBranchNames.delete(runId);
       emit({ type: 'note', message: 'not a git repository — running in place, one task at a time' });
     }
 

@@ -214,6 +214,16 @@ describe('uniqueBranchName (spec 2026-10-11-branch-naming-instructions, real git
     expect(await uniqueBranchName(repo, 'feature/remote-only', runId)).toBe('feature/remote-only-77777777');
   });
 
+  it('treats a branch that blocks the name as a path prefix as taken, in both directions', async () => {
+    const repo = await fixtureRepo('cez-unique-df-');
+    await run('git', ['branch', 'feature'], { cwd: repo });
+    await run('git', ['branch', 'fix/login/redirect'], { cwd: repo });
+    // `feature` blocks `feature/x` and its suffixed twin alike, so nothing usable is left.
+    expect(await uniqueBranchName(repo, 'feature/x', runId)).toBeNull();
+    // `fix/login/redirect` blocks `fix/login`, but not the suffixed `fix/login-<id8>`.
+    expect(await uniqueBranchName(repo, 'fix/login', runId)).toBe('fix/login-77777777');
+  });
+
   it('answers null for a name git refuses or an option-like one', async () => {
     const repo = await fixtureRepo('cez-unique-bad-');
     expect(await uniqueBranchName(repo, 'feature/bad..name', runId)).toBeNull();

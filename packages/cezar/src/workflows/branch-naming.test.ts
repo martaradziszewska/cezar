@@ -94,6 +94,26 @@ describe('branch naming instructions', () => {
     }
   }, 30_000);
 
+  it('keeps cez/<id8> when an existing branch blocks the generated name as a path prefix', async () => {
+    // `feature` exists, so git can never create `feature/…` — the run must still start.
+    const root = fixtureRepo({ branchNaming: 'start with feature/' });
+    execFileSync('git', ['branch', 'feature'], { cwd: root });
+    const store = RunStore.open(join(root, '.ai/cezar'));
+    const manager = new RunManager(store, root);
+    try {
+      const record = manager.startRun(CHECK_ONLY, { task: 'implement the cr fixes' });
+      await waitForDone(store, record.id);
+      const run = store.getRun(record.id);
+      expect(run?.status).toBe('done');
+      expect(run?.branch).toBe(`cez/${record.id.slice(0, 8)}`);
+      const notes = store.readEvents(record.id).filter((e) => e.type === 'note').map((e) => String(e.message));
+      expect(notes.some((n) => n.includes('not usable'))).toBe(true);
+    } finally {
+      manager.dispose();
+      store.flush();
+    }
+  }, 30_000);
+
   it('keeps cez/<id8> without instructions, even though the namer runs', async () => {
     const root = fixtureRepo();
     const store = RunStore.open(join(root, '.ai/cezar'));
