@@ -131,17 +131,17 @@ describe('createWorktree recovery (real git)', () => {
   it('forks on a named branch and reattaches it only when told the name (spec 2026-10-11-branch-naming-instructions)', async () => {
     const repo = await fixtureRepo('cez-worktree-named-');
     const runId = '55555555-5555-4555-8555-555555555555';
-    const created = await createWorktree(repo, runId, 'main', { branch: 'mr/fix-login' });
-    expect(created.branch).toBe('mr/fix-login');
+    const created = await createWorktree(repo, runId, 'main', { branch: 'feature/fix-login' });
+    expect(created.branch).toBe('feature/fix-login');
     const head = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: created.path });
-    expect(head.stdout.trim()).toBe('mr/fix-login');
+    expect(head.stdout.trim()).toBe('feature/fix-login');
 
     rmSync(created.path, { recursive: true, force: true });
     await run('git', ['worktree', 'prune'], { cwd: repo });
     // Recovery callers pass the record's branch; without it the fork would mint cez/<id8>.
-    const recovered = await createWorktree(repo, runId, 'main', { branch: 'mr/fix-login' });
+    const recovered = await createWorktree(repo, runId, 'main', { branch: 'feature/fix-login' });
     expect(recovered.path).toBe(created.path);
-    expect(recovered.branch).toBe('mr/fix-login');
+    expect(recovered.branch).toBe('feature/fix-login');
   });
 
   it('refuses an option-like branch name', async () => {
@@ -202,21 +202,21 @@ describe('uniqueBranchName (spec 2026-10-11-branch-naming-instructions, real git
 
   it('answers the name as given when nothing holds it', async () => {
     const repo = await fixtureRepo('cez-unique-free-');
-    expect(await uniqueBranchName(repo, 'mr/fix-login', runId)).toBe('mr/fix-login');
+    expect(await uniqueBranchName(repo, 'feature/fix-login', runId)).toBe('feature/fix-login');
   });
 
   it('suffixes the id8 when a local or origin branch already holds the name', async () => {
     const repo = await fixtureRepo('cez-unique-taken-');
-    await run('git', ['branch', 'mr/fix-login'], { cwd: repo });
-    expect(await uniqueBranchName(repo, 'mr/fix-login', runId)).toBe('mr/fix-login-77777777');
+    await run('git', ['branch', 'feature/fix-login'], { cwd: repo });
+    expect(await uniqueBranchName(repo, 'feature/fix-login', runId)).toBe('feature/fix-login-77777777');
     const head = (await run('git', ['rev-parse', 'HEAD'], { cwd: repo })).stdout.trim();
-    await run('git', ['update-ref', 'refs/remotes/origin/mr/remote-only', head], { cwd: repo });
-    expect(await uniqueBranchName(repo, 'mr/remote-only', runId)).toBe('mr/remote-only-77777777');
+    await run('git', ['update-ref', 'refs/remotes/origin/feature/remote-only', head], { cwd: repo });
+    expect(await uniqueBranchName(repo, 'feature/remote-only', runId)).toBe('feature/remote-only-77777777');
   });
 
   it('answers null for a name git refuses or an option-like one', async () => {
     const repo = await fixtureRepo('cez-unique-bad-');
-    expect(await uniqueBranchName(repo, 'mr/bad..name', runId)).toBeNull();
+    expect(await uniqueBranchName(repo, 'feature/bad..name', runId)).toBeNull();
     expect(await uniqueBranchName(repo, '-x', runId)).toBeNull();
   });
 });
@@ -225,10 +225,10 @@ describe('pruneOrphans (spec 2026-10-11-branch-naming-instructions, real git)', 
   it('deletes the branch an orphan worktree actually has checked out, not a recomputed cez/<id8>', async () => {
     const repo = await fixtureRepo('cez-prune-named-');
     const runId = '88888888-8888-4888-8888-888888888888';
-    await createWorktree(repo, runId, 'main', { branch: 'mr/orphaned' });
+    await createWorktree(repo, runId, 'main', { branch: 'feature/orphaned' });
     const removed = await pruneOrphans(repo, new Set());
     expect(removed).toEqual([runId]);
-    await expect(run('git', ['show-ref', '--verify', '--quiet', 'refs/heads/mr/orphaned'], { cwd: repo })).rejects.toMatchObject({
+    await expect(run('git', ['show-ref', '--verify', '--quiet', 'refs/heads/feature/orphaned'], { cwd: repo })).rejects.toMatchObject({
       code: 1,
     });
   });

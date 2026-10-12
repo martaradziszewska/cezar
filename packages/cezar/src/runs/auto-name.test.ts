@@ -36,27 +36,27 @@ describe('buildNamerPrompt', () => {
 
   it('carries the branch naming instructions only when given (spec 2026-10-11-branch-naming-instructions)', () => {
     expect(buildNamerPrompt({ task: 't' })).not.toContain('Branch naming instructions');
-    const named = buildNamerPrompt({ task: 't', branchNaming: 'start with mr/, dashes between words' });
-    expect(named).toContain('Branch naming instructions:\nstart with mr/, dashes between words');
+    const named = buildNamerPrompt({ task: 't', branchNaming: 'start with feature/, dashes between words' });
+    expect(named).toContain('Branch naming instructions:\nstart with feature/, dashes between words');
   });
 });
 
 describe('sanitizeBranchName (spec 2026-10-11-branch-naming-instructions)', () => {
   it('turns whitespace into dashes and drops what git refuses', () => {
-    expect(sanitizeBranchName('mr/fix login redirect')).toBe('mr/fix-login-redirect');
-    expect(sanitizeBranchName('`mr/fix-login`')).toBe('mr/fix-login');
-    expect(sanitizeBranchName('mr/a..b@{c}:d?e*f')).toBe('mr/a.bcdef');
-    expect(sanitizeBranchName('mr//double--dash//')).toBe('mr/double-dash');
-    expect(sanitizeBranchName('-mr/.hidden/x.lock')).toBe('mr/hidden/x');
-    expect(sanitizeBranchName('mr/ends.')).toBe('mr/ends');
+    expect(sanitizeBranchName('feature/fix login redirect')).toBe('feature/fix-login-redirect');
+    expect(sanitizeBranchName('`feature/fix-login`')).toBe('feature/fix-login');
+    expect(sanitizeBranchName('feature/a..b@{c}:d?e*f')).toBe('feature/a.bcdef');
+    expect(sanitizeBranchName('feature//double--dash//')).toBe('feature/double-dash');
+    expect(sanitizeBranchName('-feature/.hidden/x.lock')).toBe('feature/hidden/x');
+    expect(sanitizeBranchName('feature/ends.')).toBe('feature/ends');
   });
 
   it('keeps the case the instructions asked for', () => {
-    expect(sanitizeBranchName('MR/Fix-Login')).toBe('MR/Fix-Login');
+    expect(sanitizeBranchName('FEATURE/Fix-Login')).toBe('FEATURE/Fix-Login');
   });
 
   it('caps the length and answers undefined when nothing usable is left', () => {
-    const long = sanitizeBranchName(`mr/${'a'.repeat(200)}`);
+    const long = sanitizeBranchName(`feature/${'a'.repeat(200)}`);
     expect([...(long ?? '')].length).toBeLessThanOrEqual(BRANCH_NAME_MAX);
     expect(sanitizeBranchName(undefined)).toBeUndefined();
     expect(sanitizeBranchName('')).toBeUndefined();
@@ -143,11 +143,11 @@ describe('composeNameResult', () => {
 });
 
 describe('composeNameResult — branch (spec 2026-10-11-branch-naming-instructions)', () => {
-  const answer = '{"title": "fixing login redirect", "branch": "mr/fix login redirect"}';
+  const answer = '{"title": "fixing login redirect", "branch": "feature/fix login redirect"}';
 
   it('answers a sanitized branch when instructions were given', () => {
-    const result = composeNameResult(answer, { task: 'fix the login redirect', branchNaming: 'start with mr/' });
-    expect(result).toEqual({ titleSummary: 'fixing login redirect', branch: 'mr/fix-login-redirect' });
+    const result = composeNameResult(answer, { task: 'fix the login redirect', branchNaming: 'start with feature/' });
+    expect(result).toEqual({ titleSummary: 'fixing login redirect', branch: 'feature/fix-login-redirect' });
   });
 
   it('ignores a volunteered branch without instructions — zero-config stays cez/<id8>', () => {
@@ -156,7 +156,7 @@ describe('composeNameResult — branch (spec 2026-10-11-branch-naming-instructio
   });
 
   it('keeps the title when the branch is unusable', () => {
-    const result = composeNameResult('{"title": "fixing login", "branch": "?*~"}', { task: 'x', branchNaming: 'mr/' });
+    const result = composeNameResult('{"title": "fixing login", "branch": "?*~"}', { task: 'x', branchNaming: 'feature/' });
     expect(result).toEqual({ titleSummary: 'fixing login' });
   });
 });

@@ -10,7 +10,7 @@ import type { WorkflowDef } from './types.ts';
 /**
  * Branch naming instructions (spec 2026-10-11-branch-naming-instructions), end to end through
  * the real RunManager against a real fixture repo: the dry-run namer (mock-claude answers
- * `mr/implementing cr fixes` whenever the prompt carries instructions) names the branch the
+ * `feature/implementing cr fixes` whenever the prompt carries instructions) names the branch the
  * fork is created on. CEZ_AUTONAME=1 forces the namer under CEZ_DRY_RUN (vitest.setup pins it
  * off for every other case).
  */
@@ -62,7 +62,7 @@ afterEach(() => {
 
 describe('branch naming instructions', () => {
   it('forks the task on the namer\'s branch when instructions are configured', async () => {
-    const root = fixtureRepo({ branchNaming: 'start with mr/, dashes between words' });
+    const root = fixtureRepo({ branchNaming: 'start with feature/, dashes between words' });
     const store = RunStore.open(join(root, '.ai/cezar'));
     const manager = new RunManager(store, root);
     try {
@@ -70,9 +70,9 @@ describe('branch naming instructions', () => {
       await waitForDone(store, record.id);
       const run = store.getRun(record.id);
       expect(run?.status).toBe('done');
-      expect(run?.branch).toBe('mr/implementing-cr-fixes');
+      expect(run?.branch).toBe('feature/implementing-cr-fixes');
       const head = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: run!.worktreePath!, encoding: 'utf8' });
-      expect(head.trim()).toBe('mr/implementing-cr-fixes');
+      expect(head.trim()).toBe('feature/implementing-cr-fixes');
     } finally {
       manager.dispose();
       store.flush();
@@ -80,14 +80,14 @@ describe('branch naming instructions', () => {
   }, 30_000);
 
   it('suffixes the id8 when the generated name is already a branch', async () => {
-    const root = fixtureRepo({ branchNaming: 'start with mr/' });
-    execFileSync('git', ['branch', 'mr/implementing-cr-fixes'], { cwd: root });
+    const root = fixtureRepo({ branchNaming: 'start with feature/' });
+    execFileSync('git', ['branch', 'feature/implementing-cr-fixes'], { cwd: root });
     const store = RunStore.open(join(root, '.ai/cezar'));
     const manager = new RunManager(store, root);
     try {
       const record = manager.startRun(CHECK_ONLY, { task: 'implement the cr fixes' });
       await waitForDone(store, record.id);
-      expect(store.getRun(record.id)?.branch).toBe(`mr/implementing-cr-fixes-${record.id.slice(0, 8)}`);
+      expect(store.getRun(record.id)?.branch).toBe(`feature/implementing-cr-fixes-${record.id.slice(0, 8)}`);
     } finally {
       manager.dispose();
       store.flush();
@@ -110,7 +110,7 @@ describe('branch naming instructions', () => {
 
   it('keeps cez/<id8> when naming is off, without waiting on a namer that never runs', async () => {
     process.env.CEZ_AUTONAME = '0';
-    const root = fixtureRepo({ branchNaming: 'start with mr/' });
+    const root = fixtureRepo({ branchNaming: 'start with feature/' });
     const store = RunStore.open(join(root, '.ai/cezar'));
     const manager = new RunManager(store, root);
     try {

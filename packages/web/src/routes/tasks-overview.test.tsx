@@ -86,7 +86,7 @@ describe('TasksOverview — the branch cell', () => {
         run({ id: 'forking', status: 'running' }),
         run({ id: 'queued', status: 'queued' }),
         run({ id: 'inplace', status: 'running', worktree: false }),
-        run({ id: 'named', status: 'running', branch: 'mr/fix-login' }),
+        run({ id: 'named', status: 'running', branch: 'feature/fix-login' }),
       ],
     })
     const cell = (id: string) => tableRow(id)?.querySelector('td[data-column-id="branch"]')
@@ -94,7 +94,7 @@ describe('TasksOverview — the branch cell', () => {
     expect(cell('queued')?.querySelector('[data-slot="branch-skeleton"]')).toBeNull()
     expect(cell('queued')?.textContent).toBe('—')
     expect(cell('inplace')?.querySelector('[data-slot="branch-skeleton"]')).toBeNull()
-    expect(cell('named')?.textContent).toBe('mr/fix-login')
+    expect(cell('named')?.textContent).toBe('feature/fix-login')
   })
 })
 

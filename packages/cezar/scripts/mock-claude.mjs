@@ -434,7 +434,7 @@ async function respond(userText, imageCount) {
     const name = JSON.stringify({
       title: 'implementing cr fixes',
       ...(numbered ? { pr: Number(numbered[1]) } : {}),
-      ...(named ? { branch: 'mr/implementing cr fixes' } : {}),
+      ...(named ? { branch: 'feature/implementing cr fixes' } : {}),
     });
     emit({
       type: 'assistant',

@@ -527,20 +527,20 @@ describe('the agents form', () => {
   })
 
   it('branch naming saves trimmed on its own button and clears with null (spec 2026-10-11-branch-naming-instructions)', async () => {
-    serve({ config: { branchNaming: 'start with mr/' } })
+    serve({ config: { branchNaming: 'start with feature/' } })
     renderAt('/settings/agents')
     await waitFor(() => expect(form()).not.toBeNull())
 
     const box = screen.getByLabelText<HTMLTextAreaElement>('Branch naming')
-    expect(box.value).toBe('start with mr/')
+    expect(box.value).toBe('start with feature/')
     const saveButton = () => document.querySelector<HTMLButtonElement>('[data-action="agents-save-branch-naming"]')!
     expect(saveButton().disabled).toBe(true)
 
-    fireEvent.change(box, { target: { value: '  initials/area/slug  ' } })
+    fireEvent.change(box, { target: { value: '  type/area/slug  ' } })
     expect(saveButton().disabled).toBe(false)
     fireEvent.click(saveButton())
     await waitFor(() => expect(puts()).toHaveLength(1))
-    expect(puts()[0]?.body).toEqual({ branchNaming: 'initials/area/slug' })
+    expect(puts()[0]?.body).toEqual({ branchNaming: 'type/area/slug' })
     await waitFor(() => expect(saveButton().disabled).toBe(true))
 
     fireEvent.change(box, { target: { value: '' } })

@@ -5,8 +5,8 @@ extends), spec 006 (one worktree + branch per task)
 
 ## Problem
 
-Every task branch is `cez/<id8>`. Teams with a branch convention (`mr/<feature>`,
-`<initials>/<area>/<slug>`) cannot follow it from cezar: the branch is created by `createWorktree`
+Every task branch is `cez/<id8>`. Teams with a branch convention (`feature/<slug>`,
+`<type>/<area>/<slug>`) cannot follow it from cezar: the branch is created by `createWorktree`
 before any agent step runs, so neither the Settings system prompt nor a workflow step can influence
 it, and an agent that renames the branch mid-run breaks the bookkeeping that recomputes
 `cez/<id8>` from the run id. The ask ("every time you create a branch, use …") was tried as a

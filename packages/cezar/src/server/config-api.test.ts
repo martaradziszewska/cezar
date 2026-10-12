@@ -367,9 +367,9 @@ describe('branchNaming round-trip (spec 2026-10-11-branch-naming-instructions)',
     JSON.parse(readFileSync(join(repoRoot, '.ai/cezar', 'config.json'), 'utf8')) as Record<string, unknown>;
 
   it('stores the instructions trimmed, answers them, and clears on null or ""', async () => {
-    const set = (await (await put({ branchNaming: '  start with mr/  ' })).json()) as Record<string, unknown>;
-    expect(set.branchNaming).toBe('start with mr/');
-    expect(rawFile().branchNaming).toBe('start with mr/');
+    const set = (await (await put({ branchNaming: '  start with feature/  ' })).json()) as Record<string, unknown>;
+    expect(set.branchNaming).toBe('start with feature/');
+    expect(rawFile().branchNaming).toBe('start with feature/');
 
     const emptied = (await (await put({ branchNaming: '' })).json()) as Record<string, unknown>;
     expect(emptied.branchNaming).toBeNull();

@@ -277,7 +277,7 @@ function AgentsForm({
           data-slot="agents-branch-naming"
           value={branchNaming}
           onChange={(event) => setBranchNaming(event.target.value)}
-          placeholder="e.g. start with mr/, then a short lowercase feature name with dashes: mr/fix-login-redirect"
+          placeholder="e.g. start with feature/, then a short lowercase feature name with dashes: feature/fix-login-redirect"
           className="min-h-24 max-w-xl"
         />
         <div className="flex max-w-xl items-center gap-3">
