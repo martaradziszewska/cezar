@@ -53,6 +53,7 @@ import type {
   FsBrowseResponse,
   GitCommitResponse,
   GitPushResponse,
+  GitStatusResponse,
   GithubChecksData,
   GithubSearchData,
   GithubRefStatusData,
@@ -100,6 +101,8 @@ import type {
   RunRecord,
   RunsIndexResponse,
   StarCountPayload,
+  SetTelemetryConsentInput,
+  TelemetryConsentPayload,
   WorktreeEntry,
   SaveWorkflowInput,
   SaveWorkflowResponse,
@@ -151,6 +154,7 @@ import type { Ok, OkJson } from '@open-mercato/cezar-api-client'
 import type { ClientResponse } from 'hono/client'
 import type { ResponseFormat } from 'hono/types'
 import type { AppType } from '@open-mercato/cezar/app-type'
+import { SID_HEADER, sid } from '@/lib/sid'
 
 /**
  * The cockpit's client for its own HTTP API.
@@ -390,7 +394,11 @@ async function unwrapValidated<R extends ClientResponse<unknown, number, Respons
  */
 async function fetchOrThrow(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, { ...init, credentials: 'include' })
+    // The device id rides every request, so whatever this device does server-side (start a
+    // task, hit an error) is attributed to it — see lib/sid.ts.
+    const headers = new Headers(init?.headers)
+    headers.set(SID_HEADER, sid())
+    return await fetch(url, { ...init, headers, credentials: 'include' })
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
     throw new ApiError(0, `cannot reach the cezar server (${url})`, { cause })
@@ -435,6 +443,16 @@ export async function getHealth(opts?: ReadOptions): Promise<HealthResponse> {
  *  answer and the chip renders nothing for it. */
 export async function getStarCount(opts?: ReadOptions): Promise<StarCountPayload> {
   return unwrap(await cez.api.v1['star-count'].$get({}, init(opts)), '/star-count')
+}
+
+/** The opt-in telemetry answer (`~/.cezar/config.json`), behind the consent bar and
+ *  Settings → Privacy. */
+export async function getTelemetryConsent(opts?: ReadOptions): Promise<TelemetryConsentPayload> {
+  return unwrap(await cez.api.v1.telemetry.consent.$get({}, init(opts)), '/telemetry/consent')
+}
+
+export async function putTelemetryConsent(input: SetTelemetryConsentInput): Promise<TelemetryConsentPayload> {
+  return unwrap(await cez.api.v1.telemetry.consent.$put({ json: input }), '/telemetry/consent')
 }
 
 /** Host-local catalog for one discovery runner (`claude`, `codex`, `opencode`, `cursor` — #794, #784).
@@ -1559,13 +1577,15 @@ export async function continueProjectRun(
   )
 }
 
-/** Draft PR from the review gate (spec 009): push the branch, `gh pr create --draft`; the run
- *  completes as done with the PR badge. On 409 the ApiError's `manual` carries the
+/** Open the run's PR (spec 009): push the branch, `gh pr create`; the run completes as done with
+ *  the PR badge. Draft unless `draft: false` — the review gate's Draft PR omits it, the run
+ *  header's Create PR asks for a ready one. On 409 the ApiError's `manual` carries the
  *  `git merge <branch>` fallback to show copyable. */
-export async function createRunPr(id: string): Promise<CreatePrResponse> {
+export async function createRunPr(id: string, opts: { draft?: boolean } = {}): Promise<CreatePrResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id'].pr.$post({
       param: { projectId: queryScope(), id: encodeURIComponent(id) },
+      json: opts,
     }),
     runPath(id, '/pr'),
   )
@@ -1727,6 +1747,17 @@ export async function commitRun(id: string, message: string): Promise<GitCommitR
       json: { message },
     }),
     runPath(id, '/git/commit'),
+  )
+}
+
+/** What the run's worktree holds that has not left it: uncommitted files, unpushed commits. */
+export async function getRunGitStatus(id: string, opts?: ReadOptions): Promise<GitStatusResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id'].git.status.$get(
+      { param: { projectId: queryScope(), id: encodeURIComponent(id) } },
+      init(opts),
+    ),
+    runPath(id, '/git/status'),
   )
 }
 

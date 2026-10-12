@@ -42,6 +42,7 @@ import {
   getRepoTree,
   getRun,
   getRunChanges,
+  getRunGitStatus,
   getRunDiff,
   getRunDrafts,
   getRunFile,
@@ -66,6 +67,7 @@ import {
   getSelfUpdate,
   getSelfUpdateDevelopment,
   getStarCount,
+  getTelemetryConsent,
   refreshSelfUpdate,
   setSelfUpdateChannel,
   applySelfUpdate,
@@ -180,6 +182,7 @@ export const queryKeys = {
     detail: (id: string) => [queryScope(), 'runs', 'detail', id] as const,
     diff: (id: string) => [queryScope(), 'runs', 'diff', id] as const,
     changes: (id: string) => [queryScope(), 'runs', 'changes', id] as const,
+    gitStatus: (id: string) => [queryScope(), 'runs', 'git-status', id] as const,
     file: (id: string, path: string) => [queryScope(), 'runs', 'files', id, path] as const,
     handoff: (id: string) => [queryScope(), 'runs', 'handoff', id] as const,
     /** Unsent drafts for one task (#939). Read once per visit and never refetched in the
@@ -436,6 +439,8 @@ export const workspaceQueryKeys = {
   /** cezar's own GitHub star count via `GET /api/v1/star-count`, behind the sidebar's ⭐ ask.
    *  Workspace-led: the number is about cezar, not about whichever project is on screen. */
   starCount: ['workspace', 'star-count'] as const,
+  /** The opt-in telemetry answer via `GET /api/v1/telemetry/consent` — one per machine. */
+  telemetryConsent: ['workspace', 'telemetry-consent'] as const,
   /** One directory listing from `GET /api/fs/browse` (step 4.2's folder picker). Keyed by the
    *  browsed path — `null` is the browse root, whose absolute location only the server knows.
    *  Not scope-led: there is one filesystem behind the workspace, not one per project. */
@@ -1115,6 +1120,21 @@ export function useRunChanges(id: string | undefined, live = false) {
   })
 }
 
+/** What the run's worktree has not published yet — the header's one git button reads it on
+ *  every tab, so it is the cheap `git status` answer rather than `/changes` and its patches.
+ *  Polled while the agent may still be writing; refetched on focus, like `useRunChanges`. */
+export function useRunGitStatus(id: string, enabled: boolean, live = false) {
+  return useQuery({
+    queryKey: queryKeys.runs.gitStatus(id),
+    queryFn: ({ signal }) => getRunGitStatus(id, { signal }),
+    enabled,
+    retry: false,
+    refetchInterval: live ? 10_000 : false,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  })
+}
+
 /** One worktree path for the Files tab (R5): the root/dir listings the tree lazy-loads and
  *  the file entries the preview renders. `path` is '' for the worktree root and `undefined`
  *  while nothing is selected. Like /changes, a 409 ("no worktree — …") is an answer retries
@@ -1467,6 +1487,17 @@ export function useStarCount(enabled = true) {
     refetchInterval: STAR_COUNT_REFRESH_MS,
     retry: false,
     refetchOnMount: false,
+  })
+}
+
+/** The opt-in telemetry answer. Read by the consent bar and Settings → Privacy; both write
+ *  through `putTelemetryConsent` and set this cache from the answer. */
+export function useTelemetryConsent() {
+  return useQuery({
+    queryKey: workspaceQueryKeys.telemetryConsent,
+    queryFn: ({ signal }) => getTelemetryConsent({ signal }),
+    staleTime: Infinity,
+    retry: false,
   })
 }
 
