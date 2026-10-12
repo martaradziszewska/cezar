@@ -56,3 +56,22 @@ cell and the card meta show a small skeleton instead of the dash, so the wait re
 - Renaming an existing task's branch, or re-naming on the live title refresh.
 - A template language or placeholders; the instructions are prose.
 - Changing the worktree directory name (`.ai/cezar/worktrees/<runId>`) or the dispatch unit id.
+
+## Settings regrouping (2026-10-12)
+
+The branch rule was typed into the wrong Settings box twice before this feature existed: once as a
+prompt template, once as the system prompt. Both sat on pages whose name said nothing about who
+reads the text. Project Settings is therefore split by what a control IS, superseding the R6
+§Settings layout (Agents held the system prompt; Prompt templates was its own section):
+
+| Section | Holds | Rule |
+| --- | --- | --- |
+| Agents | providers, default runner and account, per-runner models | machinery: which agent runs |
+| Instructions | system prompt, branch naming, prompt templates | text a model reads; each hint names the reader and the moment |
+| Tasks | base branch, review before finishing, live title updates | behavior of a run, not of an agent |
+
+`/settings/prompt-templates` redirects to `/settings/instructions#prompt-templates`; the composers'
+"Edit templates…" links point there. The three sections share one `PUT /config` mutation
+(`use-config-save.ts`). `config.json` keys and the API are unchanged. Provider-status gating only
+ever disabled runner and model controls, so moving the textareas and toggles off the Agents page
+removed the "unrelated settings stay usable" assertions rather than any behavior.
