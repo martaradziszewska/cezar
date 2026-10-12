@@ -227,10 +227,11 @@ const ROUTE_CASES: Array<[url: string, route: string, title: string]> = [
   // the unscoped `/settings/global/*` area, covered in its own describe below.
   ['/settings', 'settings', 'Settings'],
   ['/settings/agents', 'settings-agents', 'Agents'],
+  ['/settings/instructions', 'settings-instructions', 'Instructions'],
+  ['/settings/tasks', 'settings-tasks', 'Tasks'],
   ['/settings/agent-config', 'settings-agent-config', 'Agent config'],
   ['/settings/worktrees', 'settings-worktrees', 'Worktrees'],
   ['/settings/bookmarklets', 'settings-bookmarklets', 'Bookmarklets'],
-  ['/settings/prompt-templates', 'settings-prompt-templates', 'Prompt templates'],
 ]
 
 describe('scoped route map (/p/:projectId)', () => {
