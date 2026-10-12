@@ -142,7 +142,7 @@ function InstructionsForm({ config }: { config: ConfigResponse }) {
             </p>
           ) : (
             <p className="text-[11px] text-soft-foreground">
-              Leave empty for the default names. Applied to new tasks only.
+              Leave empty for the default names. A new task waits for its name before it forks.
             </p>
           )}
         </div>

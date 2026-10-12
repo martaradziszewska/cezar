@@ -26,10 +26,13 @@ template language — the instructions are prose and the namer reads them.
 `branch` field written under those instructions. The live title refresh at turn end never asks for
 a branch.
 
-**Wait at the fork, never rename.** The worktree is forked when the scheduler picks the task up,
-usually seconds after creation, so the answer is normally already in. `execute` awaits the pending
-namer promise for at most `BRANCH_NAME_WAIT_MS` (5 s) and only when instructions are set; the
-zero-config path keeps the instant fork. A timeout, a failed namer or `CEZ_AUTONAME=0` forks as
+**Wait at the fork, never rename.** The worktree is forked when the scheduler picks the task up.
+On a busy cockpit that is seconds after creation and the answer is already in; on an idle one the
+task starts immediately and the wait begins together with the namer call, and a cold `claude -p`
+alone takes more than five seconds (run 269606ac forked on `cez/` under a 5 s budget). `execute`
+therefore awaits the pending namer promise for `BRANCH_NAME_WAIT_MS` — the namer's own 20 s
+timeout plus 10 s — and only when instructions are set; the zero-config path keeps the instant
+fork. A timeout, a failed namer or `CEZ_AUTONAME=0` forks as
 `cez/<id8>` and keeps it: a branch is named once, at creation, so a push or PR never points at a
 name that later changed.
 
