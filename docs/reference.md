@@ -717,7 +717,7 @@ never blocks startup):
   "modelsLocked": true,      // optional: native per-runner model is fixed/read-only; runner stays selectable
   "plannerModel": "sonnet",  // model the "Plan first" button uses to draft chains
   "baseBranch": "develop",   // branch worktrees fork from + PRs target (also settable in the Git tab)
-  "branchNaming": "start with feature/, then a short lowercase feature name with dashes"
+  "branchNaming": "your branch naming preferences"
                              // optional: task branches are named from the first prompt under these
                              // instructions (Settings → Agents); absent = cez/<id8>
 }

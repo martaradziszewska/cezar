@@ -270,14 +270,14 @@ function AgentsForm({
 
       <Field
         title="Branch naming"
-        hint="How task branches are named, derived from the first prompt when a task starts. Empty keeps the default cez/<id> branches."
+        hint="Add custom instructions for generating branch names from your task prompts. Empty keeps the default branch names."
       >
         <Textarea
           aria-label="Branch naming"
           data-slot="agents-branch-naming"
           value={branchNaming}
           onChange={(event) => setBranchNaming(event.target.value)}
-          placeholder="e.g. start with feature/, then a short lowercase feature name with dashes: feature/fix-login-redirect"
+          placeholder="Add your preferences here. The branch name is generated from the first prompt when a task starts."
           className="min-h-24 max-w-xl"
         />
         <div className="flex max-w-xl items-center gap-3">
