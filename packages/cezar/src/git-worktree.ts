@@ -231,7 +231,9 @@ function canonicalPath(path: string): string {
  *
  * `opts.branch` is the run's recorded (or freshly generated) branch; without it the name is
  * `cez/<id8>`. Recovery callers MUST pass the record's branch — a named branch cannot be
- * recomputed from the run id.
+ * recomputed from the run id. Precondition for a FRESH run: the name must already be unique
+ * (`uniqueBranchName`), because an existing branch of that name is treated as this run's own
+ * surviving branch and reattached — that is what rematerializing a reclaimed worktree needs.
  */
 export async function createWorktree(
   repoRoot: string,

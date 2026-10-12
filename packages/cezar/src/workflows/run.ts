@@ -1112,6 +1112,7 @@ export class RunManager {
   /** The creation-time namer's branch answer per queued run (spec
    *  2026-10-11-branch-naming-instructions) — `execute` awaits it, bounded, before the fork. */
   private readonly pendingBranchNames = new Map<string, Promise<string | undefined>>();
+  private readonly branchNameWaitMs: number;
   /** Interrupted agent turns recovered after a process restart. Unlike an
    *  explicit user Continue, these are bulk scheduler work and must re-enter
    *  through `pump()` so both workspace and per-project caps are honored. */
@@ -1200,9 +1201,13 @@ export class RunManager {
       /** The project/workspace secret store (spec 2026-10-10-project-secrets-vault-options);
        *  check steps read it with the `checks` audience. */
       secrets?: SecretStore;
+      /** How long a fork waits for the namer's branch (spec 2026-10-11-branch-naming-instructions).
+       *  Tests shorten it; the default is the slow-model budget. */
+      branchNameWaitMs?: number;
     } = {},
   ) {
     this.dataDir = join(repoRoot, '.ai/cezar');
+    this.branchNameWaitMs = options.branchNameWaitMs ?? BRANCH_NAME_WAIT_MS;
     this.projectId = options.projectId;
     this.resolveTrackerEnv = options.resolveTrackerEnv;
     this.secrets = options.secrets ?? new SecretStore();
@@ -6321,8 +6326,7 @@ export class RunManager {
         skillDescription = skills.find((s) => s.name === skillName)?.description;
       }
       // Only the creation call names the branch: the live refresh must never move it.
-      const branchNaming = live ? undefined : (await loadConfig(this.repoRoot)).branchNaming;
-      const result = await generateRunName(this.repoRoot, { task, skillName, skillDescription, ...live, branchNaming });
+      const result = await generateRunName(this.repoRoot, { task, skillName, skillDescription, ...live, nameBranch: !live });
       if (!result) return undefined;
       const run = this.store.getRun(runId);
       // Marker-owned state outranks the namer (spec 2026-07-18-task-ref-markers):
@@ -6360,13 +6364,18 @@ export class RunManager {
     const pending = this.pendingBranchNames.get(runId);
     this.pendingBranchNames.delete(runId);
     if (!pending || !branchNaming) return undefined;
+    const TIMED_OUT = Symbol('timed out');
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), BRANCH_NAME_WAIT_MS);
+    const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), this.branchNameWaitMs);
     });
     const wanted = await Promise.race([pending, timeout]).finally(() => clearTimeout(timer));
-    if (!wanted) {
+    if (wanted === TIMED_OUT) {
       note('branch name not ready in time — using the default cez/ branch');
+      return undefined;
+    }
+    if (!wanted) {
+      note('the namer answered no branch name — using the default cez/ branch');
       return undefined;
     }
     const unique = await uniqueBranchName(this.repoRoot, wanted, runId);

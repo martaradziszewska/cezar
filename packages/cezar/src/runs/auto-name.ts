@@ -60,7 +60,7 @@ export const NAMER_SYSTEM_PROMPT =
 export const NAMER_BRANCH_PROMPT =
   ' Also set "branch": a git branch name for this task, derived from the task, that follows the ' +
   'user\'s branch naming instructions exactly (prefix, separators, case). Use only letters, digits, ' +
-  '"-", "_", "." and "/"; never spaces. Keep it under 60 characters.';
+  '"-", "_", "." and "/"; never spaces. Keep it under 80 characters.';
 
 const namerResponseSchema = z.object({
   title: z.string().min(1),
@@ -77,8 +77,11 @@ export interface NamerContext {
   turnText?: string;
   /** Live refresh only: current `git diff --shortstat` line. */
   diffStat?: string;
-  /** Creation only (spec 2026-10-11-branch-naming-instructions): ask for a branch name too. */
+  /** Creation only (spec 2026-10-11-branch-naming-instructions): ask for a branch name too.
+   *  Explicit instructions win; otherwise `nameBranch` lets `generateRunName` take them from
+   *  the config it loads anyway. */
   branchNaming?: string;
+  nameBranch?: boolean;
 }
 
 export interface NameResult {
@@ -198,6 +201,9 @@ export function postValidateTitle(title: string, refNumber?: number): string {
 export async function generateRunName(repoRoot: string, ctx: NamerContext): Promise<NameResult | null> {
   try {
     const config = await loadConfig(repoRoot);
+    if (ctx.nameBranch && ctx.branchNaming === undefined && config.branchNaming) {
+      ctx = { ...ctx, branchNaming: config.branchNaming };
+    }
     const runner = createRunner(config.defaultRunner);
     const model = config.defaultRunner === 'claude' ? config.namerModel : undefined;
     // Name under the project's own agent account (spec 2026-07-29-agent-profiles) — naming is

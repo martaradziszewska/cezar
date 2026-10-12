@@ -388,6 +388,21 @@ describe('the global settings area (/settings/global)', () => {
     expect(screen.queryByRole('heading', { level: 1, name: 'Projects' })).toBeNull()
   })
 
+  // Prompt templates folded into Instructions (spec 2026-10-11-branch-naming-instructions):
+  // BACKWARD_COMPATIBILITY.md calls dropping a moved section's redirect a break.
+  it(`/p/${BOOT}/settings/prompt-templates lands on the Instructions anchor`, () => {
+    renderAt(`/p/${BOOT}/settings/prompt-templates`)
+    expect(currentPathname()).toBe(`/p/${BOOT}/settings/instructions`)
+    expect(currentHash()).toBe('#prompt-templates')
+    expect(routeName()).toBe('settings-instructions')
+  })
+
+  it('the legacy flat /settings/prompt-templates lands there too', () => {
+    renderAt('/settings/prompt-templates')
+    expect(currentPathname()).toBe(`/p/${BOOT}/settings/instructions`)
+    expect(currentHash()).toBe('#prompt-templates')
+  })
+
   // A moved section's old URL, in both spellings a bookmark can have it.
   for (const id of ['appearance', 'notifications', 'resources']) {
     it(`/p/${BOOT}/settings/${id} redirects to the global twin`, () => {
