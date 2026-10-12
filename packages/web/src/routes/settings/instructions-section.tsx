@@ -114,14 +114,14 @@ function InstructionsForm({ config }: { config: ConfigResponse }) {
 
       <SettingsField
         title="Branch naming"
-        hint="Read by the namer when a task starts, to generate its branch name from the first prompt. Empty keeps the default branch names."
+        hint="How new task branches are named. Generated from the first prompt."
       >
         <Textarea
           aria-label="Branch naming"
           data-slot="instructions-branch-naming"
           value={branchNaming}
           onChange={(event) => setBranchNaming(event.target.value)}
-          placeholder="Add your preferences here. The branch name is generated from the first prompt when a task starts."
+          placeholder="Describe your branch naming convention…"
           className="min-h-24 max-w-xl"
         />
         <div className="flex max-w-xl items-center gap-3">
@@ -142,7 +142,7 @@ function InstructionsForm({ config }: { config: ConfigResponse }) {
             </p>
           ) : (
             <p className="text-[11px] text-soft-foreground">
-              A task waits a few seconds for its name before it forks. Existing branches are never renamed.
+              Leave empty for the default names. Applied to new tasks only.
             </p>
           )}
         </div>
