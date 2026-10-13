@@ -13,7 +13,7 @@ import {
   type AskMarkerParseResult,
   type AskRequest,
 } from '../core/ask.ts';
-import { AUTO_END_DELAY_MS, type AgentSession } from '../core/claude-cli-runner.ts';
+import { AUTO_END_DELAY_MS, isClaudeMissingSessionError, type AgentSession } from '../core/claude-cli-runner.ts';
 import {
   loadPrivateMcp,
   PRIVATE_MCP_FILE,
@@ -3838,6 +3838,10 @@ export class RunManager {
     const portableContext = record && sessionId === undefined
       ? freshContinuationContext(record, this.store.readEvents(runId))
       : undefined;
+    // The record is mutated in place below; a missing-session fallback needs it as it was.
+    const recordBeforeTurn = record && sessionId !== undefined
+      ? { ...record, steps: record.steps.map((step) => ({ ...step })) }
+      : undefined;
     // A fresh session is pinned and recorded up front, exactly like a workflow step's
     // (`runAgentStep`): Claude emits no `session` event of its own, so an unpinned fresh
     // continuation left its step without a session id, and the NEXT Continue resumed the last
@@ -3951,9 +3955,31 @@ export class RunManager {
     let stepCost = 0;
     let turnText = '';
     let sessionError: string | undefined;
+    // While a resume has produced nothing but errors, hold them back: if the CLI says the
+    // conversation is gone, they are replaced by a fresh session instead of shown.
+    let resumePending = sessionId !== undefined;
+    let resumeMissing = false;
+    let heldErrors: AgentEvent[] = [];
+    const releaseHeldErrors = () => {
+      for (const held of heldErrors) this.store.appendEvent(runId, { ...held, stepId });
+      heldErrors = [];
+    };
     const sink = this.makeUiSink(runId, stepId);
     const onEvent = (event: AgentEvent) => {
       if (state.cancelled || this.active.get(runId) !== state) return;
+      if (resumePending) {
+        if (event.type === 'error') {
+          if (isClaudeMissingSessionError(event.message)) resumeMissing = true;
+          heldErrors.push(event);
+          sessionError ??= event.message;
+          state.session?.interrupt();
+          return;
+        }
+        if (event.type === 'text' || event.type === 'tool-call' || event.type === 'tool-result' || event.type === 'image') {
+          resumePending = false;
+          releaseHeldErrors();
+        }
+      }
       if (event.type === 'image') {
         const saved = this.persistAttachment(runId, event.mediaType, event.data);
         if (saved) this.store.appendEvent(runId, { type: 'image', stepId, ...saved });
@@ -4237,54 +4263,87 @@ export class RunManager {
     const openingPrompt = treeBlocks.length ? `${treeBlocks.join('\n\n')}\n\n---\n\n${expandedPrompt}` : expandedPrompt;
     // The previous runner's portable context (#954) opens the session first, then the tree
     // blocks above, then the instruction that prompted this continuation.
-    const contextualOpeningPrompt = portableContext
-      ? `${portableContext}\n\n---\n\n## New user instruction\n${openingPrompt}`
+    const withContext = (context: string | undefined) => context
+      ? `${context}\n\n---\n\n## New user instruction\n${openingPrompt}`
       : openingPrompt;
     state.grantedAttachmentLibrary = this.prepareAttachmentLibrary();
-    const session = runner.startSession(
-      {
-        // The Continue step is a fresh agent session on the same run — the
-        // run's extra system prompt (already resolved at execute time and
-        // echoed on the record) rides along with the handoff contract, and a
-        // dispatch prompt rides along with both (spec 2026-09-10-dispatch).
-        systemPrompt: composeSystemPrompt(
-          dispatchPromptPart(state.dispatchPrompt, record?.systemPrompt),
-          state.automationsPrompt,
-          record?.systemPrompt,
-          generateFollowups ? HANDOFF_INSTRUCTIONS : HANDOFF_ONLY_INSTRUCTIONS,
-        ),
-        userPrompt: attachments.length
-          ? `${contextualOpeningPrompt}\n\n${pastedAttachmentsText(attachments, this.attachmentLibraryHint(attachments, state.grantedAttachmentLibrary))}`
-          : contextualOpeningPrompt,
-        ...(openingImages.length ? { images: openingImages } : {}),
-        cwd: state.cwd,
-        allowedTools: toolsStep?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
-        bashAllowlist: toolsStep?.bashAllowlist,
-          additionalDirectories: agentDirectories(
-            join(this.dataDir, 'runs'),
-            state.grantedAttachmentLibrary,
-          continueProfile.env,
-        ),
-        env: continueProfile.env,
-        mcpServers: continueMcp,
-        model: continueModel,
-        sessionId: spawnSessionId,
-        resume: sessionId !== undefined,
-        timeoutMs: 0,
-      },
-      onEvent,
-      { onUiEvent: (event) => this.handleRunnerUiEvent(runId, state, sink, event) },
-    );
-    state.session = session;
-    state.sessionEverOpened = true;
-    this.flushDeferred(runId);
-    state.interrupt = () => session.interrupt();
-    if (session.pid !== undefined) registerRunProcess(runId, session.pid);
+    const launch = (launchSessionId: string, resume: boolean, context: string | undefined): AgentSession => {
+      const contextualOpeningPrompt = withContext(context);
+      const started = runner.startSession(
+        {
+          // The Continue step is a fresh agent session on the same run — the
+          // run's extra system prompt (already resolved at execute time and
+          // echoed on the record) rides along with the handoff contract, and a
+          // dispatch prompt rides along with both (spec 2026-09-10-dispatch).
+          systemPrompt: composeSystemPrompt(
+            dispatchPromptPart(state.dispatchPrompt, record?.systemPrompt),
+            state.automationsPrompt,
+            record?.systemPrompt,
+            generateFollowups ? HANDOFF_INSTRUCTIONS : HANDOFF_ONLY_INSTRUCTIONS,
+          ),
+          userPrompt: attachments.length
+            ? `${contextualOpeningPrompt}\n\n${pastedAttachmentsText(attachments, this.attachmentLibraryHint(attachments, state.grantedAttachmentLibrary))}`
+            : contextualOpeningPrompt,
+          ...(openingImages.length ? { images: openingImages } : {}),
+          cwd: state.cwd,
+          allowedTools: toolsStep?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
+          bashAllowlist: toolsStep?.bashAllowlist,
+            additionalDirectories: agentDirectories(
+              join(this.dataDir, 'runs'),
+              state.grantedAttachmentLibrary,
+            continueProfile.env,
+          ),
+          env: continueProfile.env,
+          mcpServers: continueMcp,
+          model: continueModel,
+          sessionId: launchSessionId,
+          resume,
+          timeoutMs: 0,
+        },
+        onEvent,
+        { onUiEvent: (event) => this.handleRunnerUiEvent(runId, state, sink, event) },
+      );
+      state.session = started;
+      state.sessionEverOpened = true;
+      this.flushDeferred(runId);
+      state.interrupt = () => started.interrupt();
+      if (started.pid !== undefined) registerRunProcess(runId, started.pid);
+      return started;
+    };
+    let session = launch(spawnSessionId, sessionId !== undefined, portableContext);
 
     const finishedAt = () => new Date().toISOString();
     try {
-      await session.result;
-      if (sessionError) throw new Error(sessionError);
+      try {
+        await session.result;
+        if (sessionError) throw new Error(sessionError);
+      } catch (err) {
+        // Claude pruned the transcript this task resumes (cleanupPeriodDays): continue in a fresh
+        // session seeded with the task's persisted state instead of failing every Continue.
+        if (!resumeMissing || !recordBeforeTurn || state.cancelled || this.active.get(runId) !== state) {
+          releaseHeldErrors();
+          throw err;
+        }
+        heldErrors = [];
+        resumePending = false;
+        resumeMissing = false;
+        sessionError = undefined;
+        turnText = '';
+        const freshId = randomUUID();
+        this.store.updateStep(runId, stepId, { sessionId: freshId });
+        this.store.appendEvent(runId, {
+          type: 'note',
+          stepId,
+          message: `claude no longer has session ${sessionId} (its transcript was removed) — continuing in a fresh session with this task's saved context`,
+        });
+        const context = freshContinuationContext(
+          { ...recordBeforeTurn, steps: recordBeforeTurn.steps.filter((step) => step.id !== stepId) },
+          this.store.readEvents(runId).filter((event) => event.stepId !== stepId),
+        );
+        session = launch(freshId, false, context);
+        await session.result;
+        if (sessionError) throw new Error(sessionError);
+      }
       sink.sessionEnded(state.cancelled ? 'cancelled' : 'end_turn');
       if (state.cancelled && this.active.get(runId) === state) {
         this.store.updateStep(runId, stepId, { status: 'cancelled', finishedAt: finishedAt() });
