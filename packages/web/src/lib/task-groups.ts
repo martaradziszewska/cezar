@@ -30,7 +30,9 @@ export const BUCKET_ORDER: readonly BucketLabel[] = ['Pinned', 'Needs you', 'Wor
  * without reading a single row's detail.
  *
  * Grown from the legacy `STATUS_ORDER` (waiting/review/running/queued, everything else 9): the
- * terminal states are now ranked among themselves, and `scheduled` — a run waiting out a usage
+ * terminal states share ONE weight, so Recent reads purely by time and the status dot carries the
+ * outcome (a done-before-failed split buried a just-finished failure under days-old done rows),
+ * and `scheduled` — a run waiting out a usage
  * limit — sits between running and queued, because it is work with an appointment rather than an
  * outcome (spec 2026-08-03-auto-resume-after-usage-limit).
  */
@@ -40,9 +42,11 @@ const STATUS_ORDER: Partial<Record<RunRecord['status'], number>> = {
   running: 2,
   queued: 4,
   done: 5,
-  failed: 6,
-  cancelled: 7,
+  failed: 5,
+  cancelled: 5,
 }
+
+const TERMINAL_WEIGHT = 5
 
 /** Not a status of its own: `scheduled` is a `failed` run holding a live resume deadline, which
  *  is the same rule the status pill and the sidebar bucket read (`lib/attention.ts`). */
@@ -231,6 +235,11 @@ export function sortRuns(runs: readonly RunRecord[], view: ListView): RunRecord[
       }
       if (a.status === 'queued' && b.status === 'queued') {
         return a.createdAt.localeCompare(b.createdAt)
+      }
+      // Outcomes sort by when they ended — the same timestamp the row's age prints — so a task
+      // continued and finished minutes ago is not filed under its days-old creation date.
+      if (statusWeight(a) === TERMINAL_WEIGHT) {
+        return (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt)
       }
       return b.createdAt.localeCompare(a.createdAt)
     })

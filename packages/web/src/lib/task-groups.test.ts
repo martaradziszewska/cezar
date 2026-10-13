@@ -164,19 +164,24 @@ describe('sortRuns', () => {
     expect(sorted.map((r) => positions.get(r.id))).toEqual([1, 2, 3])
   })
 
-  it('ranks the outcomes done → failed → cancelled, recency within each', () => {
+  it('orders outcomes purely by recency, never split by done/failed/cancelled', () => {
     const runs = [
       run({ id: 'cancelled', status: 'cancelled', createdAt: '2026-07-14T09:00:00.000Z' }),
       run({ id: 'failed', status: 'failed', createdAt: '2026-07-14T10:00:00.000Z' }),
       run({ id: 'done', status: 'done', createdAt: '2026-07-14T08:00:00.000Z' }),
       run({ id: 'done-newer', status: 'done', createdAt: '2026-07-14T11:00:00.000Z' }),
     ]
-    expect(sortRuns(runs, 'active').map((r) => r.id)).toEqual([
-      'done-newer',
-      'done',
-      'failed',
-      'cancelled',
-    ])
+    expect(sortRuns(runs, 'active').map((r) => r.id)).toEqual(['done-newer', 'failed', 'cancelled', 'done'])
+  })
+
+  it('orders outcomes by when they finished — the age the row prints — not when they were created', () => {
+    // An old task continued and finished minutes ago belongs at the top of Recent.
+    const runs = [
+      run({ id: 'new-done', status: 'done', createdAt: '2026-07-14T11:00:00.000Z', finishedAt: '2026-07-14T11:30:00.000Z' }),
+      run({ id: 'old-failed', status: 'failed', createdAt: '2026-07-10T09:00:00.000Z', finishedAt: '2026-07-14T12:00:00.000Z' }),
+      run({ id: 'no-finish', status: 'done', createdAt: '2026-07-14T11:45:00.000Z' }),
+    ]
+    expect(sortRuns(runs, 'active').map((r) => r.id)).toEqual(['old-failed', 'no-finish', 'new-done'])
   })
 
   it('puts a scheduled run between running and queued — the pipeline in the order it happens', () => {
