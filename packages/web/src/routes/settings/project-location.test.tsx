@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryKeys, workspaceQueryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
 import { AppRoutes } from '@/routes'
+import { ThemeProvider } from '@/components/theme-provider'
 
 /**
  * Project settings shows WHERE the project is (project-location.tsx): the registry's absolute
@@ -72,9 +73,11 @@ function seededClient() {
 function renderAt(entry: string) {
   render(
     <QueryClientProvider client={seededClient()}>
-      <MemoryRouter initialEntries={[entry]}>
-        <AppRoutes />
-      </MemoryRouter>
+      <ThemeProvider>
+        <MemoryRouter initialEntries={[entry]}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ThemeProvider>
     </QueryClientProvider>,
   )
 }

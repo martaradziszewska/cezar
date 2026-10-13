@@ -8,6 +8,7 @@ import { queryKeys, workspaceQueryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
 import { ListViewProvider } from '@/components/list-view'
 import { AppRoutes } from '@/routes'
+import { ThemeProvider } from '@/components/theme-provider'
 
 /**
  * Project settings → General (project-general.tsx): the dashboard the settings index became.
@@ -118,9 +119,11 @@ function renderAt(entry: string, seed?: Parameters<typeof seededClient>[0]) {
       {/* The app shell normally provides it; the removal test navigates onto the tasks overview,
           which reads it. */}
       <ListViewProvider>
-        <MemoryRouter initialEntries={[entry]}>
-          <AppRoutes />
-        </MemoryRouter>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={[entry]}>
+            <AppRoutes />
+          </MemoryRouter>
+        </ThemeProvider>
       </ListViewProvider>
     </QueryClientProvider>,
   )

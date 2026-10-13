@@ -1,6 +1,7 @@
 # Unreleased
 
 ## ✨ Features
+- ✨ Settings is one full-screen surface: a settings sidebar lists the general sections above a per-project tree, the app chrome is hidden there, Back/Escape return to where you came from, and the sidebar column (resize, width, drawer) is shared with the app sidebar. The Tools menu now opens Agent accounts. (#1413) *(@martaradziszewska)*
 - ✨ Branch naming instructions in Settings → Instructions: task branches are named from the first prompt under your instructions, with a short wait before the fork and a skeleton in the branch cell meanwhile; empty keeps `cez/<id>`. *(@martaradziszewska)*
 - ✨ Project settings regrouped: Agents keeps providers, runner and models; the new Instructions section holds the system prompt, branch naming and prompt templates; the new Tasks section holds base branch, the review gate and live titles. Old prompt-templates links redirect. *(@martaradziszewska)*
 
