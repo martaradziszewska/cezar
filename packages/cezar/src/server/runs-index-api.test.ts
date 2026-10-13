@@ -268,6 +268,28 @@ describe('workspace runs index API', () => {
     expect(body.runs.at(-1)?.id).toBe('r-010');
   });
 
+  it('orders by last activity, so an old task finished today leads and survives the cap', async () => {
+    await registerProject(repoRoot);
+    await registerProject(otherRoot);
+    seedColdProject(otherRoot, [
+      // The oldest by creation — under a createdAt sort it would be the one the cap drops.
+      storedRun({ id: 'old-finished-now', title: 'Old', status: 'failed', createdAt: '2026-05-01T10:00:00Z', finishedAt: '2026-07-20T10:00:00Z' }),
+      ...Array.from({ length: 200 }, (_, i) => {
+        const n = String(i).padStart(3, '0');
+        const minute = String(i % 60).padStart(2, '0');
+        const hour = String(10 + Math.floor(i / 60)).padStart(2, '0');
+        return storedRun({ id: `r-${n}`, title: `Task ${n}`, createdAt: `2026-07-14T${hour}:${minute}:00Z` });
+      }),
+    ]);
+
+    const body = await getIndex();
+
+    expect(body.runs).toHaveLength(200);
+    expect(body.runs[0]?.id).toBe('old-finished-now');
+    expect(body.runs[1]?.id).toBe('r-199');
+    expect(body.runs.at(-1)?.id).toBe('r-001');
+  });
+
   it('carries `autoResumeAt`, so a usage-limit park does not read as a failure', async () => {
     await registerProject(repoRoot);
     await registerProject(otherRoot);

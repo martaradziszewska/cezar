@@ -127,7 +127,7 @@ import {
   streamRunEvents,
   validateLiveCursor,
 } from '../runs/event-history.ts';
-import { readRunIndexFromDisk } from '../runs/run-index.ts';
+import { byLastActivityDesc, readRunIndexFromDisk } from '../runs/run-index.ts';
 import { isV2WireEventType } from '../runs/ui-event-sink.ts';
 import { onRunDeleted, onRunEvent } from './sse-subscriptions.ts';
 import {
@@ -6855,8 +6855,8 @@ export function createApp(deps: ServerDeps) {
         // No folder, no runs to read. `not-git` still has an `.ai/cezar` worth indexing.
         if (project.status === 'missing') continue;
         const owned = project.id === bootId ? bootContext : contexts.peek(project.id);
-        // `listRuns()` already sorts newest-first; the disk reader returns file order, so both
-        // paths get sorted below rather than trusting either.
+        // Sorted by last activity, not creation: the cap must keep a weeks-old task finished
+        // today, and the table shows this order as-is. Neither source's own order is trusted.
         //
         // Archived runs are INCLUDED. The active project's rows reach the palette through
         // `GET /runs`, which has always carried them, and excluding them here would mean a task
@@ -6864,7 +6864,7 @@ export function createApp(deps: ServerDeps) {
         // exact asymmetry a cross-project finder exists to remove.
         const recent = (
           owned ? owned.store.listRuns() : readRunIndexFromDisk(join(project.root, '.ai/cezar'))
-        ).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        ).sort(byLastActivityDesc);
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
         for (const run of recent.slice(0, RUNS_INDEX_PER_PROJECT)) {
@@ -6881,7 +6881,7 @@ export function createApp(deps: ServerDeps) {
           }
         }
       }
-      runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      runs.sort(byLastActivityDesc);
       const body: RunsIndexResponse = {
         runs,
         perProjectLimit: RUNS_INDEX_PER_PROJECT,

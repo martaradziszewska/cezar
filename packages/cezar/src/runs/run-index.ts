@@ -40,6 +40,18 @@ export function readRunIndexFromDisk(dataDir: string): RunRecord[] {
   }
 }
 
+/** When a run last moved — the key the workspace index sorts and caps on, and the time the global
+ *  table's Updated column prints. A task continued today must not sort by its weeks-old creation. */
+export function lastActivityAt(run: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>): string {
+  return run.finishedAt ?? run.startedAt ?? run.createdAt;
+}
+
+/** Newest activity first; a comparator for `Array.prototype.sort`. */
+export const byLastActivityDesc = (
+  a: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>,
+  b: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>,
+): number => lastActivityAt(b).localeCompare(lastActivityAt(a));
+
 /** Diagnostic read for complete workspace summaries. The legacy wrapper above deliberately
  * keeps its all-or-nothing behavior; dashboard coverage instead accounts for every omitted row. */
 export function readRunIndexDiagnostic(dataDir: string, projectRoot: string): {

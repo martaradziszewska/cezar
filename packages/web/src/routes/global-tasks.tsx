@@ -765,7 +765,7 @@ function TaskTable({
               {showCost ? <Th className="hidden w-[64px] text-right lg:table-cell">Cost</Th> : null}
               <Th className="hidden w-[56px] text-right xl:table-cell">CPU</Th>
               <Th className="hidden w-[84px] text-right xl:table-cell">Mem</Th>
-              <Th className="w-[56px] text-right">Age</Th>
+              <Th className="w-[72px] text-right">Updated</Th>
               <Th className="w-[64px] text-right">
                 <span className="sr-only">Actions</span>
               </Th>
@@ -984,7 +984,8 @@ function TaskRow({
       <UsageTd column="cpu" cell={usage.cpu} />
       <UsageTd column="memory" cell={usage.mem} />
       <td className={cn(TD_BASE, 'text-right text-xs text-soft-foreground tabular-nums')}>
-        {shortAge(run.startedAt ?? run.createdAt, now)}
+        {/* The server's sort key (`lastActivityAt`), so the column reads in the row order. */}
+        {shortAge(run.finishedAt ?? run.startedAt ?? run.createdAt, now)}
       </td>
       <td className={cn(TD_BASE, 'text-right')}>
         <span className="inline-flex items-center gap-0.5">
