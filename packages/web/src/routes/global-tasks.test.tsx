@@ -1108,9 +1108,29 @@ describe('global tasks page', () => {
     stubFetch({ truncated: ['api'] })
     renderPage()
 
-    const notice = await screen.findByText(/Showing the newest 200 tasks per project/)
+    const notice = await screen.findByText(/Showing the 200 most recently active tasks per project/)
     // Named by its registry name, not its slug.
     expect(notice.textContent).toContain('API')
+  })
+
+  it('sorts by recent activity by default, and by creation (Age) from the toolbar', async () => {
+    // The server sends last-activity order; i1 was created last-but-one yet finished most recently.
+    const [a1, w1, i1] = RUNS as [RunIndexEntry, RunIndexEntry, RunIndexEntry]
+    stubFetch({ runs: [{ ...i1, finishedAt: '2026-07-14T11:00:00Z' }, a1, w1] })
+    renderPage()
+
+    await screen.findByText('Bump the runner')
+    const sortBy = within(document.querySelector('[data-slot="sort-by"]') as HTMLElement)
+    expect(sortBy.getByRole('button', { name: 'Recent' }).getAttribute('aria-pressed')).toBe('true')
+    expect(rowIds()).toEqual(['i1', 'a1', 'w1'])
+    expect(screen.getByRole('columnheader', { name: 'Updated' })).toBeTruthy()
+    expect(search()).toBe('')
+
+    fireEvent.click(sortBy.getByRole('button', { name: 'Created' }))
+
+    expect(rowIds()).toEqual(['a1', 'w1', 'i1'])
+    expect(screen.getByRole('columnheader', { name: 'Age' })).toBeTruthy()
+    expect(search()).toBe('?sort=created')
   })
 
   it('points at Settings when the workspace has no tags at all', async () => {

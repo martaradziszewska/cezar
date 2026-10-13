@@ -79,6 +79,31 @@ export function toggleGroupBy(current: GroupBy, picked: Exclude<GroupBy, 'none'>
   return current === picked ? 'none' : picked
 }
 
+/** Row order. `recent` (last activity) is the default and the server's own order; `created` is
+ *  the old creation-age reading, kept one click away. */
+export type SortBy = 'recent' | 'created'
+
+export const SORT_OPTIONS: readonly { value: SortBy; label: string }[] = [
+  { value: 'recent', label: 'Recent' },
+  { value: 'created', label: 'Created' },
+]
+
+/** When a run last moved — mirrors the server's `lastActivityAt` (`runs/run-index.ts`), which is
+ *  the order the index arrives in. */
+export function lastActivityAt(run: Pick<RunIndexEntry, 'createdAt' | 'startedAt' | 'finishedAt'>): string {
+  return run.finishedAt ?? run.startedAt ?? run.createdAt
+}
+
+/** The timestamp the time column prints under `sortBy`, so the column always reads in row order. */
+export function sortTimestamp(run: Pick<RunIndexEntry, 'createdAt' | 'startedAt' | 'finishedAt'>, sortBy: SortBy): string {
+  return sortBy === 'created' ? run.createdAt : lastActivityAt(run)
+}
+
+/** Order the list for `sortBy`, newest first. Stable, and a copy — never the caller's array. */
+export function sortGlobalTasks(tasks: readonly GlobalTask[], sortBy: SortBy): GlobalTask[] {
+  return [...tasks].sort((a, b) => sortTimestamp(b.run, sortBy).localeCompare(sortTimestamp(a.run, sortBy)))
+}
+
 /** Which facets exist. Named as a type so the filter bar can render them from one list and the
  *  toggle helper can name the one it edits without a stringly-typed key. */
 export type FacetId = 'tags' | 'statuses' | 'workflows'
@@ -149,8 +174,8 @@ export function canReset(state: Pick<GlobalTasksUrlState, 'filters' | 'groupBy'>
 }
 
 /**
- * Join the index to the registry. Order is preserved — the server already sorts newest-first
- * across every project, and re-sorting here would only invent a second opinion about "recent".
+ * Join the index to the registry. Order is preserved — the server already sorts by last activity
+ * across every project; `sortGlobalTasks` applies the toolbar's choice on top.
  */
 export function toGlobalTasks(
   runs: readonly RunIndexEntry[],
@@ -383,6 +408,7 @@ export const SEARCH_PARAMS = {
   status: 'status',
   workflow: 'workflow',
   groupBy: 'group',
+  sort: 'sort',
   archived: 'archived',
 } as const
 
@@ -393,6 +419,8 @@ const GROUP_BY_VALUES = new Set<string>(GROUP_BY_OPTIONS.map((option) => option.
 export interface GlobalTasksUrlState {
   filters: GlobalTaskFilters
   groupBy: GroupBy
+  /** Like the view, not counted or cleared by "Clear": it orders the list, it does not narrow it. */
+  sortBy: SortBy
   /** Active/Archived. Also mirrored into the shared `useListView()` context by the route, so the
    *  rest of the cockpit keeps answering the same question. */
   view: ListViewValue
@@ -406,6 +434,7 @@ type ListViewValue = 'active' | 'archived'
 export const DEFAULT_URL_STATE: GlobalTasksUrlState = {
   filters: NO_FILTERS,
   groupBy: 'none',
+  sortBy: 'recent',
   view: 'active',
 }
 
@@ -428,6 +457,7 @@ export function urlStateToSearchParams(state: GlobalTasksUrlState): URLSearchPar
   for (const status of state.filters.statuses) params.append(SEARCH_PARAMS.status, status)
   for (const workflow of state.filters.workflows) params.append(SEARCH_PARAMS.workflow, workflow)
   if (state.groupBy !== 'none') params.set(SEARCH_PARAMS.groupBy, state.groupBy)
+  if (state.sortBy !== 'recent') params.set(SEARCH_PARAMS.sort, state.sortBy)
   if (state.view === 'archived') params.set(SEARCH_PARAMS.archived, '1')
   return params
 }
@@ -451,6 +481,7 @@ export function urlStateFromSearchParams(params: URLSearchParams): GlobalTasksUr
       workflows: params.getAll(SEARCH_PARAMS.workflow).filter((workflow) => workflow !== ''),
     },
     groupBy: GROUP_BY_VALUES.has(group) ? (group as GroupBy) : 'none',
+    sortBy: params.get(SEARCH_PARAMS.sort) === 'created' ? 'created' : 'recent',
     view: params.get(SEARCH_PARAMS.archived) === '1' ? 'archived' : 'active',
   }
 }
