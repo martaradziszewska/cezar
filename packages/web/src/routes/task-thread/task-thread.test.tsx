@@ -598,6 +598,25 @@ describe('ThreadView', () => {
     )
   })
 
+  it('a failure already scheduled to resume itself offers no extra Continue', () => {
+    renderView(
+      <ThreadView
+        run={run('failed', {
+          error: 'Claude AI usage limit reached',
+          autoResumeAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          steps: [
+            { id: 'task', name: 'Do the task', kind: 'agent', status: 'failed', iterations: 1, tokensUsed: 0, sessionId: 's-1' },
+          ],
+        })}
+        thread={reduceThread(EVENTS)}
+      />,
+    )
+    expect(document.querySelector('[data-slot="thread-footer"]')?.textContent).toBe(
+      'Session failed — Claude AI usage limit reached',
+    )
+    expect(document.querySelector('[data-slot="footer-continue"]')).toBeNull()
+  })
+
   it('the same advice stays plain text when there is no session to continue', () => {
     renderView(
       <ThreadView

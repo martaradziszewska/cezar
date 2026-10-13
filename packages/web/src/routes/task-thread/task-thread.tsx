@@ -389,8 +389,9 @@ export function ThreadView({
           >
             <FooterLabel
               label={footer.label}
-              // A failure is always worth one click to retry, whatever its wording.
-              offerContinue={footer.tone === 'danger'}
+              // A failure is always worth one click to retry, whatever its wording — unless it is
+              // already scheduled to resume itself (the AutoResumeHint says so in the dock).
+              offerContinue={footer.tone === 'danger' && !run.autoResumeAt}
               // Offered whenever there is a session to reopen — not only once the provider check
               // has passed: while it loads (or the provider is disconnected) the button is there,
               // greyed, saying why, instead of the advice silently degrading to plain text.
