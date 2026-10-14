@@ -78,6 +78,7 @@ import {
   sortTableRuns,
   sortTimeLabel,
   sortTimestamp,
+  taskSections,
   type ListView,
   type SortBy,
 } from '@/lib/task-groups'
@@ -200,7 +201,15 @@ export function TasksOverview({
   // and the cards are the same rows at two widths, and a tree that disagreed between them would
   // be two trees — which is also why the accordion state feeds the derivation here rather than
   // either layout hiding rows on its own.
-  const rows = taskTreeRows(visible, (id) => searching || expandedSubtasks.has(id))
+  // Pinned rows get their own section (#935), divided by a header row rather than a second table
+  // so the columns stay one set. Each section builds its own tree — the sidebar's per-bucket rule:
+  // a child pinned apart from its parent is a root of its section, not hidden under an unpinned one.
+  const sections = taskSections(visible, view).map((section) => ({
+    ...section,
+    rows: taskTreeRows(section.runs, (id) => searching || expandedSubtasks.has(id)),
+    // Tasks, not rows: a folded parent's subtasks are not on screen, so they are not counted.
+    taskCount: taskTreeRows(section.runs, () => false).length,
+  }))
   // Positions come from the full list, never the filtered one: a search must not renumber the
   // queue the engine is actually going to drain.
   const positions = queuePositions(all)
@@ -342,7 +351,20 @@ export function TasksOverview({
                     </tr>
                   </thead>
                   <tbody className="[&>tr:last-child>td]:border-b-0">
-                    {rows.map((node) => (
+                    {sections.map((section) => (
+                      <React.Fragment key={section.key}>
+                        {section.label ? (
+                          <tr data-slot="tasks-section" data-section={section.key}>
+                            <th
+                              scope="rowgroup"
+                              colSpan={columns.length}
+                              className={cn(SECTION_LABEL_CLASS, 'border-b border-border bg-muted/40 px-3.5 py-1.5 text-left')}
+                            >
+                              {section.label} · {section.taskCount}
+                            </th>
+                          </tr>
+                        ) : null}
+                    {section.rows.map((node) => (
                       <TableRow
                         key={node.run.id}
                         gitRepo={gitRepo}
@@ -362,6 +384,8 @@ export function TasksOverview({
                         expandedColumns={expandedColumns}
                       />
                     ))}
+                      </React.Fragment>
+                    ))}
                   </tbody>
                 </table>
               </TooltipProvider>
@@ -369,7 +393,14 @@ export function TasksOverview({
 
             {/* <md: the same runs as stacked cards. */}
             <div data-slot="task-cards" className="flex flex-col gap-2.5 md:hidden">
-              {rows.map((node) => (
+              {sections.map((section) => (
+                <React.Fragment key={section.key}>
+                  {section.label ? (
+                    <h2 data-slot="tasks-section" data-section={section.key} className={cn(SECTION_LABEL_CLASS, 'px-1 pt-1')}>
+                      {section.label} · {section.taskCount}
+                    </h2>
+                  ) : null}
+              {section.rows.map((node) => (
                 <TaskCard
                   key={node.run.id}
                   run={node.run}
@@ -387,6 +418,8 @@ export function TasksOverview({
                   onTogglePin={pinToggle}
                   gitRepo={gitRepo}
                 />
+              ))}
+                </React.Fragment>
               ))}
             </div>
           </>
@@ -793,6 +826,9 @@ function TaskColumnIconView({ icon }: { icon?: TaskColumnIcon }) {
   }
 }
 
+/** A section header's label — the sidebar's bucket header, so `Pinned` reads the same in both. */
+const SECTION_LABEL_CLASS = 'text-[11px] font-semibold tracking-[0.04em] text-soft-foreground uppercase'
+
 const TD_BASE = 'h-11 border-b border-border px-2.5 whitespace-nowrap first:pl-4 last:pr-4'
 
 /**
@@ -1142,8 +1178,7 @@ function TitleCell({
         <PencilIcon className="size-3" aria-hidden="true" />
       </button>
       {/* The pin (#935), beside the pencil and revealed the same way — except when the row IS
-          pinned, where it stays lit: this table has no `Pinned` header, so the filled pin is the
-          whole explanation for why the row sorted to the top.
+          pinned, where it stays lit as the row's visible unpin handle under the `Pinned` header.
 
           `no-hover:` covers the device this table still reaches without a pointer: it is hidden
           below `md`, where the cards take over, but a tablet in landscape is ≥md and cannot
