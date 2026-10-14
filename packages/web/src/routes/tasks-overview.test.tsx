@@ -99,7 +99,7 @@ describe('TasksOverview — the branch cell', () => {
 })
 
 describe('TasksOverview — sorting', () => {
-  it('sorts by recent activity by default, and by creation (Age) from the toolbar', () => {
+  it('sorts by recent activity by default, and by creation (Created) from the toolbar', () => {
     renderOverview({
       runs: [
         run({ id: 'new-idle', createdAt: ago(3_600_000), finishedAt: ago(3_000_000) }),
@@ -121,7 +121,7 @@ describe('TasksOverview — sorting', () => {
     fireEvent.click(sortBy.getByRole('button', { name: 'Created' }))
 
     expect(ids()).toEqual(['new-idle', 'old-busy'])
-    expect(timeHeader()).toContain('Age')
+    expect(timeHeader()).toContain('Created')
     expect(timeCell('old-busy')).toBe('7d')
   })
 })

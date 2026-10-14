@@ -1117,7 +1117,7 @@ describe('global tasks page', () => {
     expect(notice.textContent).toContain('API')
   })
 
-  it('sorts by recent activity by default, and by creation (Age) from the toolbar', async () => {
+  it('sorts by recent activity by default, and by creation (Created) from the toolbar', async () => {
     // The server sends last-activity order; i1 was created last-but-one yet finished most recently.
     const [a1, w1, i1] = RUNS as [RunIndexEntry, RunIndexEntry, RunIndexEntry]
     stubFetch({ runs: [{ ...i1, finishedAt: '2026-07-14T11:00:00Z', lastActivityAt: '2026-07-14T11:00:00Z' }, a1, w1] })
@@ -1133,7 +1133,7 @@ describe('global tasks page', () => {
     fireEvent.click(sortBy.getByRole('button', { name: 'Created' }))
 
     expect(rowIds()).toEqual(['a1', 'w1', 'i1'])
-    expect(screen.getByRole('columnheader', { name: 'Age' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Created' })).toBeTruthy()
     expect(search()).toBe('?sort=created')
   })
 

@@ -239,7 +239,7 @@ export function sortTimestamp(run: RunTimes, sortBy: SortBy): string {
 
 /** The time column's heading under `sortBy`. */
 export function sortTimeLabel(sortBy: SortBy): string {
-  return sortBy === 'created' ? 'Age' : 'Updated'
+  return sortBy === 'created' ? 'Created' : 'Updated'
 }
 
 /**
