@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunStore } from '../runs/store.ts';
 import { graphToSteps, type WorkflowGraph } from './graph.ts';
 import { loadWorkflows } from './load.ts';
+import { MISSING_SESSION_NOTE } from './resume-fallback.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
 
@@ -209,7 +210,8 @@ describe('graph workflows run through RunManager', () => {
       // The dead attempt's turn bookkeeping never reached the thread: one message, one turn.
       expect(events.filter((e) => e.type === 'user-message')).toHaveLength(1);
       expect(events.filter((e) => e.type === 'turn.started')).toHaveLength(1);
-      expect(events.some((e) => e.type === 'note' && String(e.message).includes('fresh session'))).toBe(true);
+      // Verbatim: an id in the text would reach the thread as `[REDACTED]` (secret redaction).
+      expect(events.some((e) => e.type === 'note' && e.message === MISSING_SESSION_NOTE)).toBe(true);
     } finally {
       delete process.env.CEZ_MOCK_MISSING_SESSIONS;
     }

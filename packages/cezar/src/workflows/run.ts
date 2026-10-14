@@ -14,7 +14,7 @@ import {
   type AskRequest,
 } from '../core/ask.ts';
 import { AUTO_END_DELAY_MS, type AgentSession } from '../core/claude-cli-runner.ts';
-import { interruptAfterGrace, missingSessionNote, ResumeFallback } from './resume-fallback.ts';
+import { interruptAfterGrace, MISSING_SESSION_NOTE, ResumeFallback } from './resume-fallback.ts';
 import {
   loadPrivateMcp,
   PRIVATE_MCP_FILE,
@@ -4321,7 +4321,7 @@ export class RunManager {
         turnText = '';
         const freshId = randomUUID();
         this.store.updateStep(runId, stepId, { sessionId: freshId });
-        this.store.appendEvent(runId, { type: 'note', stepId, message: missingSessionNote(sessionId) });
+        this.store.appendEvent(runId, { type: 'note', stepId, message: MISSING_SESSION_NOTE });
         const context = freshContinuationContext(
           { ...recordBeforeTurn, steps: recordBeforeTurn.steps.filter((step) => step.id !== stepId) },
           this.store.readEvents(runId).filter((event) => event.stepId !== stepId),
@@ -6268,7 +6268,7 @@ export class RunManager {
         turnText = '';
         const freshId = randomUUID();
         this.store.updateStep(runId, step.id, { sessionId: freshId, backend });
-        emit({ type: 'note', stepId: step.id, message: missingSessionNote(resumedId) });
+        emit({ type: 'note', stepId: step.id, message: MISSING_SESSION_NOTE });
         const context = freshContinuationContext(record, this.store.readEvents(runId));
         session = attach(launch(freshId, false, `${context}\n\n---\n\n## New user instruction\n${userPrompt}`), false);
         for (const content of replay) session.sendMessage(content);

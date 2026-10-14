@@ -124,6 +124,6 @@ export function interruptAfterGrace(session: AgentSession | undefined): void {
   setTimeout(() => session.interrupt(), RESUME_ERROR_GRACE_MS).unref?.();
 }
 
-export function missingSessionNote(sessionId: string): string {
-  return `claude no longer has session ${sessionId} (its transcript was removed) — continuing in a fresh session with this task's saved context`;
-}
+/** No session id in the text: the store's secret redaction would print it as `[REDACTED]`. */
+export const MISSING_SESSION_NOTE =
+  "claude no longer has this conversation (its transcript was removed) — continuing in a fresh session with this task's saved context";
