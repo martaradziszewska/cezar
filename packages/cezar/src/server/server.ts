@@ -127,7 +127,7 @@ import {
   streamRunEvents,
   validateLiveCursor,
 } from '../runs/event-history.ts';
-import { byLastActivityDesc, readRunIndexFromDisk } from '../runs/run-index.ts';
+import { byLastActivityDesc, compareIsoDesc, lastActivityAt, readRunIndexFromDisk } from '../runs/run-index.ts';
 import { isV2WireEventType } from '../runs/ui-event-sink.ts';
 import { onRunDeleted, onRunEvent } from './sse-subscriptions.ts';
 import {
@@ -6799,6 +6799,7 @@ export function createApp(deps: ServerDeps) {
       : {}),
     ...(automationId !== undefined ? { automationId } : {}),
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
+    lastActivityAt: lastActivityAt(run),
     // The tracker-reference inputs, verbatim — the cockpit's `taskReference()` owns the rule
     // that picks between them (see the schema's note).
     ...(run.pullRequestUrl !== undefined ? { pullRequestUrl: run.pullRequestUrl } : {}),
@@ -6881,7 +6882,8 @@ export function createApp(deps: ServerDeps) {
           }
         }
       }
-      runs.sort(byLastActivityDesc);
+      // The slim rows carry no steps — sort on the value computed from them, never re-derive it.
+      runs.sort((a, b) => compareIsoDesc(a.lastActivityAt, b.lastActivityAt));
       const body: RunsIndexResponse = {
         runs,
         perProjectLimit: RUNS_INDEX_PER_PROJECT,

@@ -1,7 +1,7 @@
 import type { ProjectListEntry, RunIndexEntry } from '@open-mercato/cezar-api-client'
 
 import { allProjectTags } from '@/lib/project-tags'
-import { runTitle } from '@/lib/task-groups'
+import { compareIsoDesc, runTitle, sortTimestamp, type SortBy } from '@/lib/task-groups'
 import { automationIdOf, matchesOrigin, type TaskOrigin } from '@/lib/task-origin'
 
 /**
@@ -79,29 +79,12 @@ export function toggleGroupBy(current: GroupBy, picked: Exclude<GroupBy, 'none'>
   return current === picked ? 'none' : picked
 }
 
-/** Row order. `recent` (last activity) is the default and the server's own order; `created` is
- *  the old creation-age reading, kept one click away. */
-export type SortBy = 'recent' | 'created'
-
-export const SORT_OPTIONS: readonly { value: SortBy; label: string }[] = [
-  { value: 'recent', label: 'Recent' },
-  { value: 'created', label: 'Created' },
-]
-
-/** When a run last moved — mirrors the server's `lastActivityAt` (`runs/run-index.ts`), which is
- *  the order the index arrives in. */
-export function lastActivityAt(run: Pick<RunIndexEntry, 'createdAt' | 'startedAt' | 'finishedAt'>): string {
-  return run.finishedAt ?? run.startedAt ?? run.createdAt
-}
-
-/** The timestamp the time column prints under `sortBy`, so the column always reads in row order. */
-export function sortTimestamp(run: Pick<RunIndexEntry, 'createdAt' | 'startedAt' | 'finishedAt'>, sortBy: SortBy): string {
-  return sortBy === 'created' ? run.createdAt : lastActivityAt(run)
-}
+// Shared with the per-project table, which offers the same Recent/Created choice.
+export { SORT_OPTIONS, lastActivityAt, sortTimestamp, type SortBy } from '@/lib/task-groups'
 
 /** Order the list for `sortBy`, newest first. Stable, and a copy — never the caller's array. */
 export function sortGlobalTasks(tasks: readonly GlobalTask[], sortBy: SortBy): GlobalTask[] {
-  return [...tasks].sort((a, b) => sortTimestamp(b.run, sortBy).localeCompare(sortTimestamp(a.run, sortBy)))
+  return [...tasks].sort((a, b) => compareIsoDesc(sortTimestamp(a.run, sortBy), sortTimestamp(b.run, sortBy)))
 }
 
 /** Which facets exist. Named as a type so the filter bar can render them from one list and the

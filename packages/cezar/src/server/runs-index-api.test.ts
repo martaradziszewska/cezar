@@ -147,6 +147,8 @@ describe('workspace runs index API', () => {
       // The global Tasks page's own columns: always-present workflow, plus branch/startedAt
       // when the run has them (this one does not — see the absent-key assertions below).
       workflow: 'build',
+      // Always present: the sort key, computed from the steps the slim row leaves behind.
+      lastActivityAt: '2026-07-14T11:00:00Z',
     });
     // The fat keys neither consumer has a use for never reach the wire — `workflow` rides along
     // as a plain string, `steps[]` and `workflowDef` (the expensive half) do not.
@@ -266,6 +268,30 @@ describe('workspace runs index API', () => {
     // The NEWEST 200 survived, not the first 200 in file order.
     expect(body.runs[0]?.id).toBe('r-209');
     expect(body.runs.at(-1)?.id).toBe('r-010');
+  });
+
+  it('counts a Continue step as activity — a live run keeps its first startedAt and no finishedAt', async () => {
+    await registerProject(repoRoot);
+    await registerProject(otherRoot);
+    seedColdProject(otherRoot, [
+      storedRun({ id: 'fresh-quiet', title: 'Quiet', createdAt: '2026-07-14T09:00:00Z', finishedAt: '2026-07-14T09:30:00Z' }),
+      storedRun({
+        id: 'old-continued',
+        title: 'Continued',
+        status: 'failed',
+        createdAt: '2026-07-01T10:00:00Z',
+        startedAt: '2026-07-01T10:00:00Z',
+        steps: [
+          { id: 'task', name: 'task', kind: 'agent', status: 'failed', iterations: 1, tokensUsed: 0, startedAt: '2026-07-01T10:00:01Z', finishedAt: '2026-07-01T10:20:00Z' },
+          { id: 'continue-1', name: 'continue', kind: 'agent', status: 'waiting', iterations: 1, tokensUsed: 0, startedAt: '2026-07-14T11:00:00Z' },
+        ],
+      }),
+    ]);
+
+    const body = await getIndex();
+
+    expect(body.runs.map((run) => run.id)).toEqual(['old-continued', 'fresh-quiet']);
+    expect(body.runs[0]?.lastActivityAt).toBe('2026-07-14T11:00:00Z');
   });
 
   it('orders by last activity, so an old task finished today leads and survives the cap', async () => {

@@ -82,7 +82,7 @@ import {
 import { scopeTo } from '@/lib/project-router'
 import { allProjectTags } from '@/lib/project-tags'
 import { canBeUnread, isReadDoneItem, isUnread } from '@/lib/read-state'
-import { runTitle, type ListView } from '@/lib/task-groups'
+import { runTitle, sortTimeLabel, type ListView } from '@/lib/task-groups'
 import { TASK_ORIGIN_OPTIONS, useTaskOrigin, type TaskOrigin } from '@/lib/task-origin'
 import { usageMetricVisibility } from '@/lib/token-metrics'
 import { useNow } from '@/lib/use-now'
@@ -665,6 +665,7 @@ function FilterBar({
           options={GROUP_BY_OPTIONS}
           onChange={(picked) => onGroupByChange(toggleGroupBy(groupBy, picked))}
         />
+        {/* Same labelled-segmented grammar as Group by beside it. */}
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
         <span className="text-[11px] font-medium text-soft-foreground">Sort by</span>
         <Segmented
@@ -789,7 +790,7 @@ function TaskTable({
               {showCost ? <Th className="hidden w-[64px] text-right lg:table-cell">Cost</Th> : null}
               <Th className="hidden w-[56px] text-right xl:table-cell">CPU</Th>
               <Th className="hidden w-[84px] text-right xl:table-cell">Mem</Th>
-              <Th className="w-[72px] text-right">{sortBy === 'created' ? 'Age' : 'Updated'}</Th>
+              <Th className="w-[72px] text-right">{sortTimeLabel(sortBy)}</Th>
               <Th className="w-[64px] text-right">
                 <span className="sr-only">Actions</span>
               </Th>

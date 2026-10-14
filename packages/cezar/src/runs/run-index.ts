@@ -40,17 +40,34 @@ export function readRunIndexFromDisk(dataDir: string): RunRecord[] {
   }
 }
 
-/** When a run last moved — the key the workspace index sorts and caps on, and the time the global
- *  table's Updated column prints. A task continued today must not sort by its weeks-old creation. */
-export function lastActivityAt(run: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>): string {
-  return run.finishedAt ?? run.startedAt ?? run.createdAt;
+type ActivityInput = Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'> & {
+  steps?: ReadonlyArray<{ startedAt?: string; finishedAt?: string }>;
+};
+
+/** Newest first, comparing instants rather than strings: stored timestamps mix `…00Z` and
+ *  `…00.123Z`, which order wrongly as text within one second. Unparseable falls back to text. */
+export function compareIsoDesc(a: string, b: string): number {
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return b.localeCompare(a);
+  return tb - ta;
+}
+
+/** When a run last moved — the key the workspace index sorts and caps on, and the time the
+ *  Updated column prints. Steps count: every Continue is a new step, while the run's own
+ *  `startedAt` stays at the first launch and `finishedAt` is cleared while it is live. */
+export function lastActivityAt(run: ActivityInput): string {
+  let latest = run.finishedAt ?? run.startedAt ?? run.createdAt;
+  for (const step of run.steps ?? []) {
+    const at = step.finishedAt ?? step.startedAt;
+    if (at !== undefined && compareIsoDesc(at, latest) < 0) latest = at;
+  }
+  return latest;
 }
 
 /** Newest activity first; a comparator for `Array.prototype.sort`. */
-export const byLastActivityDesc = (
-  a: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>,
-  b: Pick<RunRecord, 'createdAt' | 'startedAt' | 'finishedAt'>,
-): number => lastActivityAt(b).localeCompare(lastActivityAt(a));
+export const byLastActivityDesc = (a: ActivityInput, b: ActivityInput): number =>
+  compareIsoDesc(lastActivityAt(a), lastActivityAt(b));
 
 /** Diagnostic read for complete workspace summaries. The legacy wrapper above deliberately
  * keeps its all-or-nothing behavior; dashboard coverage instead accounts for every omitted row. */

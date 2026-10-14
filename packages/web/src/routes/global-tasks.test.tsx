@@ -70,6 +70,7 @@ const RUNS: RunIndexEntry[] = [
     title: 'Add checkout endpoint',
     status: 'running',
     createdAt: '2026-07-14T10:00:00Z',
+    lastActivityAt: '2026-07-14T10:00:00Z',
     archived: false,
     workflow: 'quick-task',
     branch: 'feat/checkout',
@@ -85,6 +86,7 @@ const RUNS: RunIndexEntry[] = [
     title: 'Checkout page',
     status: 'review',
     createdAt: '2026-07-14T09:00:00Z',
+    lastActivityAt: '2026-07-14T09:00:00Z',
     archived: false,
     workflow: 'plan-first',
     issueNumber: 7,
@@ -96,6 +98,7 @@ const RUNS: RunIndexEntry[] = [
     title: 'Bump the runner',
     status: 'done',
     createdAt: '2026-07-14T08:00:00Z',
+    lastActivityAt: '2026-07-14T08:00:00Z',
     archived: false,
     workflow: 'quick-task',
   },
@@ -366,6 +369,7 @@ describe('global tasks page', () => {
       title: 'Review the checkout endpoint',
       status: 'running',
       createdAt: '2026-07-14T10:30:00Z',
+      lastActivityAt: '2026-07-14T10:30:00Z',
       archived: false,
       workflow: 'quick-task',
       dispatch: { rootRunId: 'a1', parentRunId: 'a1', kind: 'review' },
@@ -1116,7 +1120,7 @@ describe('global tasks page', () => {
   it('sorts by recent activity by default, and by creation (Age) from the toolbar', async () => {
     // The server sends last-activity order; i1 was created last-but-one yet finished most recently.
     const [a1, w1, i1] = RUNS as [RunIndexEntry, RunIndexEntry, RunIndexEntry]
-    stubFetch({ runs: [{ ...i1, finishedAt: '2026-07-14T11:00:00Z' }, a1, w1] })
+    stubFetch({ runs: [{ ...i1, finishedAt: '2026-07-14T11:00:00Z', lastActivityAt: '2026-07-14T11:00:00Z' }, a1, w1] })
     renderPage()
 
     await screen.findByText('Bump the runner')
@@ -1164,6 +1168,7 @@ describe('global tasks page — who started a task', () => {
       title: 'Nightly dependency sweep',
       status: 'done',
       createdAt: '2026-07-14T07:00:00Z',
+      lastActivityAt: '2026-07-14T07:00:00Z',
       archived: false,
       workflow: 'quick-task',
       automationId: 'auto-nightly',
@@ -1175,6 +1180,7 @@ describe('global tasks page — who started a task', () => {
       title: 'Sweep: bump lodash',
       status: 'done',
       createdAt: '2026-07-14T07:05:00Z',
+      lastActivityAt: '2026-07-14T07:05:00Z',
       archived: false,
       workflow: 'quick-task',
       dispatch: { rootRunId: 'a2', parentRunId: 'a2' },

@@ -60,6 +60,13 @@ function run(overrides: Partial<RunIndexEntry> & { id: string; projectId: string
     archived: false,
     workflow: 'quick-task',
     ...overrides,
+    // What the server would send for these times (no steps on a fixture row).
+    lastActivityAt:
+      overrides.lastActivityAt ??
+      overrides.finishedAt ??
+      overrides.startedAt ??
+      overrides.createdAt ??
+      '2026-07-14T10:00:00Z',
   }
 }
 
