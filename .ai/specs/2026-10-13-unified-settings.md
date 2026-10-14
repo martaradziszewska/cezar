@@ -1,25 +1,19 @@
 # Unified settings — one full-screen surface, two URL families
 
-**Status:** plan (nothing implemented). Supersedes the "Settings split" subsection of
+**Status:** implemented in #1413. Supersedes the "Settings split" subsection of
 `2026-07-20-multi-project-workspace.md` for the *presentation*; the URL scheme and the store
 split that spec introduced are kept on purpose (see "Why the URLs stay").
 
-**Owner decision (2026-10-13):** the app sidebar is HIDDEN while in settings. Settings is the
-cockpit's first full-screen surface, with its own nav and its own way back.
-
-**Owner revision (2026-10-13):** the frame is now literally shared — `components/sidebar-frame.tsx`
-(`SidebarFrame` with the #788 resize handle, `SidebarDrawer`, `useSidebarWidth`) wraps both the
-app's content and settings'; one stored width serves both columns.
-
-**Owner revision (2026-10-13):** the settings nav REUSES the app sidebar's frame (264px
-`bg-sidebar` column, same header row, row heights and footer): Back and the cezar brand
-lockup at the top, a labelled **General settings** group above a labelled **Project
-settings** tree, and the footer with the ⌘K launcher and the theme toggle; below `md` the same sidebar is a drawer
-behind a hamburger in a top bar shaped like the app's (menu + title only). No breadcrumb —
-the page header (desktop only; the mobile bar titles the page below `md`) reads
-`project / view` on project section pages (the project name leads, the view is the heading),
-then the one-liner; the project index reads `project  Project settings`. No corner badge. The
-diagram and "Header" text below predate this revision; the code is the reference.
+**Owner decisions (2026-10-13):** the app sidebar is hidden while in settings, which makes
+settings the cockpit's first full-screen surface, with its own nav and its own way back. That
+nav is the app sidebar's own frame, not a copy of it: `components/sidebar-frame.tsx`
+(`SidebarFrame` with the #788 resize handle, `SidebarDrawer`, `useSidebarWidth`) wraps both
+sidebars, and one stored width serves both. Inside it, settings keeps the app sidebar's header
+row, row heights and footer: the cezar brand lockup and Back at the top, a labelled **General
+settings** group above a labelled **Project settings** tree, and the footer with the ⌘K
+launcher, the version and star chips and the theme toggle. Below `md` the same content is a
+drawer behind a hamburger, in a top bar shaped like the app's (menu and title only). There is
+no breadcrumb and no scope badge: the page header reads `project / view` on project pages.
 
 ## Goal (the brief)
 
@@ -68,7 +62,7 @@ The URL families stay exactly as they are:
 
 | What | URL | Scope provider | Store |
 | --- | --- | --- | --- |
-| Global index (the unified home) | `/settings/global` | none | — |
+| Global index (redirect) | `/settings/global` → first global section | none | — |
 | Global section | `/settings/global/<id>` | none | `/api/v1/workspace/*` |
 | Project index | `/p/<id>/settings` | `ProjectScopeRoute` | — |
 | Project section | `/p/<id>/settings/<id>` | `ProjectScopeRoute` | `/api/v1[/p/<id>]/config`, `/ui-state` |
@@ -86,7 +80,7 @@ The URL families stay exactly as they are:
   re-pointing a dozen scoped links. All cost, no user-visible gain: the user sees one nav either
   way.
 
-Optional, later: make `/settings` (exact) an alias of the unified home instead of the boot
+Optional, later: make `/settings` (exact) an alias of global settings instead of the boot
 project's index. Not in this plan — it is a protected legacy URL and the boot project's index
 now *is* the unified surface with the boot project selected, so a saved `/settings` bookmark
 already lands somewhere sensible.
@@ -95,8 +89,8 @@ already lands somewhere sensible.
 
 ### What "in settings" means
 
-One predicate, exported from `routes/settings/settings-shell.ts(x)` and used by both the app
-shell and the settings shell so they can never disagree:
+One predicate, `lib/settings-path.ts`, used by both the app shell and the settings frame so
+they can never disagree:
 
 ```ts
 /** True for every settings URL, both families: `/p/<id>/settings[/…]` and `/settings/global[/…]`. */
@@ -128,101 +122,75 @@ not rendered in settings, and TanStack keeps them warm for the return trip.
 
 ### The settings frame (`settings-shell.tsx`)
 
-The shell becomes a full-window frame: header + (nav | content), on every viewport.
+The frame is sidebar | (page header, pill row, content), on every viewport.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ ← Back   Settings › cezar › Agents        [Global | cezar]   ☼ theme     │  header, 52px
-├────────────────┬─────────────────────────────────────────────────────────┤
-│ Appearance     │                                                         │
-│ Notifications  │   (section body, unchanged)                             │
-│ Resources      │                                                         │
-│ Skills         │                                                         │
-│ Agent accounts │                                                         │
-│ Projects       │                                                         │
-│ Stored in      │                                                         │
-│  ~/.cezar      │                                                         │
-│ ───────────    │                                                         │
-│ PROJECT        │                                                         │
-│ SETTINGS       │                                                         │
-│ ▾ cezar   main │                                                         │
-│    Agents      │                                                         │
-│    Agent config│                                                         │
-│    Worktrees   │                                                         │
-│    Bookmarklets│                                                         │
-│    Prompt tmpl.│                                                         │
-│ ▸ storefront   │                                                         │
-│ ▸ old-repo  ✗  │                                                         │
-│                │                                                         │
-│ ───────────    │                                                         │
-│ 🔍 Search…  ⌘K │  ← the sidebar footer's launcher, kept at the bottom    │
-└────────────────┴─────────────────────────────────────────────────────────┘
+┌─────────────────────┬────────────────────────────────────────────────────┐
+│ ◆ cezar    ← Back   │ cezar / Agents   Providers, default runner…        │  page header
+├─────────────────────┼────────────────────────────────────────────────────┤
+│ GENERAL SETTINGS    │                                                    │
+│ Appearance          │   (section body, unchanged)                        │
+│ Notifications       │                                                    │
+│ Resources           │                                                    │
+│ Skills · Secrets    │                                                    │
+│ Agent accounts      │                                                    │
+│ Projects · Privacy  │                                                    │
+│ Stored in ~/.cezar  │                                                    │
+│ ─────────────       │                                                    │
+│ PROJECT SETTINGS    │                                                    │
+│ ▾ cezar             │                                                    │
+│    General          │                                                    │
+│    Issue tracker …  │                                                    │
+│    Agents           │                                                    │
+│ ▸ storefront        │                                                    │
+│ ▸ old-repo   ✗      │                                                    │
+│ ─────────────       │                                                    │
+│ 🔍 Search…      ⌘K  │                                                    │
+│ v0.15.1  ⭐       ☾  │                                                    │
+└─────────────────────┴────────────────────────────────────────────────────┘
 ```
 
-**Header** (`data-slot="settings-header"`, `h-[52px]`, `pt-[env(safe-area-inset-top)]` because
-the shell's mobile top bar no longer carries the notch inset):
+**Sidebar** (`data-slot="settings-sidebar"` on desktop, `settings-mobile-drawer` below `md`):
+the shared `SidebarFrame`, resizable, at the same width as the app sidebar.
 
-- `← Back` (`data-slot="settings-back"`): see "Leaving settings".
-- Breadcrumb: `Settings` (link → `/settings/global`) › for project pages the project name
-  (link → `/p/<id>/settings`) › the section title as the `h1`. On the global index the `h1` is
-  `Settings`; on the project index the `h1` is the project name.
-- Scope chip (`data-slot="settings-scope-chip"`): `Global` or the project name — the scope of
-  what is being edited. Kept as today's slot, new text.
-- `ThemeToggle` — it lived in the sidebar footer, which is gone here. The version chip and the
-  Tools menu are NOT duplicated: version is one click away on every non-settings page, and the
-  Tools menu's own "Settings → Agents" link points here.
-- Below `md`: same header, one line, breadcrumb truncated from the left (title always visible),
-  plus the search icon button that stands in for the nav-column launcher (see the nav's
-  "Search launcher" bullet).
+- Header row: the brand lockup first, exactly where the app sidebar has it, then `← Back`
+  (`data-slot="settings-back"`, see "Leaving settings"), sized so the row does not move when
+  settings opens.
+- Nav (`data-slot="settings-nav"`, `data-scope` = scope of the current page). The **General
+  settings** group lists the global sections as plain react-router `NavLink`s (never
+  prefixed), with no `General` row of its own, then "Stored in ~/.cezar".
+- **Project settings** tree: one row per registered project, ordered like the sidebar, with a
+  chevron, the name and a `folder not found` pill for `missing`. No branch: settings describe
+  the repo, not what is checked out. Each project's sections start with **General** (its index
+  page), and every link uses an explicit `scopeTo(project.id, …)`.
+- Expansion is derived from the URL; the chevron toggles others for the life of the mount, and
+  a toggle made on one project's page does not follow the user to another project.
+- The project name: on a project page it opens the same section in that project, or its General
+  page when General is open, and the previous project folds. On a global page it only toggles.
+- One project in the tree: no chevrons, its sections render flat, labelled `This project` when
+  the page is about it. A `missing` project is greyed and inert. The unregistered boot worktree
+  is never listed.
+- On a project page the nav ends with that project's folder path.
+- Footer (`data-slot="settings-sidebar-footer"`): the shared `CommandPaletteHint`, then the
+  version and star chips and the theme toggle, as in the app sidebar.
 
-**Nav** (`data-slot="settings-nav"`, `data-scope` = scope of the CURRENT page, kept for the
-e2e selectors), a 232px column from `md` up; the sole navigation on the page, so it is a
-touch wider than today's 208px:
-
-- Six global rows, plain react-router `NavLink` (must not be prefixed — the existing header
-  comment in `settings-shell.tsx` says why). The "Stored in ~/.cezar" footer label moves
-  directly under this group.
-- `PROJECT SETTINGS` group label, then one row per registered project, ordered `lastOpenedAt`
-  desc (same as the sidebar): chevron, name, `folder not found` pill for `missing`. No branch —
-  settings describe the repo, not what is checked out (owner's call, 2026-10-13).
-  Rows and their sections link with an EXPLICIT `scopeTo(project.id, '/settings/<id>')`, the
-  same rule `project-groups.tsx` follows: the point is linking into a project that is not the
-  active one.
-- Expansion is derived, not stored: the project named by the URL (`pathnameProjectId`) is
-  expanded; the chevron toggles others for the life of the mount. No persistence (nothing to
-  configure; the two roots mount different route elements so a toggle is honestly transient).
-- Row click → `/p/<id>/settings`; chevron click only toggles.
-- Project list from `useProjects()` (already cached) — no per-project fetch, a 40-project
-  workspace costs nothing extra.
-- Single project (`capabilities.singleProject`, or a registry with one entry): no group
-  label, no chevron — the five sections render flat under `This project`; the registry pane
-  stays hidden as today. Mirrors the sidebar's "groups only from the second project on".
-- `missing` project: greyed, no links, tooltip "…remove it in Projects" (the sidebar's wording,
-  minus "Global settings →").
-- **Search launcher, pinned to the bottom** (`data-slot="command-palette-hint"`): the sidebar
-  footer's `CommandPaletteHint` — magnifier, `Search…`, the `⌘K`/`Ctrl+K` chord — moves into
-  the nav column's footer (`mt-auto`, above a top border), so the palette stays discoverable
-  and clickable on a page that has no sidebar. It is the SAME component, extracted from
-  `app-shell.tsx` into `components/command-palette-hint.tsx` and rendered by both the sidebar
-  footer and the settings nav; it already opens the palette through `openCommandPalette()`,
-  which needs no shell context. The keyboard chord works either way (the palette is mounted
-  at the app root); the hint is what makes it findable. Below `md` the nav column is hidden,
-  and with it the hint — the mobile header carries a search icon button
-  (`data-slot="settings-search"`, `size-11` touch target) that calls the same
-  `openCommandPalette()`.
+**Page header** (`data-slot="settings-header"`, desktop only): the title, `project / view` on
+project section pages, then the section's one-liner. The project index reads `project` with
+"Project settings" beside it. Global pages show the section title alone.
 
 **Index pages**
 
-- `/settings/global` — cards for the six global sections, then a `Project settings` card list,
-  one per project → `/p/<id>/settings` (name, status).
-- `/p/<id>/settings` — cards for that project's five sections. The cross-link paragraph and
-  `data-slot="settings-global-link"` go away: the breadcrumb's `Settings` crumb and the nav
-  are the way up.
+- `/settings/global` has no page of its own. It redirects (replace, query and hash kept) to the
+  first global section. A card list of the global sections and the projects only repeated the
+  sidebar, on desktop and in the drawer (owner's call, 2026-10-14). The URL stays, so the footer
+  gear, ⌘K and the project pages' General settings pill still land.
+- `/p/<id>/settings` is the project's General page: its folder, registry facts, parallel-task
+  ceiling and Remove. Its section cards show below `md` only.
 
-**Mobile (`<md`)**: the nav column is hidden; the index pages ARE the nav (stacked cards,
-two-level drill-in). Section pages keep the pill row: global pages list the six global
-sections; project pages list that project's five sections with a leading `‹ All settings`
-pill (→ `/settings/global`). The header's `← Back` leaves settings; the breadcrumb goes up.
+**Mobile (`<md`)**: a top bar (`data-slot="settings-mobile-bar"`) with the hamburger that opens
+the drawer, and the page title. Section pages add a pill row of the current area's sections;
+project pages lead it with `‹ General settings` (→ `/settings/global`) and a `General` pill.
+Back lives in the drawer.
 
 ### Leaving settings — where `← Back` goes
 
@@ -242,13 +210,16 @@ wrong: it would walk back through settings pages. Instead:
   frame while mounted; unregistered on unmount.
 - The store is memory-only. A reload lands on the fallback, which is honest: there is nothing
   to come back to.
+- Settings pages are never the remembered launch location (`lib/last-location.ts`), and a
+  stored one is not restored. Otherwise a launch at `/`, as the desktop app does, opened the
+  settings frame with nothing recorded, and Back's way out went through `/` straight back in
+  (found 2026-10-14).
 
 ### What the hidden sidebar means for existing behaviour
 
 - **⌘K still works, and stays visible** — the palette is mounted at the app root, not in the
-  sidebar, so the chord never depended on the footer. The launcher hint is preserved at the
-  bottom of the settings nav (desktop) and as a search button in the settings header (mobile),
-  so opening the palette by click is still one gesture away on every settings page.
+  sidebar, so the chord never depended on the footer. The launcher sits in the settings
+  sidebar's footer, on desktop and in the mobile drawer.
 - **`New task` CTA and `Add project` are gone in settings.** Both are one `← Back` away; the
   Projects registry pane keeps its own affordances.
 - **Live badges (needs-you, inbox, skills update) are not shown in settings.** Accepted by the
@@ -274,7 +245,7 @@ wrong: it would walk back through settings pages. Instead:
 
 ## Implementation plan (one PR, ordered so each step is testable alone)
 
-1. **Predicate** `isSettingsPathname` in `settings-shell.tsx` (+ unit test: both families,
+1. **Predicate** `isSettingsPathname` in `lib/settings-path.ts` (+ unit test: both families,
    `/settings/skills`, negatives `/p/x/settingsfoo`, `/skills`).
 2. **App shell chromeless mode** (`app-shell.tsx`): `chromeless` prop derived inside `AppShell`
    from `useLocation`; skip Sidebar, MobileNavDrawer, MobileTopBar; add `data-chromeless`.
@@ -284,13 +255,12 @@ wrong: it would walk back through settings pages. Instead:
 4. **Extract `CommandPaletteHint`** from `app-shell.tsx` into
    `components/command-palette-hint.tsx` (no behaviour change; the sidebar footer keeps
    rendering it). Pure move so step 5 can reuse it.
-5. **Settings frame** (`settings-shell.tsx`): header (Back, breadcrumb, chip, ThemeToggle,
-   mobile search button), Escape handler, the unified nav (global rows + project tree) with
-   the `CommandPaletteHint` pinned at its bottom, the widened column, the
-   `pt-[env(safe-area-inset-top)]`.
-6. **Index pages**: global index gains the project card list; project index gets the
+5. **Settings frame** (`settings-shell.tsx`): the settings sidebar on the shared frame
+   (brand and Back, global rows, project tree, footer), the page header, the mobile bar and
+   drawer, and the Escape handler.
+6. **Index pages**: the global index redirects to its first section; project index gets the
    project-name `h1`; drop the cross-link paragraph and `settings-global-link`.
-7. **Mobile pills**: `‹ All settings` leading pill on project pages.
+7. **Mobile pills**: `‹ General settings` leading pill on project pages.
 8. **Registry pane** (`projects-section.tsx`): per-row Settings link.
 9. **Command palette**: Global settings view row; update the pinned views list in its test.
 10. **Registry helper** (`registry.tsx`): `settingsSectionsByScope(capabilities)` returning
@@ -320,12 +290,11 @@ Unit (`npm test -- packages/web/src/routes/settings packages/web/src/components`
 - `settings.test.tsx`: nav at `/settings/global/appearance` lists global sections AND one row
   per registered project; the URL's project is expanded with explicit
   `/p/<id>/settings/<section>` hrefs; a missing project renders no links; single-project mode
-  renders the sections flat and no registry pane; `/settings/global` index shows project
-  cards; `/p/boot/settings` index shows the project name. Header: Back present, breadcrumb
-  crumbs, chip text `Global` / project name, theme toggle present. The nav column ends with
-  `[data-slot="command-palette-hint"]`, and clicking it opens the palette
-  (`openCommandPalette` spy); the mobile header renders `[data-slot="settings-search"]` with
-  the same effect. Existing assertions to update: nav contents (was "only project
+  renders the sections flat and no registry pane; `/settings/global` redirects to the first
+  global section with query and hash kept; `/p/boot/settings` index shows the project name.
+  The page title reads `project / view`; Back is present; the sidebar footer holds
+  `[data-slot="command-palette-hint"]`, which opens the palette, the version and star chips
+  and the theme toggle. Existing assertions updated: nav contents (was "only project
   sections"), `settings-global-link` (removed).
 - `app-shell.test.tsx`: the sidebar footer still renders the hint after the extraction
   (existing `command-palette-hint` assertions unchanged).
@@ -344,7 +313,7 @@ E2E (`npm run test:e2e`):
   the tasks pane", and "the Search… launcher at the bottom of the settings nav opens the
   command palette".
 - `ios-sweep.e2e.ts:160-180`: the mobile top bar assertions on settings pages move to the
-  settings header (`settings-header` has the safe-area inset).
+  settings mobile bar (`settings-mobile-bar` carries the safe-area inset).
 - `smoke.e2e.ts:131-167` (footer rows) runs on the home page — unaffected. `smoke.e2e.ts:220`
   (`/settings/skills` → Skills item active) — unaffected, Skills is not a settings page.
 - `project-groups.e2e.ts:302-312` (single-project: no registry pane) — still holds.

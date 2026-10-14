@@ -235,9 +235,9 @@ describe('the General page', () => {
   })
 
   it('is the project area only — global settings has no project to describe', async () => {
-    renderAt('/settings/global')
+    renderAt('/settings/global/notifications')
     await waitFor(() => {
-      expect(document.querySelector('[data-slot="settings-index"]')).not.toBeNull()
+      expect(document.querySelector('[data-slot="settings-nav"][data-scope="global"]')).not.toBeNull()
     })
     expect(general()).toBeNull()
   })

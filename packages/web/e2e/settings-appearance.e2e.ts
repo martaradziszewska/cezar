@@ -94,7 +94,8 @@ describe('settings → appearance against the live dry-run server', () => {
     browser.goto(`${baseUrl}/`)
     browser.waitForFunction(`document.querySelector('[data-slot="sidebar"]') !== null`)
     browser.click('[data-slot="global-settings-link"]')
-    browser.waitForFunction(`document.querySelector('[data-route="settings-global"]') !== null`)
+    // The global index has no page of its own; it lands on the first section.
+    browser.waitForFunction(`document.querySelector('[data-route="settings-global-appearance"]') !== null`)
 
     expect(browser.count('[data-slot="app-shell"][data-chromeless]')).toBe(1)
     expect(browser.count('[data-slot="sidebar"]')).toBe(0)

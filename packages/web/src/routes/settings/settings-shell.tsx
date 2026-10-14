@@ -2,6 +2,7 @@ import { ArrowLeftIcon, ChevronDownIcon, ChevronRightIcon, MenuIcon, SlidersHori
 import * as React from 'react'
 import {
   Link as RouterLink,
+  Navigate,
   NavLink as RouterNavLink,
   useLocation,
   useNavigate,
@@ -500,17 +501,8 @@ function SettingsSidebarContent({
         className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain px-2.5 py-1.5"
       >
         <GroupLabel>General settings</GroupLabel>
-        {/* The area index, reachable from every section (main #772): without it the index is a
-            page you can only reach by arriving. Unprefixed, like every global link. */}
-        <RouterNavLink
-          to={GLOBAL_INDEX_PATH}
-          end
-          data-slot="settings-nav-index"
-          className={navRowClass(globalActive && activeId === null, touch)}
-        >
-          <SlidersHorizontalIcon aria-hidden="true" className="size-4 shrink-0" />
-          General
-        </RouterNavLink>
+        {/* No "General" row here: the global index has no content of its own and redirects to
+            the first section (spec 2026-10-13-unified-settings). */}
         {global.map((section) => {
           const current = globalActive && section.id === activeId
           return (
@@ -594,7 +586,7 @@ function SettingsSidebarContent({
 }
 
 /** The mobile stand-in for the nav column: one segmented, scrollable pill row of the CURRENT
- *  area's sections. Project pages lead with the way up to the unified home. */
+ *  area's sections. Project pages lead with the way up to General settings. */
 function SectionPills({
   scope,
   activeId,
@@ -618,20 +610,18 @@ function SectionPills({
       className="flex shrink-0 gap-1.5 overflow-x-auto border-b border-border px-3 py-2.5 md:hidden"
     >
       {scope === 'project' ? (
-        <RouterLink to={GLOBAL_INDEX_PATH} data-slot="settings-all-pill" className={pillClass(false)}>
-          ‹ All settings
-        </RouterLink>
+        <>
+          <RouterLink to={GLOBAL_INDEX_PATH} data-slot="settings-all-pill" className={pillClass(false)}>
+            ‹ General settings
+          </RouterLink>
+          {/* Never the active pill: the index is a different route, and reaching it from a
+              section is the whole reason this entry exists (main #772). Project scope only —
+              the global index is a redirect, not a page. */}
+          <NavLink to="/settings" end data-slot="settings-nav-index" className={pillClass(false)}>
+            General
+          </NavLink>
+        </>
       ) : null}
-      {/* Never the active pill: the index is a different route, and reaching it from a section
-          is the whole reason this entry exists (main #772). */}
-      <NavLink
-        to={scope === 'global' ? GLOBAL_INDEX_PATH : '/settings'}
-        end
-        data-slot="settings-nav-index"
-        className={pillClass(false)}
-      >
-        General
-      </NavLink>
       {sections.map((section) => (
         <NavLink
           key={section.id}
@@ -803,11 +793,10 @@ export function SettingsSectionRoute({
 const cardClass =
   'flex items-center gap-3.5 rounded-lg border border-border bg-card p-4 shadow-xs transition-colors hover:bg-card-2'
 
-function SectionCard({ scope, section }: { scope: SettingsScope; section: SettingsSection }) {
-  const Link = scope === 'global' ? RouterLink : ScopedLink
+function SectionCard({ section }: { section: SettingsSection }) {
   return (
     <li>
-      <Link to={settingsSectionPath(scope, section.id)} data-section={section.id} className={cardClass}>
+      <ScopedLink to={settingsSectionPath('project', section.id)} data-section={section.id} className={cardClass}>
         <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground">
           <section.icon aria-hidden="true" className="size-4" />
         </span>
@@ -816,97 +805,46 @@ function SectionCard({ scope, section }: { scope: SettingsScope; section: Settin
           <span className="block text-xs text-soft-foreground">{section.description}</span>
         </span>
         <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 text-soft-foreground" />
-      </Link>
+      </ScopedLink>
     </li>
   )
 }
 
 /**
- * The area's index: the registry as a stacked list of cards — the mobile drill-in page, and a
- * plain directory beside the nav on desktop. The GLOBAL index (the unified home) also lists
- * every project as a card into its own settings; the PROJECT index lists that project's
- * sections under its name.
+ * The area's index. The PROJECT index is a page (main #772): the folder, the registry facts,
+ * the concurrency ceiling and Remove, plus — below `md` only — the section cards, since a phone
+ * has no sidebar beside them. The GLOBAL index has no content of its own: a card list there
+ * only repeated the sidebar, so `/settings/global` redirects to the first section instead,
+ * keeping every link to it (footer gear, ⌘K, the project pages' General settings pill) working.
  */
 export function SettingsIndexRoute({ scope, capabilities }: {
   scope: SettingsScope
   capabilities?: CapabilityProps
 }) {
-  const global = scope === 'global'
+  const location = useLocation()
   const sections = settingsSectionsByScope(capabilities)[scope]
+  if (scope === 'global') {
+    // Appearance is never hidden, so the first global section always exists.
+    const first = sections[0]!
+    return (
+      <Navigate
+        to={{ pathname: settingsSectionPath('global', first.id), search: location.search, hash: location.hash }}
+        replace
+      />
+    )
+  }
   return (
-    <SettingsFrame
-      scope={scope}
-      section={null}
-      capabilities={capabilities}
-      routeName={global ? 'settings-global' : 'settings'}
-    >
+    <SettingsFrame scope={scope} section={null} capabilities={capabilities} routeName="settings">
       <div className="flex min-w-0 flex-1 flex-col p-3 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-5 md:pb-5">
-        {/* The project area's index is a PAGE, not a menu (main #772): the folder, the registry
-            facts, the concurrency ceiling and Remove. The global index has no such dashboard. */}
-        {global ? null : <ProjectGeneral capabilities={capabilities} />}
-        <ul
-          data-slot="settings-index"
-          className={cn(
-            'mx-auto flex w-full max-w-2xl flex-col gap-2.5',
-            // On desktop the sidebar already lists every project section, so here the cards
-            // would be the same menu twice. Small screens have no sidebar — there they ARE it.
-            global ? null : 'mt-7 md:hidden',
-          )}
-        >
+        <ProjectGeneral capabilities={capabilities} />
+        {/* On desktop the sidebar already lists every section; the cards would be the same
+            menu twice. */}
+        <ul data-slot="settings-index" className="mx-auto mt-7 flex w-full max-w-2xl flex-col gap-2.5 md:hidden">
           {sections.map((section) => (
-            <SectionCard key={section.id} scope={scope} section={section} />
+            <SectionCard key={section.id} section={section} />
           ))}
         </ul>
-        {global ? <ProjectCards capabilities={capabilities} /> : null}
       </div>
     </SettingsFrame>
-  )
-}
-
-/** The global index's second list: one card per registered project, into its settings. Hidden
- *  in single-project mode, where the project's own sections are the whole tree already. */
-function ProjectCards({ capabilities }: { capabilities: CapabilityProps | undefined }) {
-  const tree = useSettingsTree(capabilities)
-  // The registry is the one source for what a project's settings contain — a hand-written list
-  // here went stale the first time main regrouped the sections.
-  const sectionTitles = settingsSectionsByScope(capabilities).project.map((section) => section.title).join(', ')
-  if (capabilities?.singleProject === true || tree.projects.length === 0) return null
-  return (
-    <section className="mx-auto mt-6 w-full max-w-2xl">
-      <h2 className="mb-2 px-1 text-[11px] font-semibold tracking-wide text-soft-foreground uppercase">
-        Project settings
-      </h2>
-      <ul data-slot="settings-project-index" className="flex flex-col gap-2.5">
-        {tree.projects.map((project) =>
-          project.status === 'missing' ? (
-            <li
-              key={project.id}
-              data-project={project.id}
-              data-status="missing"
-              className={cn(cardClass, 'opacity-55 hover:bg-card')}
-            >
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{project.name}</span>
-              <span className="shrink-0 rounded-full bg-danger/15 px-[7px] py-px text-[10px] font-medium text-danger">
-                folder not found
-              </span>
-            </li>
-          ) : (
-            <li key={project.id}>
-              <RouterLink
-                to={projectSettingsPath(project.id)}
-                data-project={project.id}
-                className={cardClass}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-foreground">{project.name}</span>
-                  <span className="block text-xs text-soft-foreground">{sectionTitles}</span>
-                </span>
-                <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 text-soft-foreground" />
-              </RouterLink>
-            </li>
-          ),
-        )}
-      </ul>
-    </section>
   )
 }

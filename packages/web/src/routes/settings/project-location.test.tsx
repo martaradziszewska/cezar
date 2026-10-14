@@ -170,9 +170,9 @@ describe('the project folder in settings', () => {
   })
 
   it('global settings shows no project folder — it describes no project', async () => {
-    renderAt('/settings/global')
+    renderAt('/settings/global/notifications')
     await waitFor(() => {
-      expect(document.querySelector('[data-slot="settings-index"]')).not.toBeNull()
+      expect(document.querySelector('[data-slot="settings-nav"][data-scope="global"]')).not.toBeNull()
     })
     expect(document.querySelector('[data-slot="project-location"]')).toBeNull()
   })

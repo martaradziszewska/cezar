@@ -1,8 +1,3 @@
-# Unreleased
-
-## ✨ Features
-- ✨ Settings is one full-screen surface: a settings sidebar lists the general sections above a per-project tree, the app chrome is hidden there, Back/Escape return to where you came from, and the sidebar column (resize, width, drawer) is shared with the app sidebar. The Tools menu now opens Agent accounts. (#1413) *(@martaradziszewska)*
-
 # 0.15.1 (2026-10-13)
 
 ## Highlights

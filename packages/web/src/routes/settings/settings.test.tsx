@@ -103,7 +103,12 @@ function gateSeededClient(singleProject = false, projects: ProjectListEntry[] = 
 
 /** The address bar, readable from assertions — how the Back/Escape tests prove where they went. */
 function LocationProbe() {
-  return <span data-testid="location">{useLocation().pathname}</span>
+  const location = useLocation()
+  return (
+    <span data-testid="location" data-search={location.search} data-hash={location.hash}>
+      {location.pathname}
+    </span>
+  )
 }
 const currentPathname = () => screen.getByTestId('location').textContent
 
@@ -329,11 +334,11 @@ describe('the settings shell', () => {
     expect(nav().querySelector('[data-project-section][aria-current="page"]')?.getAttribute('data-project')).toBe('other')
   })
 
-  it('every section keeps a way BACK to an index: the "General" entries (main #772)', () => {
+  it('every project section keeps a way BACK to its index: the "General" entries (main #772)', () => {
     renderAt('/settings/worktrees', { projects: REGISTRY })
-    // The global index, unprefixed like every global link…
-    expect(nav().querySelector('[data-slot="settings-nav-index"]')?.getAttribute('href')).toBe('/settings/global')
-    // …and the ACTIVE project's own index (its General page), scoped to it.
+    // The global area has no index row — its index is a redirect, not a page.
+    expect(nav().querySelector('[data-slot="settings-nav-index"]')).toBeNull()
+    // The ACTIVE project's own index (its General page), scoped to it.
     expect(
       nav().querySelector('[data-project="boot"][data-slot="settings-project-general"]')?.getAttribute('href'),
     ).toBe('/p/boot/settings')
@@ -346,19 +351,26 @@ describe('the settings shell', () => {
     expect(document.querySelector('[data-slot="settings-project-general"][aria-current="page"]')).toBeNull()
   })
 
-  it('"General" is the current entry on the index itself — the project\'s on /settings, the global one on /settings/global', () => {
+  it('"General" is the current entry on the project index itself', () => {
     renderAt('/settings', { projects: REGISTRY })
     expect(
       nav().querySelector('[data-project="boot"][data-slot="settings-project-general"]')?.getAttribute('aria-current'),
     ).toBe('page')
-    expect(nav().querySelector('[data-slot="settings-nav-index"]')?.getAttribute('aria-current')).toBeNull()
     // The project index is a page of its own (folder, registry facts), not only a card menu.
     expect(document.querySelector('[data-slot="project-general"], [data-route="settings"]')).not.toBeNull()
-    cleanup()
+  })
 
-    renderAt('/settings/global', { projects: REGISTRY })
-    expect(nav().querySelector('[data-slot="settings-nav-index"]')?.getAttribute('aria-current')).toBe('page')
-    expect(nav().querySelector('[data-slot="settings-nav-index"]')?.getAttribute('href')).toBe('/settings/global')
+  it('/settings/global is no card menu: it redirects to the first global section, query and hash kept', () => {
+    renderAt('/settings/global?agent=codex#x', { projects: REGISTRY })
+    expect(currentPathname()).toBe(`/settings/global/${GLOBAL_SECTIONS[0]}`)
+    expect(document.querySelector(`[data-route="settings-global-${GLOBAL_SECTIONS[0]}"]`)).not.toBeNull()
+    expect(nav().querySelector('[aria-current="page"]')?.getAttribute('data-section')).toBe(GLOBAL_SECTIONS[0])
+    // Nothing that repeated the sidebar survives.
+    expect(document.querySelector('[data-slot="settings-index"]')).toBeNull()
+    expect(document.querySelector('[data-slot="settings-project-index"]')).toBeNull()
+    expect(document.querySelector('[data-slot="settings-nav-index"]')).toBeNull()
+    expect(screen.getByTestId('location').getAttribute('data-search')).toBe('?agent=codex')
+    expect(screen.getByTestId('location').getAttribute('data-hash')).toBe('#x')
   })
 
   it('renders the SAME nav at /settings/global — global row current, no project row current', () => {
@@ -400,7 +412,6 @@ describe('the settings shell', () => {
       )
       const out = {
         rows: [...document.querySelectorAll('[data-slot="settings-nav"] [data-slot="settings-project"]')].map((row) => row.getAttribute('data-project')),
-        cards: [...document.querySelectorAll('[data-slot="settings-project-index"] [data-project]')].map((c) => c.getAttribute('data-project')),
         nav: nav().textContent ?? '',
         sections: projectSectionLinks('boot').map((el) => el.getAttribute('href')),
       }
@@ -413,7 +424,6 @@ describe('the settings shell', () => {
       expect(seen.rows).toEqual(['other', 'gone'])
       expect(seen.sections).toEqual([])
       expect(seen.nav).not.toContain('my-repo')
-      if (entry === '/settings/global') expect(seen.cards).toEqual(['other', 'gone'])
     }
     // Its OWN page is the one exception: its sections render flat, and the registered projects
     // get no rows beside them, so it never appears as one of the list.
@@ -556,7 +566,9 @@ describe('the settings shell', () => {
     // The mobile pill row renders the CURRENT area's sections, led by the way up.
     const pills = document.querySelector('[data-slot="settings-nav-mobile"]')!
     expect(sectionIds(pills)).toEqual(PROJECT_SECTIONS)
-    expect(pills.querySelector('[data-slot="settings-all-pill"]')?.getAttribute('href')).toBe('/settings/global')
+    const up = pills.querySelector('[data-slot="settings-all-pill"]')
+    expect(up?.getAttribute('href')).toBe('/settings/global')
+    expect(up?.textContent).toBe('‹ General settings')
   })
 
   it('keeps the ⌘K launcher, the version and star chips and the theme toggle in the sidebar footer, and the launcher opens the palette', () => {
@@ -683,21 +695,7 @@ describe('the settings shell', () => {
     expect(document.querySelector('[data-slot="settings-global-link"]')).toBeNull()
   })
 
-  it('/settings/global is the unified home: global cards, then one card per project', () => {
-    renderAt('/settings/global', { projects: REGISTRY })
-    const index = document.querySelector('[data-slot="settings-index"]')!
-    expect(sectionIds(index)).toEqual(GLOBAL_SECTIONS)
-    expect(index.querySelector('[data-section="projects"]')?.getAttribute('href')).toBe(
-      '/settings/global/projects',
-    )
-    const cards = [...document.querySelectorAll('[data-slot="settings-project-index"] [data-project]')]
-    expect(cards.map((card) => card.getAttribute('data-project'))).toEqual(['boot', 'other', 'gone'])
-    expect(cards[1]?.getAttribute('href')).toBe('/p/other/settings')
-    expect(cards[2]?.getAttribute('data-status')).toBe('missing')
-    expect(cards[2]?.getAttribute('href')).toBeNull()
-  })
-
-  it('single-project mode removes Projects from the global index and navigation, and the project cards', () => {
+  it('single-project mode removes Projects from the global navigation', () => {
     renderAt('/settings/global', { singleProject: true, projects: REGISTRY })
     expect(document.querySelector('[data-slot="settings-index"] [data-section="projects"]')).toBeNull()
     expect(document.querySelector('[data-slot="settings-nav"] [data-section="projects"]')).toBeNull()

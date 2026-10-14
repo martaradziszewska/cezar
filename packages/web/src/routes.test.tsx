@@ -341,7 +341,6 @@ describe('the global settings area (/settings/global)', () => {
   }, 30_000)
 
   const GLOBAL_CASES: Array<[string, string, string]> = [
-    ['/settings/global', 'settings-global', 'Settings'],
     ['/settings/global/appearance', 'settings-global-appearance', 'Appearance'],
     ['/settings/global/notifications', 'settings-global-notifications', 'Notifications'],
     ['/settings/global/resources', 'settings-global-resources', 'Resources'],
@@ -357,6 +356,12 @@ describe('the global settings area (/settings/global)', () => {
       expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(title)
     })
   }
+
+  it('/settings/global has no page of its own: it lands, unscoped, on the first global section', () => {
+    renderAt('/settings/global')
+    expect(routeName()).toBe('settings-global-appearance')
+    expect(currentPathname()).toBe('/settings/global/appearance')
+  })
 
   // A bookmarked deep link into any of the four `/automations*` routes still resolves — the route
   // map is unchanged — but on a cockpit started with CEZ_AUTOMATIONS=0 the view says the feature
