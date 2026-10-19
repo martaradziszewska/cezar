@@ -86,6 +86,12 @@ describe('pickBranchPr — adopting the PR the agent opened', () => {
     expect(pickBranchPr([pr(12, 'open-mercato', 'CLOSED'), pr(14, 'open-mercato')], undefined)).toMatchObject({ number: 14 });
   });
 
+  it('a same-repo head only adopts a PR from the base repo’s owner — never a stranger’s fork with that branch name', () => {
+    // `findBranchPr` passes the base repo's owner when the head is not owner-qualified.
+    expect(pickBranchPr([pr(31, 'stranger'), pr(30, 'open-mercato')], 'open-mercato')).toMatchObject({ number: 30 });
+    expect(pickBranchPr([pr(31, 'stranger')], 'open-mercato')).toBeNull();
+  });
+
   it('no PRs → null', () => {
     expect(pickBranchPr([], undefined)).toBeNull();
   });

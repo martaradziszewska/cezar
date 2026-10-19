@@ -2821,11 +2821,16 @@ const branchPrsSchema = z.array(
  *  cockpit records a PR the agent opened even when it never declared `CEZ:PR`. Null on no match
  *  and on any failure (no gh, offline): adoption is best-effort, never an error. */
 export async function findBranchPr(worktree: string, target: PrTarget): Promise<{ url: string; number: number } | null> {
+  // Dry-run has no forge: stand in with the same demo PR `createDraftPr` fakes, so the flow completes.
   if (process.env.CEZ_DRY_RUN === '1') return { url: 'https://github.com/open-mercato/demo/pull/777', number: 777 };
-  const [owner, branch] = target.head.includes(':') ? target.head.split(':', 2) : [undefined, target.head];
+  const [forkOwner, branch] = target.head.includes(':') ? target.head.split(':', 2) : [undefined, target.head];
+  // `--head` matches the branch NAME across every fork; the head's owner is what makes it ours —
+  // the fork's for a fork push, else the base repo's (`host/owner/name`).
+  const owner = forkOwner ?? target.repo?.split('/')[1];
   const res = await execTool(
     [
       'pr', 'list', ...(target.repo ? ['--repo', target.repo] : []), '--head', branch as string,
+      ...(target.base ? ['--base', target.base] : []),
       '--state', 'open', '--json', 'url,number,state,headRepositoryOwner', '--limit', '10',
     ],
     worktree,
@@ -2841,9 +2846,9 @@ export async function findBranchPr(worktree: string, target: PrTarget): Promise<
   return pickBranchPr(parsed, owner);
 }
 
-/** `gh pr list --head` matches the branch NAME only: with an owner-qualified head (a fork), the PR
- *  must also come from that owner, or another fork's same-named branch would be adopted. Only an
- *  open PR counts — a closed or merged one on a reused branch name is not the one just opened. */
+/** `gh pr list --head` matches the branch NAME only, so the PR must also come from `owner` — the
+ *  fork's for a fork push, the base repo's for a same-repo one — or another fork's same-named branch
+ *  would be adopted. Only an open PR counts — a closed or merged one on a reused name is not it. */
 export function pickBranchPr(
   prs: z.infer<typeof branchPrsSchema>,
   owner: string | undefined,
