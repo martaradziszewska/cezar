@@ -6,7 +6,7 @@ import {
   SearchXIcon,
   TerminalIcon,
 } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigationType, useParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
@@ -49,7 +49,7 @@ import { ThreadLoading } from '../task-thread/thread-loading'
 import { reduceThread } from '../task-thread/thread-state'
 import { readDrawerState, writeDrawerState, type DrawerState } from './drawer-state'
 import { LayoutCards } from './layout-cards'
-import { emptyBrowserState, FIXED_VIEW_ORDER, fixedViewOf, layoutDisplayName, VIEW_IDS, type ViewId, type WorkspaceColumn } from './layout-state'
+import { emptyBrowserState, FIXED_VIEW_ORDER, fixedViewOf, layoutDisplayName, VIEW_IDS, type ViewId, type WorkspaceColumn, type WorkspaceLayout } from './layout-state'
 import { FullViewExit, usePanelCover, WorkspaceMaximizeContext } from './maximize'
 import { stripEntries, useStripKeyHints } from './strip'
 import { useWorkspaceLayouts } from './use-workspace-layouts'
@@ -411,7 +411,7 @@ function WorkspaceView({
       if (isEditableTarget(event.target)) return
       if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return
       const now = keys.current
-      const stage = document.querySelector<HTMLElement>('[data-slot="workspace-stage"]')
+      const stage = document.querySelector<HTMLElement>(VISIBLE_LAYOUT)
       const at = now.stripOrder.findIndex((entry) => entry.active)
       const step = (delta: number) => {
         if (now.stripOrder.length === 0) return
@@ -491,7 +491,7 @@ function WorkspaceView({
     if (path) openReference({ view: 'files', value: path })
   }, [layouts.ready, openReference, run.id])
   useEffect(() => {
-    const stage = () => document.querySelector<HTMLElement>('[data-slot="workspace-stage"]')
+    const stage = () => document.querySelector<HTMLElement>(VISIBLE_LAYOUT)
     const splitButton = () => {
       const buttons = stage()?.querySelectorAll<HTMLButtonElement>('[data-action="split-view"]:not(:disabled)')
       return buttons?.[buttons.length - 1] ?? null
@@ -553,17 +553,19 @@ function WorkspaceView({
     [discardNote, noteFor],
   )
 
+  const keptLayouts = useKeptLayouts(run.id, layouts.layout ? activeName : null, layouts.state.layouts)
+
   const renderView = useCallback(
-    (view: ViewId, index: number, column: WorkspaceColumn) => {
+    (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => {
       switch (view) {
         case 'session':
           return <ConversationColumn run={run} onMarkedUnread={onMarkedUnread} onOpenReference={openReference} />
         case 'changes':
-          return <ChangesView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:changes`} />
+          return <ChangesView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:changes`} />
         case 'commits':
-          return <CommitsView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:commits`} />
+          return <CommitsView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:commits`} />
         case 'files':
-          return <FilesView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:files`} />
+          return <FilesView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:files`} />
         case 'graph':
           return (
             <Suspense fallback={<ColumnLoading title="Loading graph…" />}>
@@ -601,7 +603,6 @@ function WorkspaceView({
       }
     },
     [
-      activeName,
       addDraft,
       designMarks,
       designNotes,
@@ -653,13 +654,15 @@ function WorkspaceView({
             {!layouts.ready ? (
               <DeepLinkLoading view={deepLinkView} />
             ) : layouts.layout ? (
-              <WorkspaceColumns
-                key={activeName}
-                columns={layouts.layout.columns}
-                actions={actions}
-                renderView={renderView}
-                editable={fixedActive === null}
-              />
+              keptLayouts.map((layout) => (
+                <KeptLayout
+                  key={layout.name}
+                  layout={layout}
+                  active={layout.name === activeName}
+                  actions={actions}
+                  renderView={renderView}
+                />
+              ))
             ) : (
               <CenteredState
                 icon={<LayoutGridIcon />}
@@ -727,6 +730,66 @@ function WorkspaceView({
 }
 
 const noop = () => {}
+
+/** The layout on screen. Kept layouts stay in the DOM while hidden, so a lookup by slot inside the
+ *  stage must go through this or it can land on a hidden layout's composer or split button. */
+const VISIBLE_LAYOUT = '[data-slot="workspace-stage"] [data-slot="workspace-layout"][data-active]'
+
+/** How many recently visited layouts stay mounted, hidden, besides the active one. */
+const KEPT_LAYOUTS = 4
+
+/** A Terminal or Preview column holds a live socket or page; hidden, it would keep running. */
+function keepable(layout: WorkspaceLayout): boolean {
+  return layout.columns.every((column) => column.view !== 'terminal' && column.view !== 'browser')
+}
+
+/**
+ * The layouts to render: the active one plus the last few visited, kept mounted under a hidden
+ * `<Activity>` so switching back to one shows it as it was left — re-mounting a 46-file Changes
+ * view cost 330–480 ms of main thread per switch. In the state's own order, so a switch never
+ * moves a kept layout's DOM. Forgotten when the task changes.
+ */
+function useKeptLayouts(runId: string, active: string | null, all: readonly WorkspaceLayout[]): WorkspaceLayout[] {
+  const [kept, setKept] = useState<{ runId: string; names: readonly string[] }>({ runId, names: [] })
+  const names = kept.runId === runId ? kept.names : []
+  if (active !== null && names[0] !== active) {
+    setKept({ runId, names: [active, ...names.filter((name) => name !== active)].slice(0, KEPT_LAYOUTS + 1) })
+  }
+  return all.filter((layout) =>
+    layout.name === active || (names.includes(layout.name) && keepable(layout)),
+  )
+}
+
+function KeptLayout({
+  layout,
+  active,
+  actions,
+  renderView,
+}: {
+  layout: WorkspaceLayout
+  active: boolean
+  actions: ColumnActions
+  renderView: (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => ReactNode
+}) {
+  const name = layout.name
+  const render = useCallback(
+    (view: ViewId, index: number, column: WorkspaceColumn) => renderView(view, index, column, name),
+    [renderView, name],
+  )
+  // Hidden, its effects are cleaned up — queries stop polling, sockets close — and its state stays.
+  return (
+    <Activity mode={active ? 'visible' : 'hidden'}>
+      <div data-slot="workspace-layout" data-active={active ? '' : undefined} className="flex min-h-0 flex-1 flex-col">
+        <WorkspaceColumns
+          columns={layout.columns}
+          actions={actions}
+          renderView={render}
+          editable={fixedViewOf(layout) === null}
+        />
+      </div>
+    </Activity>
+  )
+}
 
 function ColumnLoading({ title }: { title: string }) {
   return (

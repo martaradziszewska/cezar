@@ -138,7 +138,7 @@ const text = (element: Element | null | undefined) => element?.textContent?.repl
 const cardNames = () => Array.from(document.querySelectorAll('[data-slot="layout-card"]')).map(text)
 const activeCard = () => text(document.querySelector('[data-slot="layout-card"][data-active]'))
 const columnViews = () =>
-  Array.from(document.querySelectorAll('[data-slot="workspace-column"]')).map((column) => column.getAttribute('data-view'))
+  Array.from(document.querySelectorAll('[data-slot="workspace-layout"][data-active] [data-slot="workspace-column"]')).map((column) => column.getAttribute('data-view'))
 
 async function ready() {
   await waitFor(() => expect(document.querySelector('[data-route="task-workspace"]')).not.toBeNull())
@@ -333,6 +333,61 @@ describe('the task workspace (main)', () => {
     const toggle = document.querySelector('[data-action="toggle-terminal"]') as HTMLButtonElement
     expect(toggle.getAttribute('aria-pressed')).toBe('true')
     expect(toggle.textContent).toContain('in column')
+  })
+
+  it('keeps a left layout mounted, hidden, so going back to Changes does not rebuild it', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    const visible = () => document.querySelector('[data-slot="workspace-layout"][data-active]')
+    const select = (view: ViewId) =>
+      fireEvent.click(document.querySelector(`[data-slot="layout-card"][data-fixed="${view}"]`) as HTMLElement)
+
+    select('changes')
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    const changes = visible()
+
+    select('session')
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    expect(changes?.isConnected).toBe(true)
+    expect(changes?.hasAttribute('data-active')).toBe(false)
+
+    select('changes')
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    expect(visible()).toBe(changes)
+  })
+
+  it('sends the \\ key to the layout on screen, never to a kept one hidden behind it', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'New layout' }))
+    await pickTile('session')
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    const builtCard = () => document.querySelector('[data-slot="layout-card"]:not([data-fixed])') as HTMLElement | null
+    expect(builtCard()).not.toBeNull()
+
+    fireEvent.click(document.querySelector('[data-slot="layout-card"][data-fixed="changes"]') as HTMLElement)
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    // The hidden layout's split button is still in the DOM; the key must not reach it.
+    fireEvent.keyDown(document.body, { key: '\\' })
+
+    fireEvent.click(builtCard()!.querySelector('button[title*="double-click to rename"]')!)
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    expect(document.querySelector('[data-slot="workspace-layout"][data-active] [data-slot="view-tiles-stage"]')).toBeNull()
+  })
+
+  it('never keeps a Preview layout once left — a hidden page would keep running', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    fireEvent.click(document.querySelector('[data-slot="layout-card"][data-fixed="browser"]') as HTMLElement)
+    await waitFor(() => expect(columnViews()).toEqual(['browser']))
+    const preview = document.querySelector('[data-slot="workspace-layout"][data-active]')
+
+    fireEvent.click(document.querySelector('[data-slot="layout-card"][data-fixed="session"]') as HTMLElement)
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    expect(preview?.isConnected).toBe(false)
   })
 
   it('splits the screen when a view tab is dropped beside the chat', async () => {

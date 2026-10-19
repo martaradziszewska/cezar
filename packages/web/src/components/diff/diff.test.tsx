@@ -122,6 +122,29 @@ describe('Diff facade', () => {
     expect(document.querySelector('[data-slot="diff-loading"]')).toBeNull()
   })
 
+  it('renders a remount synchronously once the renderer has loaded — no "Loading diff…" flash', async () => {
+    await renderDiff(<Diff files={[MODIFIED]} />)
+    cleanup()
+
+    render(<Diff files={[MODIFIED]} />)
+    expect(document.querySelector('[data-slot="diff-loading"]')).toBeNull()
+    expect(document.querySelector('[data-slot="diff-file-body"]')).not.toBeNull()
+  })
+
+  it('re-highlights a changed file in the same render, never flashing it back to plain text', async () => {
+    const colored = () =>
+      [...document.querySelectorAll('[data-slot="diff-file-body"] span[style]')].some((el) =>
+        (el.getAttribute('style') ?? '').includes('var(--syn'),
+      )
+    const view = render(<Diff files={[MODIFIED]} />)
+    await waitFor(() => expect(colored()).toBe(true), { timeout: 5000 })
+
+    // A polled patch (or expanded context) gives the mounted file new lines — and a new cache key.
+    view.rerender(<Diff files={[{ ...MODIFIED, patch: MODIFIED.patch.replace('const two = 3', 'const two = 7') }]} />)
+    expect(document.querySelector('[data-slot="diff-file-body"]')?.textContent).toContain('const two = 7')
+    expect(colored()).toBe(true)
+  })
+
   it('soft-wraps line content when wrap is set', async () => {
     await renderDiff(<Diff files={[MODIFIED]} wrap />)
 

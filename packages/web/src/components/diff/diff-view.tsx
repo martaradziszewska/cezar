@@ -15,7 +15,7 @@ import {
   fileKey,
   widestLineChars,
 } from './diff-scroll'
-import { tokenizeDiffLines } from './diff-tokens'
+import { cachedDiffTokens, diffTokensKey, scheduleTokenize, storeDiffTokens, tokenizeDiffLines } from './diff-tokens'
 import { ImagePreview, shouldPreviewImage } from './image-preview'
 import { canPreviewMarkdown } from './markdown'
 import { MarkdownPreview } from './markdown-preview'
@@ -862,24 +862,49 @@ function DiffFileBody({
   )
 }
 
-/** Load-and-cache this file's syntax tokens through the shared singleton (never rejects). */
+/** This file's syntax tokens: from the content cache when it has them, else highlighted after
+ *  paint through the tokenize queue (`diff-tokens.ts`). Only a change to a file that was already
+ *  highlighted is tokenized in render — one file, not the whole diff. */
 function useFileTokens(path: string, lineList: HunkLine[]): SynToken[][] | null {
   const lines = lineList.length > HIGHLIGHT_MAX_LINES ? null : lineList
   const lang = useMemo(() => langForPath(path), [path])
-  const [loaded, setLoaded] = useState<{ lines: HunkLine[]; tokens: SynToken[][] | null } | null>(null)
+  const key = useMemo(() => (lines === null || lang === null ? null : diffTokensKey(lang, lines)), [lines, lang])
+  // Kept here too, so an eviction from the shared cache never un-highlights a mounted file.
+  const [own, setOwn] = useState<{ key: string; tokens: SynToken[][] } | null>(null)
   useEffect(() => {
-    if (lines === null || lang === null) return
+    if (key === null || lines === null || lang === null || cachedDiffTokens(key) !== undefined) return
     let cancelled = false
+    let cancelJob: (() => void) | undefined
     void ensureLang(lang).then(() => {
-      if (!cancelled) setLoaded({ lines, tokens: tokenizeDiffLines(lines, (text) => highlightSync(text, lang)) })
+      if (cancelled) return
+      cancelJob = scheduleTokenize(() => {
+        const tokens = tokenizeDiffLines(lines, (text) => highlightSync(text, lang))
+        if (!tokens) return
+        storeDiffTokens(key, tokens)
+        setOwn({ key, tokens })
+      })
     })
     return () => {
       cancelled = true
+      cancelJob?.()
     }
-  }, [lines, lang])
-  if (lines === null || lang === null) return null
-  if (loaded?.lines === lines) return loaded.tokens
-  return tokenizeDiffLines(lines, (text) => highlightSync(text, lang))
+  }, [key, lines, lang])
+  // Whether this mounted file has shown tokens before — from the queue or straight from the cache.
+  const highlighted = useRef(false)
+  let tokens: SynToken[][] | null = null
+  if (key !== null && lines !== null && lang !== null) {
+    tokens = cachedDiffTokens(key) ?? (own?.key === key ? own.tokens : null)
+    if (tokens === null && highlighted.current) {
+      // Already highlighted, now changed (expanded context, a polled patch): one file, so highlight
+      // it here rather than flash it plain until the queue runs. Null while the grammar is not loaded.
+      tokens = tokenizeDiffLines(lines, (text) => highlightSync(text, lang))
+      if (tokens) storeDiffTokens(key, tokens)
+    }
+  }
+  useEffect(() => {
+    if (tokens !== null) highlighted.current = true
+  })
+  return tokens
 }
 
 function Note({ children }: { children: React.ReactNode }) {
