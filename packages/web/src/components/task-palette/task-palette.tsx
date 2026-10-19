@@ -686,7 +686,7 @@ export const keepsSubject = (id: string) => DIALOG_COMMANDS.has(id) || id.starts
 const needsGesture = (id: string) => id.startsWith('copy:') || id === 'open-pr'
 
 /** Whether ⇧↵ can bind a command: saved layouts are not bound by id. */
-const recordable = (id: string) => !id.startsWith('layout:') || id === 'layout:new'
+const recordable = (id: string) => !id.startsWith('layout:')
 
 /** A command's name for messages — the live row's label when it is listed, else the catalog's. */
 function bindableLabel(id: string, commands: readonly TaskCommand[] = []): string {

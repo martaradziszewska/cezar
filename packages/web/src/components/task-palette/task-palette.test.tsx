@@ -278,7 +278,6 @@ describe('shortcuts', () => {
       openViewBeside: vi.fn(),
       layouts: [],
       selectLayout: vi.fn(),
-      newLayout: vi.fn(),
       maximized: false,
       toggleMaximized: vi.fn(),
       splitView: null,
