@@ -140,7 +140,8 @@ export function runActionFlags(run: RunRecord): RunActionFlags {
 /**
  * What a git step says to the task's agent: the step's own name, nothing more — the agent knows how
  * to commit, push, open a PR or merge a base branch, and the conversation shows exactly what was
- * asked. The PR number rides along where a task can point at more than one PR (#901).
+ * asked. The PR number rides along where a task can point at more than one PR (#901), and the base
+ * branch where the agent could not otherwise know it (a dispatch child, a non-default base).
  */
 export function resolveConflictsPrompt(prNumber?: number): string {
   return prNumber ? `Resolve conflicts in PR ${prNumber}` : 'Resolve conflicts'
@@ -158,12 +159,21 @@ export function pushPrompt(): string {
   return 'Push'
 }
 
-export function createPrPrompt(draft: boolean): string {
-  return draft ? 'Create draft PR' : 'Create PR'
+/** The base branch's name for a message — `origin/x` → `x`; nothing for none or a raw sha (a
+ *  detached fork point has no branch to target). The server's `--base` normalizes the same way. */
+function baseName(base?: string): string | undefined {
+  const name = base?.replace(/^origin\//, '')
+  return name && !/^[0-9a-f]{7,40}$/i.test(name) ? name : undefined
 }
 
-export function updateBranchPrompt(): string {
-  return 'Update branch'
+export function createPrPrompt(draft: boolean, base?: string): string {
+  const name = baseName(base)
+  return `${draft ? 'Create draft PR' : 'Create PR'}${name ? ` against ${name}` : ''}`
+}
+
+export function updateBranchPrompt(base?: string): string {
+  const name = baseName(base)
+  return name ? `Update branch from ${name}` : 'Update branch'
 }
 
 /** The Finish button's tooltip — review-gate accept reads differently from closing a session. */

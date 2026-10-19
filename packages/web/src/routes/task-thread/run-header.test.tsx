@@ -556,7 +556,7 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
       if (!found) throw new Error('nothing was sent')
       return found
     })
-    expect(message.body).toMatchObject({ text: 'Update branch' })
+    expect(message.body).toMatchObject({ text: 'Update branch from main' })
     // Busy under the in-flight step's label, whichever button is showing.
     await waitFor(() => expect(document.querySelector('[data-slot="git-button"] button')?.textContent).toBe('Updating branch…'))
   })
@@ -565,6 +565,13 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
     expect(createPrPrompt(false)).toBe('Create PR')
     expect(createPrPrompt(true)).toBe('Create draft PR')
     expect(updateBranchPrompt()).toBe('Update branch')
+    // The base rides along, so a task whose base is not the repo default (a dispatch child, a
+    // feature-branch task) is never opened against or merged from `main` by mistake.
+    expect(createPrPrompt(false, 'origin/main')).toBe('Create PR against main')
+    expect(createPrPrompt(true, 'cez/1a2b3c4d')).toBe('Create draft PR against cez/1a2b3c4d')
+    expect(updateBranchPrompt('origin/release/2.x')).toBe('Update branch from release/2.x')
+    // A raw sha (detached fork point) is not a branch to target.
+    expect(createPrPrompt(false, '0a1b2c3d4e5f')).toBe('Create PR')
     expect(commitPrompt(false)).toBe('Commit')
     expect(commitPrompt(true)).toBe('Commit and push')
     expect(pushPrompt()).toBe('Push')
@@ -627,7 +634,7 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
       renderHeader(run('waiting', { worktreePath: '/tmp/wt/r1', branch: 'cez/r1', baseBranch: 'origin/main' }))
       fireEvent.click(await enabled('create-pr'))
       await waitFor(() => {
-        if (!textSent(sent, 'Create PR')) throw new Error('the agent was not asked')
+        if (!textSent(sent, 'Create PR against main')) throw new Error('the agent was not asked')
       })
       expect(sent.some((r) => r.path.endsWith('/pr'))).toBe(false)
     })
@@ -827,6 +834,33 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
       expect(push.textContent).toBe('Committing and pushing…')
       fireEvent.click(push)
       expect(messages()).toHaveLength(1)
+    })
+
+    it('sent mid-turn: the turn already running is not the step’s — busy until its own turn ends, adoption only then', async () => {
+      const sent = stubFetch({
+        '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 0, unpushed: null, behind: 0, ahead: 1 }),
+        '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+        '/api/v1/runs/r1/pr/adopt': () => jsonResponse({ found: true, url: 'https://github.com/o/r/pull/9' }),
+      })
+      const setStatus = renderLive('running', false)
+      const button = await waitFor(() => {
+        const el = document.querySelector('[data-slot="git-button"] [data-action="create-pr"]') as HTMLButtonElement | null
+        expect(el?.disabled).toBe(false)
+        return el!
+      })
+      fireEvent.click(button)
+      await waitFor(() => expect(sent.some((r) => r.method === 'POST' && r.path.endsWith('/messages'))).toBe(true))
+      const adopted = () => sent.some((r) => r.method === 'POST' && r.path.endsWith('/pr/adopt'))
+      // The turn that was running at the click ends — the agent has not reached the message yet.
+      setStatus('waiting')
+      await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+      expect(gitButton()?.textContent).toBe('Creating PR…')
+      expect(adopted()).toBe(false)
+      // Its own turn runs and ends: now the step is done and the PR is looked up.
+      setStatus('running')
+      setStatus('waiting')
+      await waitFor(() => expect(adopted()).toBe(true))
+      await waitFor(() => expect(gitButton()?.textContent).not.toBe('Creating PR…'))
     })
 
     it('a turn that never shows up releases the step after the grace period', async () => {

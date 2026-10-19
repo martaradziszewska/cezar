@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 import { ApiError, adoptRunPr, createRunPr, pushRun } from '@/api/client'
 import { queryKeys, useHealth, useRepo, useRunGitStatus } from '@/api/queries'
@@ -37,6 +37,9 @@ export interface RunGitStep {
 
 /** How long a sent agent step waits to see its turn start before it stops spinning. */
 const HANDOFF_GRACE_MS = 30_000
+/** After the turn a step was queued behind ends: its own turn starts at once, or it was folded into
+ *  the one that just ended. */
+const QUEUED_TURN_GRACE_MS = 3_000
 
 const isCreatePr = (id: GitActionId) => id === 'create-pr' || id === 'create-draft-pr'
 
@@ -51,6 +54,10 @@ interface Flight {
   phase: 'sending' | 'handedOff'
   sawTurn: boolean
   sentAt: number
+  /** Sent while a turn was already running: that turn is not this step's — wait it out first. */
+  afterCurrentTurn: boolean
+  /** How long to wait for the step's own turn to show before letting go. */
+  graceMs: number
 }
 const flights = new Map<string, Flight>()
 const flightListeners = new Set<() => void>()
@@ -112,25 +119,42 @@ export function useRunGitStep(run: ApiRun): RunGitStep {
   // button comes straight back and a second click sends the same prompt again. The turn, not the
   // session: an open session rests in `waiting`, which would hold the step busy indefinitely.
   const turnRunning = run.status === 'running' || run.status === 'queued'
+  // Read at the moment a flight ends, not when the effect was created.
+  const prUrlRef = useRef(prUrl)
+  prUrlRef.current = prUrl
+  // The agent opened the PR itself: record it by branch, even if it never declared CEZ:PR.
+  const adoptIfCreatePr = (ended: Flight) => {
+    if (isCreatePr(ended.id) && !prUrlRef.current) void adoptPr()
+  }
   useEffect(() => {
     if (!flight || flight.phase !== 'handedOff') return
+    if (flight.afterCurrentTurn) {
+      // Still the turn that was running when the step was sent; its end starts the real wait.
+      if (!turnRunning) {
+        setFlight(run.id, { ...flight, afterCurrentTurn: false, sentAt: Date.now(), graceMs: QUEUED_TURN_GRACE_MS })
+      }
+      return
+    }
     if (turnRunning) {
       if (!flight.sawTurn) setFlight(run.id, { ...flight, sawTurn: true })
       return
     }
     if (flight.sawTurn) {
-      // The agent opened the PR itself: record it by branch, even if it never declared CEZ:PR.
-      if (endFlight(run.id, flight) && isCreatePr(flight.id) && !prUrl) void adoptPr()
+      if (endFlight(run.id, flight)) adoptIfCreatePr(flight)
       return
     }
     // The record shows the new turn only once it refetches; never wait forever for it — and a
-    // surface mounting long after the send must not inherit a stale spinner.
-    const left = HANDOFF_GRACE_MS - (Date.now() - flight.sentAt)
+    // surface mounting long after the send must not inherit a stale spinner. A step folded into
+    // the turn it was queued behind ends here too, so it still gets its adoption.
+    const expire = () => {
+      if (endFlight(run.id, flight)) adoptIfCreatePr(flight)
+    }
+    const left = flight.graceMs - (Date.now() - flight.sentAt)
     if (left <= 0) {
-      endFlight(run.id, flight)
+      expire()
       return
     }
-    const timer = setTimeout(() => endFlight(run.id, flight), left)
+    const timer = setTimeout(expire, left)
     return () => clearTimeout(timer)
   }, [turnRunning, flight])
   const adoptPr = async () => {
@@ -151,7 +175,14 @@ export function useRunGitStep(run: ApiRun): RunGitStep {
       toast('Another message to the task is still being delivered — try again in a moment')
       return
     }
-    const sending: Flight = { id, phase: 'sending', sawTurn: false, sentAt: Date.now() }
+    const sending: Flight = {
+      id,
+      phase: 'sending',
+      sawTurn: false,
+      sentAt: Date.now(),
+      afterCurrentTurn: turnRunning,
+      graceMs: HANDOFF_GRACE_MS,
+    }
     setFlight(run.id, sending)
     // No success toast: the busy button already says what is happening. Failures still toast.
     const failure = await agent.send(buildPrompt())
@@ -233,12 +264,12 @@ export function useRunGitStep(run: ApiRun): RunGitStep {
       case 'create-pr':
       case 'create-draft-pr': {
         const draft = id === 'create-draft-pr'
-        if (!viaServer) void promptAgent(id, () => createPrPrompt(draft))
+        if (!viaServer) void promptAgent(id, () => createPrPrompt(draft, run.baseBranch))
         else if (!createPr.isPending) createPr.mutate(draft)
         break
       }
       case 'update-branch':
-        void promptAgent(id, updateBranchPrompt)
+        void promptAgent(id, () => updateBranchPrompt(run.baseBranch))
         break
       case 'resolve-conflicts':
         void promptAgent(id, () => resolveConflictsPrompt(prNumber))

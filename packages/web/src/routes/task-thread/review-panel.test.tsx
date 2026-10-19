@@ -367,7 +367,7 @@ describe('the review gate on the thread', () => {
     fireEvent.click(button)
     await waitFor(() =>
       expect(
-        sent.find((r) => r.method === 'POST' && (r.body as { text?: string } | undefined)?.text === createPrPrompt(true)),
+        sent.find((r) => r.method === 'POST' && (r.body as { text?: string } | undefined)?.text === 'Create draft PR against main'),
       ).toBeDefined(),
     )
     expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/pr')).toBe(false)
