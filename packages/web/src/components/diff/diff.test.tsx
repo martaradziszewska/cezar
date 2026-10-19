@@ -145,6 +145,41 @@ describe('Diff facade', () => {
     expect(colored()).toBe(true)
   })
 
+  describe('a large file', () => {
+    // Past LARGE_DIFF_LINES changed lines: one file's rows are a single virtualized item, so a
+    // big one rendered in full is what froze the cockpit on opening a large change.
+    const LARGE: DiffFileChange = { ...MODIFIED, path: 'src/big.ts', adds: 900, dels: 300 }
+
+    it('opens collapsed behind "Load diff", rendering none of its rows', async () => {
+      await renderDiff(<Diff files={[LARGE, ADDED]} />, 'src/big.ts')
+      const card = [...document.querySelectorAll<HTMLElement>('[data-slot="diff-file"]')].find((el) => el.dataset.path === 'src/big.ts')!
+      expect(card.querySelector('[data-slot="diff-file-held"]')?.textContent).toContain('1,200 changed lines')
+      expect(card.querySelector('[data-slot="diff-line"]')).toBeNull()
+      expect(card.querySelector('[data-slot="diff-file-header"]')?.getAttribute('aria-expanded')).toBe('false')
+      // The small file beside it renders as before.
+      expect(document.querySelectorAll('[data-slot="diff-file-held"]')).toHaveLength(1)
+    })
+
+    it('renders its rows on "Load diff", and a reader can close it again', async () => {
+      await renderDiff(<Diff files={[LARGE]} />, 'src/big.ts')
+      fireEvent.click(screen.getByRole('button', { name: 'Load diff' }))
+      await waitFor(() => expect(document.querySelector('[data-slot="diff-line"]')).not.toBeNull())
+      expect(document.querySelector('[data-slot="diff-file-held"]')).toBeNull()
+
+      fireEvent.click(document.querySelector('[data-slot="diff-file-header"]')!)
+      await waitFor(() => expect(document.querySelector('[data-slot="diff-line"]')).toBeNull())
+      // Closed by the reader, it is not "held back" — no Load diff note comes back.
+      expect(document.querySelector('[data-slot="diff-file-held"]')).toBeNull()
+    })
+
+    it('opens anyway when it carries a comment — the reader must see it', async () => {
+      const comment = { id: 'c1', path: 'src/big.ts', side: 'new' as const, line: 4, body: 'look here' }
+      await renderDiff(<Diff files={[LARGE]} comments={[comment]} />, 'src/big.ts')
+      expect(document.querySelector('[data-slot="diff-file-held"]')).toBeNull()
+      expect(document.querySelector('[data-slot="diff-line"]')).not.toBeNull()
+    })
+  })
+
   it('soft-wraps line content when wrap is set', async () => {
     await renderDiff(<Diff files={[MODIFIED]} wrap />)
 

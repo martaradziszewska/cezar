@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
@@ -375,6 +375,54 @@ describe('the task workspace (main)', () => {
     fireEvent.click(builtCard()!.querySelector('button[title*="double-click to rename"]')!)
     await waitFor(() => expect(columnViews()).toEqual(['session']))
     expect(document.querySelector('[data-slot="workspace-layout"][data-active] [data-slot="view-tiles-stage"]')).toBeNull()
+  })
+
+  it('gives each task its own Changes view — the previous task\'s diff never renders under the next', async () => {
+    // Both tasks open on Changes. A guard: one ChangesView reused across them would let its
+    // deferred diff hand the second task's first render the first task's files.
+    const onChanges = { layouts: [{ name: 'Chat', columns: [{ view: 'session', width: 100 }] }, { name: 'Changes', columns: [{ view: 'changes', width: 100 }] }], active: 'Changes' }
+    hostLayouts = { r1: onChanges, r2: onChanges }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        const path = String(input)
+        const run = /^\/api\/v1\/runs\/(r[12])(\/.*)?$/.exec(path)
+        if (path === '/api/v1/health') return jsonResponse(health(true))
+        if (path === '/api/v1/runs') return jsonResponse([RUN, { ...RUN, id: 'r2' }])
+        if (path === '/api/v1/repo') return jsonResponse(health(true).repo)
+        if (!run) return jsonResponse({ error: `unstubbed: ${path}` }, 404)
+        const [, id, rest = ''] = run
+        if (rest === '') return jsonResponse({ ...RUN, id })
+        if (rest === '/layouts') return jsonResponse({ layouts: (init.method ?? 'GET') === 'GET' ? hostLayouts[id!] : JSON.parse(String(init.body)) })
+        if (rest.startsWith('/drafts')) return jsonResponse({ surfaces: {} })
+        if (rest.startsWith('/changes')) return jsonResponse({ files: [], stat: { adds: 0, dels: 0, files: 0 } })
+        return jsonResponse([])
+      }),
+    )
+    let navigate: (to: string) => void = () => {}
+    function Navigator() {
+      const go = useNavigate()
+      navigate = (to) => void go(to)
+      return null
+    }
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={['/tasks/r1']}>
+          <Navigator />
+          <Routes>
+            <Route path="/tasks/:id" element={<TaskWorkspaceRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const changesView = () => document.querySelector('[data-route="task-changes"]')
+    await waitFor(() => expect(changesView()).not.toBeNull())
+    const first = changesView()
+
+    navigate('/tasks/r2')
+    await waitFor(() => expect(document.querySelector('[data-route="task-workspace"]')?.getAttribute('data-run-id')).toBe('r2'))
+    await waitFor(() => expect(changesView()).not.toBeNull())
+    expect(changesView()).not.toBe(first)
   })
 
   it('never keeps a Preview layout once left — a hidden page would keep running', async () => {

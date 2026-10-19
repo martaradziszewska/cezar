@@ -49,7 +49,7 @@ export function Diff(props: DiffProps) {
   useEffect(() => {
     if (loadedEngine) return
     let cancelled = false
-    void loadEngine().then((loaded) => {
+    loadEngine().then((loaded) => {
       if (!cancelled) setEngine(loaded)
     })
     return () => {

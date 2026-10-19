@@ -561,7 +561,9 @@ function WorkspaceView({
         case 'session':
           return <ConversationColumn run={run} onMarkedUnread={onMarkedUnread} onOpenReference={openReference} />
         case 'changes':
-          return <ChangesView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:changes`} />
+          // Keyed by run, like the standalone route, so its deferred diff can never hand one task's
+          // files to the next. (Today the layouts' reload on a task change already remounts it.)
+          return <ChangesView key={run.id} run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:changes`} />
         case 'commits':
           return <CommitsView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:commits`} />
         case 'files':
