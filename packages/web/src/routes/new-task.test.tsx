@@ -619,8 +619,8 @@ describe('picker data flows', () => {
     await waitFor(() => expect(basePill()).not.toBeNull())
     expect(basePill().textContent).toContain('base: develop')
 
-    fireEvent.click(basePill())
-    const options = await screen.findAllByRole('option')
+    fireEvent.pointerDown(basePill())
+    const options = await screen.findAllByRole('menuitemradio')
     expect(options.map((o) => o.textContent)).toEqual([
       expect.stringContaining('follow checked-out branch (main)'),
       expect.stringContaining('main'),
@@ -641,25 +641,25 @@ describe('picker data flows', () => {
     renderNewTask()
     await pillReady()
 
-    fireEvent.click(document.querySelector('[data-slot="base-pill"]') as HTMLElement)
-    const search = await screen.findByRole('combobox', { name: 'Search branches…' })
+    fireEvent.pointerDown(document.querySelector('[data-slot="base-pill"]') as HTMLElement)
+    const search = await screen.findByRole('searchbox', { name: 'Search branches…' })
     fireEvent.change(search, { target: { value: 'searchable' } })
 
-    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+    expect(screen.getAllByRole('menuitemradio').map((option) => option.textContent)).toEqual([
       expect.stringContaining('feature/searchable-base'),
     ])
     expect(screen.queryByText('develop')).toBeNull()
 
     fireEvent.change(search, { target: { value: 'missing' } })
-    expect(screen.queryAllByRole('option')).toHaveLength(0)
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0)
     expect(screen.getByText('No branches found.')).not.toBeNull()
 
     fireEvent.keyDown(search, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Search branches…' })).toBeNull())
-    fireEvent.click(document.querySelector('[data-slot="base-pill"]') as HTMLElement)
-    const reopenedSearch = await screen.findByRole('combobox', { name: 'Search branches…' })
+    await waitFor(() => expect(screen.queryByRole('searchbox', { name: 'Search branches…' })).toBeNull())
+    fireEvent.pointerDown(document.querySelector('[data-slot="base-pill"]') as HTMLElement)
+    const reopenedSearch = await screen.findByRole('searchbox', { name: 'Search branches…' })
     expect((reopenedSearch as HTMLInputElement).value).toBe('')
-    expect(screen.getAllByRole('option')).toHaveLength(4)
+    expect(screen.getAllByRole('menuitemradio')).toHaveLength(4)
   })
 
   it('opens with NOTHING picked, whatever the last run used', async () => {

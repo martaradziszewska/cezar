@@ -1,10 +1,8 @@
-import { CheckIcon, SearchIcon } from 'lucide-react'
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Virtualizer, type VirtualizerHandle } from 'virtua'
+import { SearchIcon } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Virtualizer } from 'virtua'
 
 import { DEFAULT_AGENT_ACCOUNT_ID, type Runner } from '@open-mercato/cezar-api-client'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +23,9 @@ import { RUNNERS } from '@/routes/new-task-form'
 import { chipChevron as chevron, chipClass } from '@/components/chip'
 
 export { chevron, chipClass }
+
+/** Searchable lists past this many rows go through virtua — a repo can carry thousands of branches. */
+export const PICKER_VIRTUALIZE_THRESHOLD = 100
 
 /** A generic single-choice pill (runner / model / variants): DropdownMenu radio semantics,
  *  two-line items (label + quiet description), disabled state carries its reason as `title`. */
@@ -59,6 +60,21 @@ export function PickerPill({
   /** Add a name filter above longer option catalogs. */
   searchPlaceholder?: string
 }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const visibleOptions = searchPlaceholder
+    ? options.filter((option) => option.label.toLowerCase().includes(search.trim().toLowerCase()))
+    : options
+
+  useEffect(() => {
+    if (!open || !searchPlaceholder) return
+    const timeout = window.setTimeout(() => searchRef.current?.focus())
+    return () => window.clearTimeout(timeout)
+  }, [open, searchPlaceholder])
+
   if (readOnly) {
     return (
       <span
@@ -71,6 +87,18 @@ export function PickerPill({
       </span>
     )
   }
+  const renderOption = (option: { value: string; label: string; desc?: string }) => (
+    <DropdownMenuRadioItem key={option.value} value={option.value} className="gap-2.5">
+      <span className="flex min-w-0 flex-col">
+        <span className="text-[12.5px] font-medium">{option.label}</span>
+        {option.desc ? (
+          <span className="max-w-[calc(100vw-3rem)] whitespace-normal break-words text-[11.5px] text-muted-foreground md:max-w-96">
+            {option.desc}
+          </span>
+        ) : null}
+      </span>
+    </DropdownMenuRadioItem>
+  )
   const trigger = (
     <button
       type="button"
@@ -94,36 +122,67 @@ export function PickerPill({
       </span>
     )
   }
-  if (searchPlaceholder) {
-    return (
-      <SearchablePicker
-        slot={slot}
-        trigger={trigger}
-        value={value}
-        options={options}
-        onPick={onPick}
-        searchPlaceholder={searchPlaceholder}
-      />
-    )
-  }
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setSearch('')
+      }}
+    >
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-      <DropdownMenuContent align="start" data-testid={`${slot}-menu`}>
+      <DropdownMenuContent ref={contentRef} align="start" data-testid={`${slot}-menu`}>
+        {searchPlaceholder ? (
+          <div className="mb-1 flex h-9 items-center gap-2 border-b border-border px-2">
+            <SearchIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+            <input
+              ref={searchRef}
+              type="search"
+              aria-label={searchPlaceholder}
+              placeholder={searchPlaceholder}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  const options = contentRef.current?.querySelectorAll<HTMLElement>(
+                    '[role="menuitemradio"]:not([data-disabled])',
+                  )
+                  const next = event.key === 'ArrowDown' ? options?.[0] : options?.[options.length - 1]
+                  next?.focus()
+                } else if (event.key !== 'Escape') {
+                  // Keep printable keys out of Radix's typeahead. Once an arrow moves focus into
+                  // the menu, Radix owns the usual ArrowUp/ArrowDown/Enter interaction again.
+                  event.stopPropagation()
+                }
+              }}
+              className="h-full min-w-48 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+        ) : null}
         <DropdownMenuRadioGroup value={value} onValueChange={onPick}>
-          {options.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value} className="gap-2.5">
-              <span className="flex min-w-0 flex-col">
-                <span className="text-[12.5px] font-medium">{option.label}</span>
-                {option.desc ? (
-                  <span className="max-w-[calc(100vw-3rem)] whitespace-normal break-words text-[11.5px] text-muted-foreground md:max-w-96">
-                    {option.desc}
-                  </span>
-                ) : null}
-              </span>
-            </DropdownMenuRadioItem>
-          ))}
+          {searchPlaceholder ? (
+            // Its own scroller under the search row, so virtua can window the rows.
+            <div
+              ref={listRef}
+              className="max-h-[min(20rem,calc(var(--radix-dropdown-menu-content-available-height)-3.5rem))] overflow-y-auto overscroll-contain"
+            >
+              {visibleOptions.length > PICKER_VIRTUALIZE_THRESHOLD ? (
+                <Virtualizer scrollRef={listRef} itemSize={30}>
+                  {visibleOptions.map(renderOption)}
+                </Virtualizer>
+              ) : (
+                visibleOptions.map(renderOption)
+              )}
+            </div>
+          ) : (
+            visibleOptions.map(renderOption)
+          )}
         </DropdownMenuRadioGroup>
+        {searchPlaceholder && visibleOptions.length === 0 ? (
+          <p className="px-2 py-5 text-center text-xs text-muted-foreground">No branches found.</p>
+        ) : null}
         {status ? (
           <DropdownMenuItem disabled className="border-t border-border text-[11.5px] text-muted-foreground">
             {status}
@@ -131,175 +190,6 @@ export function PickerPill({
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
-
-/** Rows past which the searchable list goes through virtua — a repo can carry thousands of branches. */
-export const PICKER_VIRTUALIZE_THRESHOLD = 100
-
-type PickerOption = { value: string; label: string; desc?: string }
-
-/**
- * The searchable variant (base-branch pill): a Popover over a filtered listbox rather than a
- * Radix menu. Menu items each take DOM focus on hover and re-render the whole collection, which
- * with thousands of branches made opening slow and hovering unstable; here focus stays in the
- * input, hover only moves the highlight, and long lists are windowed.
- */
-function SearchablePicker({
-  slot,
-  trigger,
-  value,
-  options,
-  onPick,
-  searchPlaceholder,
-}: {
-  slot: string
-  trigger: ReactNode
-  value: string
-  options: ReadonlyArray<PickerOption>
-  onPick: (value: string) => void
-  searchPlaceholder: string
-}) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const [active, setActive] = useState(0)
-  const listId = useId()
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const virtualizerRef = useRef<VirtualizerHandle>(null)
-
-  const visible = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    return needle ? options.filter((option) => option.label.toLowerCase().includes(needle)) : options
-  }, [options, search])
-  const virtual = visible.length > PICKER_VIRTUALIZE_THRESHOLD
-
-  const reveal = (index: number) => {
-    if (virtual) virtualizerRef.current?.scrollToIndex(index, { align: 'nearest' })
-    else scrollRef.current?.querySelector(`[data-index="${index}"]`)?.scrollIntoView?.({ block: 'nearest' })
-  }
-  const moveTo = (index: number) => {
-    if (visible.length === 0) return
-    const next = Math.max(0, Math.min(visible.length - 1, index))
-    setActive(next)
-    reveal(next)
-  }
-  const pick = (option: PickerOption) => {
-    setOpen(false)
-    setSearch('')
-    onPick(option.value)
-  }
-
-  // Open on the current value, so a long list starts where the user's choice is.
-  useEffect(() => {
-    if (!open) return
-    const index = Math.max(0, options.findIndex((option) => option.value === value))
-    setActive(index)
-    const frame = window.requestAnimationFrame(() => reveal(index))
-    return () => window.cancelAnimationFrame(frame)
-  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const row = (option: PickerOption, index: number) => (
-    <div
-      key={option.value}
-      id={`${listId}-${index}`}
-      role="option"
-      aria-selected={index === active}
-      data-index={index}
-      data-active={index === active ? '' : undefined}
-      // Keep focus in the input: the row is picked on click, never focused.
-      onMouseDown={(event) => event.preventDefault()}
-      onPointerMove={() => {
-        if (index !== active) setActive(index)
-      }}
-      onClick={() => pick(option)}
-      className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm data-[active]:bg-accent data-[active]:text-accent-foreground"
-    >
-      <CheckIcon
-        aria-hidden="true"
-        className={cn('size-3.5 shrink-0', option.value === value ? 'opacity-100' : 'opacity-0')}
-      />
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate text-[12.5px] font-medium" title={option.label}>
-          {option.label}
-        </span>
-        {option.desc ? (
-          <span className="whitespace-normal break-words text-[11.5px] text-muted-foreground">{option.desc}</span>
-        ) : null}
-      </span>
-    </div>
-  )
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next)
-        if (!next) setSearch('')
-      }}
-    >
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent
-        align="start"
-        data-testid={`${slot}-menu`}
-        className="flex w-[min(28rem,calc(100vw-2rem))] flex-col p-1"
-      >
-        <div className="mb-1 flex h-9 shrink-0 items-center gap-2 border-b border-border px-2">
-          <SearchIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-          <input
-            type="text"
-            role="combobox"
-            aria-expanded="true"
-            aria-controls={listId}
-            aria-autocomplete="list"
-            aria-activedescendant={visible.length > 0 ? `${listId}-${active}` : undefined}
-            aria-label={searchPlaceholder}
-            placeholder={searchPlaceholder}
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value)
-              setActive(0)
-              scrollRef.current?.scrollTo?.({ top: 0 })
-            }}
-            onKeyDown={(event) => {
-              const page = 8
-              const moves: Record<string, number> = {
-                ArrowDown: active + 1,
-                ArrowUp: active - 1,
-                PageDown: active + page,
-                PageUp: active - page,
-              }
-              if (event.key in moves) {
-                event.preventDefault()
-                moveTo(moves[event.key] as number)
-              } else if (event.key === 'Enter') {
-                event.preventDefault()
-                const option = visible[active]
-                if (option) pick(option)
-              }
-            }}
-            className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          />
-        </div>
-        <div
-          ref={scrollRef}
-          id={listId}
-          role="listbox"
-          aria-label={searchPlaceholder}
-          className="max-h-[min(20rem,calc(var(--radix-popover-content-available-height)-3.5rem))] overflow-y-auto overscroll-contain"
-        >
-          {virtual ? (
-            <Virtualizer ref={virtualizerRef} scrollRef={scrollRef} itemSize={30}>
-              {visible.map(row)}
-            </Virtualizer>
-          ) : (
-            visible.map(row)
-          )}
-          {visible.length === 0 ? (
-            <p className="px-2 py-5 text-center text-xs text-muted-foreground">No branches found.</p>
-          ) : null}
-        </div>
-      </PopoverContent>
-    </Popover>
   )
 }
 
