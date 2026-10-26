@@ -12,9 +12,10 @@ export function formatJson(text: string): string | null {
     return null
   }
   const unit = detectIndent(text)
+  const eol = text.includes('\r\n') ? '\r\n' : '\n' // a CRLF file must not flip every line in git
   let out = ''
   let depth = 0
-  const newline = () => '\n' + unit.repeat(depth)
+  const newline = () => eol + unit.repeat(depth)
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]!
     if (ch === '"') {
@@ -43,7 +44,7 @@ export function formatJson(text: string): string | null {
       out += ch
     }
   }
-  return out + (text.endsWith('\n') ? '\n' : '')
+  return out + (text.endsWith('\n') ? eol : '')
 }
 
 function nextNonSpace(text: string, from: number): number {
@@ -52,9 +53,13 @@ function nextNonSpace(text: string, from: number): number {
   return i
 }
 
-/** Keep the file's own indent (first indented line), defaulting to two spaces. */
+/**
+ * Keep the file's own indent unit: tabs if it indents with tabs, else the SMALLEST space indent
+ * (a misaligned or nested first line must not lock in an odd unit), defaulting to two spaces.
+ */
 function detectIndent(text: string): string {
-  const m = /\n([ \t]+)\S/.exec(text)
-  if (!m) return '  '
-  return m[1]!.startsWith('\t') ? '\t' : ' '.repeat(Math.min(m[1]!.length, 8))
+  const indents = [...text.matchAll(/\n([ \t]+)\S/g)].map((m) => m[1]!)
+  if (indents.length === 0) return '  '
+  if (indents[0]!.startsWith('\t')) return '\t'
+  return ' '.repeat(Math.min(Math.min(...indents.map((s) => s.length)), 8))
 }

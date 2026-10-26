@@ -14,6 +14,17 @@ describe('formatJson', () => {
     expect(formatJson('{\n\t"a": {"b": 1}}\n')).toBe('{\n\t"a": {\n\t\t"b": 1\n\t}\n}\n')
   })
 
+  it('keeps CRLF line endings', () => {
+    expect(formatJson('{\r\n  "a": [1, 2]\r\n}\r\n')).toBe('{\r\n  "a": [\r\n    1,\r\n    2\r\n  ]\r\n}\r\n')
+  })
+
+  it('takes the smallest indent, not the first one', () => {
+    expect(formatJson('{\n   "a": {\n  "b": 1}}')).toBe('{\n  "a": {\n    "b": 1\n  }\n}')
+    expect(formatJson('{"a": {\n        "b": 1}, "c": [\n    2]}')).toBe(
+      '{\n    "a": {\n        "b": 1\n    },\n    "c": [\n        2\n    ]\n}',
+    )
+  })
+
   it('copies values verbatim: big integers, escapes, structural chars inside strings', () => {
     const input = '{"n": 12345678901234567890, "s": "a\\"{,}:[]\\\\", "e": 1E+2}'
     expect(formatJson(input)).toBe(

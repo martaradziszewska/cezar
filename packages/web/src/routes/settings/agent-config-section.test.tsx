@@ -238,7 +238,7 @@ describe('AgentConfigSection', () => {
     expect(JSON.parse(String(putCall()![1]!.body)).content).toBe(sent)
   })
 
-  it('a format error clears as soon as the text is edited', async () => {
+  it.each(['edit', 'revert'] as const)('a format error clears on %s', async (action) => {
     serve({
       editable: true,
       files: [fileOf({ id: 'claude.project.settings', label: '.claude/settings.json' })],
@@ -259,7 +259,8 @@ describe('AgentConfigSection', () => {
     fireEvent.change(editor, { target: { value: '{"a":2,}' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(document.querySelector('[data-slot="agent-config-format-error"]')).toBeTruthy())
-    fireEvent.change(editor, { target: { value: '{"a":2}' } })
+    if (action === 'edit') fireEvent.change(editor, { target: { value: '{"a":2}' } })
+    else fireEvent.click(screen.getByRole('button', { name: 'Revert' }))
     expect(document.querySelector('[data-slot="agent-config-format-error"]')).toBeNull()
   })
 
