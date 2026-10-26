@@ -1,5 +1,5 @@
 import { SearchIcon } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Virtualizer } from 'virtua'
 
 import { DEFAULT_AGENT_ACCOUNT_ID, type Runner } from '@open-mercato/cezar-api-client'
@@ -65,9 +65,12 @@ export function PickerPill({
   const searchRef = useRef<HTMLInputElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const visibleOptions = searchPlaceholder
-    ? options.filter((option) => option.label.toLowerCase().includes(search.trim().toLowerCase()))
-    : options
+  const visibleOptions = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    return searchPlaceholder && needle
+      ? options.filter((option) => option.label.toLowerCase().includes(needle))
+      : options
+  }, [options, search, searchPlaceholder])
 
   useEffect(() => {
     if (!open || !searchPlaceholder) return
@@ -169,8 +172,9 @@ export function PickerPill({
               className="max-h-[min(20rem,calc(var(--radix-dropdown-menu-content-available-height)-3.5rem))] overflow-y-auto overscroll-contain"
             >
               {visibleOptions.length > PICKER_VIRTUALIZE_THRESHOLD ? (
-                <Virtualizer scrollRef={listRef} itemSize={30}>
-                  {visibleOptions.map(renderOption)}
+                // `data` + a render function: only the windowed rows are ever built as elements.
+                <Virtualizer scrollRef={listRef} itemSize={30} data={visibleOptions}>
+                  {renderOption}
                 </Virtualizer>
               ) : (
                 visibleOptions.map(renderOption)
