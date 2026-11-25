@@ -17,7 +17,7 @@ function Probe() {
   return <span data-testid="at">{`${location.pathname}|${JSON.stringify(location.state)}`}</span>
 }
 
-function renderMessage(message: ManagerMessage, onDecide = vi.fn(), projects?: ReadonlyArray<{ id: string; name?: string; repoUrl?: string }>, superseded = false, answerOnCard = false) {
+function renderMessage(message: ManagerMessage, onDecide = vi.fn(), projects?: ReadonlyArray<{ id: string; name?: string; repoUrl?: string }>, superseded = false, answerOnCard = false, earlierAsk = false, entry = '/manager/global') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(workspaceQueryKeys.projects, { projects: projects ?? [], bootProject: 'alpha', projectsDir: '' })
   client.setQueryData(workspaceQueryKeys.runsIndex, {
@@ -25,9 +25,9 @@ function renderMessage(message: ManagerMessage, onDecide = vi.fn(), projects?: R
   })
   const ui = (next: ManagerMessage, nextSuperseded = superseded) => (
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/manager/global']}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route path="*" element={<><ManagerMessageRow message={next} origin={origin} onDecide={onDecide} superseded={nextSuperseded} answerOnCard={answerOnCard} {...(projects ? { projects } : {})} /><Probe /></>} />
+          <Route path="*" element={<><ManagerMessageRow message={next} origin={origin} onDecide={onDecide} superseded={nextSuperseded} answerOnCard={answerOnCard} earlierAsk={earlierAsk} {...(projects ? { projects } : {})} /><Probe /></>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -90,6 +90,9 @@ describe('ManagerMessageRow', () => {
       renderMessage(assistantMessage(2, { text: 'Inspect report.html and shots/mobile.png before answering.', ask, sourceTasks: [{ projectId: 'alpha', runId: 'run-1' }] }), vi.fn(), [{ id: 'alpha', name: 'Cockpit' }])
       const source = document.querySelector('[data-slot="manager-ask"] [data-slot="decision-sources"]')!
       expect(source.textContent).toContain('Session 123123')
+      // Project and links sit behind Details: the card leads with the question.
+      expect(source.textContent).not.toContain('Cockpit')
+      fireEvent.click(screen.getByRole('button', { name: 'Details' }))
       expect(source.textContent).toContain('Cockpit')
       expect(screen.getByRole('link', { name: /Inspect task:/ }).getAttribute('href')).toBe('/p/alpha/tasks/run-1/chat#latest')
       expect(screen.getByRole('link', { name: 'shots/mobile.png' }).getAttribute('href')).toBe('/p/alpha/tasks/run-1/assets/shots%2Fmobile.png')
@@ -114,7 +117,73 @@ describe('ManagerMessageRow', () => {
 
     it('uses explicit task references on older messages and deduplicates sources', () => {
       renderMessage(assistantMessage(204, { text: '[[task:alpha/run-1]]', ask, sourceTasks: [{ projectId: 'alpha', runId: 'run-1' }] }))
-      expect(document.querySelectorAll('[data-slot="decision-sources"] a')).toHaveLength(2)
+      expect(document.querySelectorAll('[data-slot="decision-sources"] [data-slot="decision-source"]')).toHaveLength(1)
+    })
+
+    it('puts the question first and the source tasks after it, as one quiet line', () => {
+      renderMessage(assistantMessage(210, { text: 'Pick.', ask, sourceTasks: [{ projectId: 'alpha', runId: 'run-1' }] }))
+      const card = document.querySelector('[data-slot="manager-ask"]')!
+      const form = card.querySelector('[data-slot="ask-card"]')!
+      const context = card.querySelector('[data-slot="manager-ask-context"]')!
+      expect(form.compareDocumentPosition(context) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      // The return hint is the task link's tooltip, not a line on every card.
+      expect(card.textContent).not.toContain('Return using')
+      expect(screen.getByRole('link', { name: /Inspect task:/ }).getAttribute('title')).toContain('Back to Global Manager')
+      expect(screen.queryByRole('link', { name: 'Reports and assets' })).toBeNull()
+    })
+
+    it('opens the source details from the keyboard-reachable toggle', () => {
+      renderMessage(assistantMessage(211, { text: 'Pick.', ask, sourceTasks: [{ projectId: 'alpha', runId: 'run-1' }] }))
+      const toggle = screen.getByRole('button', { name: 'Details' })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      fireEvent.click(toggle)
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      const panel = document.getElementById(toggle.getAttribute('aria-controls')!)!
+      expect(panel.textContent).toContain('Return using “Back to Global Manager”')
+      expect(screen.getByRole('link', { name: 'Reports and assets' }).getAttribute('href')).toBe('/p/alpha/tasks/run-1/assets')
+      expect(screen.getByRole('link', { name: 'Open task' }).getAttribute('href')).toBe('/p/alpha/tasks/run-1/chat#latest')
+    })
+
+    it('leaves the context strip out when the decision names no task', () => {
+      renderMessage(assistantMessage(212, { text: 'Pick.', ask }))
+      expect(document.querySelector('[data-slot="manager-ask-context"]')?.childElementCount).toBe(0)
+    })
+
+    it('folds an earlier open card to one line until it is opened', () => {
+      renderMessage(assistantMessage(213, { text: 'Pick.', ask, sourceTasks: [{ projectId: 'alpha', runId: 'run-1' }] }), vi.fn(), undefined, false, false, true)
+      const card = document.querySelector<HTMLElement>('[data-slot="manager-ask"]')!
+      expect(card.getAttribute('data-state')).toBe('earlier')
+      expect(card.getAttribute('data-resolved')).toBe('false')
+      expect(card.querySelector('[data-slot="manager-card-status"]')?.textContent).toBe('Still open')
+      expect(card.querySelector('[data-slot="ask-card"]')).toBeNull()
+      expect(card.querySelector('[data-slot="decision-sources"]')).toBeNull()
+      const expand = screen.getByRole('button', { name: /Which shell\?.*1 more/ })
+      expect(expand.getAttribute('aria-expanded')).toBe('false')
+      fireEvent.click(expand)
+      expect(card.querySelector('[data-slot="ask-card"]')).not.toBeNull()
+      expect(screen.getByRole('button', { name: 'Capacitor (recommended)' })).toBeTruthy()
+    })
+
+    it('opens a folded card that a back link lands on', () => {
+      renderMessage(assistantMessage(214, { text: 'Pick.', ask }), vi.fn(), undefined, false, false, true, '/manager/global#decision-m214')
+      expect(document.querySelector('[data-slot="manager-ask"] [data-slot="ask-card"]')).not.toBeNull()
+    })
+
+    it('marks the newest open card and draws compact extras', () => {
+      renderMessage(assistantMessage(215, { text: 'Pick.', ask }))
+      const card = document.querySelector('[data-slot="manager-ask"]')!
+      expect(card.getAttribute('data-state')).toBe('open')
+      expect(card.getAttribute('aria-label')).toBe('Your decision: Shell, Default')
+      for (const extra of card.querySelectorAll('[data-slot="ask-other"], [data-slot="ask-more-info"]')) {
+        expect(extra.className).not.toContain('border-dashed')
+      }
+    })
+
+    it('reads a replaced card\'s references as numbers, not raw tokens', () => {
+      renderMessage(assistantMessage(216, { text: 'Old.', ask: { questions: [{ header: 'Merge', question: 'Merge [[pr:alpha/17816]]?', options: [{ label: 'Yes' }] }] }, askClosed: { reason: 'replaced', at: '2026-10-31T09:20:00Z' } }))
+      const closed = document.querySelector('[data-slot="ask-closed"]')!
+      expect(closed.textContent).toContain('Merge #17816?')
+      expect(closed.textContent).not.toContain('[[')
     })
 
     it('sends every answer as one message', async () => {
@@ -479,7 +548,7 @@ describe('ManagerMessageRow', () => {
         ],
       })
       return waitFor(() => {
-        const rows = [...document.querySelectorAll('[data-slot="manager-ask"] [data-slot="decision-sources"] > div')]
+        const rows = [...document.querySelectorAll('[data-slot="manager-ask"] [data-slot="decision-sources"] [data-slot="decision-source"]')]
         expect(rows).toHaveLength(2)
         expect([...rows[0]!.querySelectorAll('[data-slot="pr-chip"], [data-slot="issue-chip"]')].map((chip) => chip.getAttribute('href')))
           .toEqual(['https://github.com/o/alpha/pull/2897', 'https://github.com/o/alpha/issues/41'])
@@ -685,6 +754,24 @@ describe('ManagerMessageRow', () => {
     cleanup()
     renderMessage(assistantMessage(5, { turn: 'watch', text: '[[task:alpha/run-1]]\n\n**Failed: boom**', important: true, headline: 'Task: failed', taskReport: { projectId: 'alpha', runId: 'run-1', state: 'failed' } }))
     expect(screen.queryByRole('button', { name: 'Show the whole message' })).toBeNull()
+  })
+
+  it('keeps prose to a readable measure with lighter reference chips', () => {
+    renderMessage(assistantMessage(30, { text: 'See [[pr:alpha/2897]] now.' }), vi.fn(), [{ id: 'alpha', name: 'Cockpit', repoUrl: 'https://github.com/o/alpha' }])
+    const prose = document.querySelector('[data-slot="manager-prose"]')!
+    expect(prose.className).toContain('max-w-[70ch]')
+    const chip = prose.querySelector('[data-slot="pr-chip"]')!
+    expect(chip.className).toContain('border-transparent')
+    // No ↗ glyph inside a sentence; the accessible name still says where it goes.
+    expect(chip.querySelectorAll('svg')).toHaveLength(0)
+    expect(chip.getAttribute('aria-label')).toMatch(/^Open the pull request for #2897/)
+  })
+
+  it('puts a watch turn\'s commands on its meta line', () => {
+    renderMessage(assistantMessage(31, { text: 'Checked.', turn: 'watch', commands: [{ id: 'c', tool: 'Bash', summary: 'gh pr list' }] }))
+    const row = document.querySelector('[data-slot="manager-commands"] > div')!
+    expect(row.querySelector('[data-slot="manager-message-meta"]')?.textContent).toContain('Watch check')
+    expect(row.querySelector('button')?.textContent).toBe('Ran 1 command')
   })
 
   it('renders a notice as a quiet line', () => {

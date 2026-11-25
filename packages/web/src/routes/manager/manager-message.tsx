@@ -1,6 +1,6 @@
-import { BellRingIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, ClockIcon, MessageCircleQuestionIcon, PaperclipIcon, PlayIcon, PowerIcon } from 'lucide-react'
+import { BellRingIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CircleAlertIcon, ClockIcon, MessageCircleQuestionIcon, PaperclipIcon, PlayIcon, PowerIcon } from 'lucide-react'
 import { memo, useContext, createContext, useEffect, useRef, useState, useMemo, type ComponentProps, type ReactNode } from 'react'
-import { Link } from 'react-router'
+import { Link, useLocation } from 'react-router'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -16,6 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { StaticChip } from '@/components/chip'
 import {
   checkFailureCause,
+  inlineReferenceText,
   ISSUE_LINK_PREFIX,
   managerMessageTime,
   managerReferences,
@@ -62,9 +63,9 @@ export { PrTitlesContext, usePrTitles } from './manager-reference'
 function ManagerLink({ href, children, ...props }: ComponentProps<'a'>) {
   const origin = useContext(OriginContext)
   const pr = parseReferenceLink(href, PR_LINK_PREFIX)
-  if (pr) return <ForgeReference kind="PR" projectId={pr.projectId} number={Number(pr.id)} />
+  if (pr) return <ForgeReference quiet kind="PR" projectId={pr.projectId} number={Number(pr.id)} />
   const issue = parseReferenceLink(href, ISSUE_LINK_PREFIX)
-  if (issue) return <ForgeReference kind="Issue" projectId={issue.projectId} number={Number(issue.id)} />
+  if (issue) return <ForgeReference quiet kind="Issue" projectId={issue.projectId} number={Number(issue.id)} />
   const task = parseReferenceLink(href, TASK_LINK_PREFIX)
   if (task) return <TaskReference projectId={task.projectId} runId={task.id} origin={origin} />
   return <TranscriptLink href={href} {...props}>{children}</TranscriptLink>
@@ -83,16 +84,20 @@ function CommandRow({ command }: { command: ManagerCommand }) {
   )
 }
 
-/** "Ran 2 commands ▸" */
-export function CommandsRow({ commands }: { commands: readonly ManagerCommand[] }) {
+/** "Ran 2 commands ▸", on the message's own meta line (`lead`) so a watch turn costs one line. */
+export function CommandsRow({ commands, lead }: { commands: readonly ManagerCommand[]; lead?: ReactNode }) {
   const [open, setOpen] = useState(false)
-  if (commands.length === 0) return null
+  if (commands.length === 0) return lead ? <>{lead}</> : null
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mb-2" data-slot="manager-commands">
-      <CollapsibleTrigger className="inline-flex items-center gap-1 rounded-sm pointer-coarse:min-h-11 text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
-        Ran {commands.length} {commands.length === 1 ? 'command' : 'commands'}
-        <ChevronRightIcon aria-hidden="true" className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
-      </CollapsibleTrigger>
+    <Collapsible open={open} onOpenChange={setOpen} data-slot="manager-commands">
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        {lead}
+        {lead ? <span aria-hidden="true" className="text-xs text-muted-foreground">·</span> : null}
+        <CollapsibleTrigger className="inline-flex items-center gap-0.5 rounded-sm pointer-coarse:min-h-11 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          Ran {commands.length} {commands.length === 1 ? 'command' : 'commands'}
+          <ChevronRightIcon aria-hidden="true" className={cn('size-3 transition-transform', open && 'rotate-90')} />
+        </CollapsibleTrigger>
+      </div>
       <CollapsibleContent>
         <ul className="mt-1.5 flex flex-col gap-1">
           {commands.map((command) => <CommandRow key={command.id} command={command} />)}
@@ -151,6 +156,7 @@ function ManagerQuestions({
   closed: closedOnServer,
   stale,
   superseded = false,
+  earlier = false,
 }: {
   origin: ManagerOrigin
   messageId: string
@@ -165,8 +171,15 @@ function ManagerQuestions({
   answerOnCard: boolean
   /** Re-asked in full by a later card, in history written before the server closed it (#2307). */
   superseded?: boolean
+  /** Still open, but a newer open card sits below it: folded to one line until asked for. */
+  earlier?: boolean
 }) {
   const managerId = origin.id
+  const anchor = `#decision-${encodeURIComponent(messageId)}`
+  const { hash } = useLocation()
+  const [expanded, setExpanded] = useState(() => hash === anchor)
+  // A back link or "Jump to first" that lands here opens the folded card.
+  useEffect(() => { if (hash === anchor) setExpanded(true) }, [hash, anchor])
   const chatActions = useContext(ManagerChatActionsContext)
   const closed = closedOnServer ?? (superseded ? { reason: 'replaced' as const, at: '' } : undefined)
   const [isPending, setPending] = useState(false)
@@ -196,7 +209,7 @@ function ManagerQuestions({
       <QuietClosedAsk
         id={`decision-${messageId}`}
         closed={closed}
-        questions={ask.questions}
+        questions={ask.questions.map((question) => ({ ...question, question: inlineReferenceText(question.question) }))}
         asker="manager"
         link={closed.reason === 'replaced' && closed.replacedBy ? (
           <Link to={{ hash: `#decision-${encodeURIComponent(closed.replacedBy)}` }} data-slot="ask-closed-newer" className="font-medium text-foreground underline underline-offset-4">Go to the newer question ↓</Link>
@@ -215,7 +228,7 @@ function ManagerQuestions({
         tabIndex={-1}
         data-slot="manager-ask"
         data-resolved="true"
-        className="flex max-w-full flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="flex max-w-full flex-col gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
       >
         <span className="flex items-center gap-1.5">
           <CheckIcon aria-hidden="true" className="size-3.5 shrink-0 text-success" />
@@ -235,7 +248,7 @@ function ManagerQuestions({
         tabIndex={-1}
         data-slot="manager-ask"
         data-resolved="true"
-        className="inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
       >
         {/* Answered in other words (typed, or with files): that message below says it (#2038 walk). */}
         <CheckIcon aria-hidden="true" className="size-3.5 shrink-0 text-success" />
@@ -271,30 +284,70 @@ function ManagerQuestions({
       setPending(false)
     }
   }
+  const folded = earlier && !expanded
+  const headers = ask.questions.map((question) => question.header).join(', ')
   return (
-    <ManagerCard
+    <section
       id={`decision-${messageId}`}
       tabIndex={-1}
       data-slot="manager-ask"
       data-resolved="false"
-      icon={<MessageCircleQuestionIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />}
-      title="Your decision"
-      status={<><StatusDot tone="info" />Open</>}
+      data-state={earlier ? 'earlier' : 'open'}
+      aria-label={`Your decision: ${headers}`}
+      className={cn(
+        'w-full overflow-hidden rounded-xl border bg-card text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
+        // The newest open card leads with the info edge; an earlier one stays quiet until opened.
+        earlier ? 'border-border' : 'border-info/45 shadow-[inset_3px_0_0_var(--info)]',
+      )}
     >
-      {stale ? <StaleNote detail={stale.detail} disabled={isPending} onDismiss={() => scheduleDismiss(queryClient, key, ask.questions[0]?.header ?? 'Question')} /> : null}
-      {source}
-      {/* The card draws the box and the status, so the form is unframed; its "Other…" and "Need more
-          info" chips per question are the design's ghost actions. */}
-      <ManagerAskText ask={ask} origin={origin}>
-        <AskForm
-          ask={card}
-          ownerId={managerId}
-          delivery={{ mode: 'live', isPending, ...(error ? { error } : {}), send }}
-          asker="Your decision"
-          framed={false}
-        />
-      </ManagerAskText>
-    </ManagerCard>
+      <div data-slot="manager-card-header" className="flex min-w-0 items-center gap-1.5 px-3.5 pt-2.5 text-xs text-muted-foreground">
+        <MessageCircleQuestionIcon aria-hidden="true" className="size-3.5 shrink-0" />
+        <span className="font-semibold text-foreground">Your decision</span>
+        <span data-slot="manager-card-status" className="ml-auto flex shrink-0 items-center gap-1.5">
+          <StatusDot tone="info" pulse={!earlier} />
+          {earlier ? 'Still open' : 'Open'}
+        </span>
+      </div>
+      {folded ? (
+        <button
+          type="button"
+          data-action="manager-ask-expand"
+          aria-expanded="false"
+          onClick={() => setExpanded(true)}
+          className="flex w-full min-w-0 items-center gap-2 px-3.5 pt-1.5 pb-2.5 text-left outline-none hover:bg-muted/40 focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50 pointer-coarse:min-h-11"
+        >
+          {ask.questions.slice(0, 1).map((question, index) => (
+            <span key={index} className="shrink-0 rounded-sm bg-violet/12 px-1.5 py-px eyebrow text-violet">{question.header}</span>
+          ))}
+          <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+            {inlineReferenceText(ask.questions[0]?.question ?? '')}
+            {ask.questions.length > 1 ? <span className="font-normal text-muted-foreground"> + {ask.questions.length - 1} more</span> : null}
+          </span>
+          <span className="flex shrink-0 items-center gap-0.5 text-xs font-medium text-muted-foreground">
+            Answer
+            <ChevronDownIcon aria-hidden="true" className="size-3.5" />
+          </span>
+        </button>
+      ) : (
+        <div data-slot="manager-card-body" className="flex min-w-0 flex-col gap-2.5 px-3.5 pt-2 pb-3 wrap-anywhere">
+          {stale ? <StaleNote detail={stale.detail} disabled={isPending} onDismiss={() => scheduleDismiss(queryClient, key, ask.questions[0]?.header ?? 'Question')} /> : null}
+          {/* The card draws the box and the status, so the form is unframed and compact. */}
+          <ManagerAskText ask={ask} origin={origin}>
+            <AskForm
+              ask={card}
+              ownerId={managerId}
+              delivery={{ mode: 'live', isPending, ...(error ? { error } : {}), send }}
+              asker="Your decision"
+              framed={false}
+              compact
+            />
+          </ManagerAskText>
+        </div>
+      )}
+      {/* Context comes after the question: one quiet line, details on request. `empty:hidden`
+          drops the rule when the decision names no task. */}
+      <div data-slot="manager-ask-context" className="border-t border-border bg-muted/25 px-3.5 py-2 empty:hidden">{folded ? null : source}</div>
+    </section>
   )
 }
 
@@ -321,6 +374,7 @@ function AssistantMessage({
   projects,
   answerOnCard,
   superseded = false,
+  earlierAsk = false,
   authLive = true,
   onRetry,
   planUsage,
@@ -330,6 +384,7 @@ function AssistantMessage({
   projects: readonly ManagerReferenceProject[]
   answerOnCard: boolean
   superseded?: boolean
+  earlierAsk?: boolean
   /** The newest failure on its account: the live card. Older ones collapse to a quiet line. */
   authLive?: boolean
   onRetry?: (() => void) | undefined
@@ -343,21 +398,28 @@ function AssistantMessage({
   const references = useMemo(() => managerReferences(segments), [segments])
   return (
     <article data-slot="manager-assistant" data-message-id={message.id} className="min-w-0">
-      <p data-slot="manager-message-meta" className="mb-1 flex items-baseline gap-2 text-xs text-muted-foreground">
-        {message.turn === 'job' && message.jobName ? <span className="font-medium">{message.automationReport ? 'Automation' : 'Job'}: {message.jobName}</span> : null}
-        {message.taskReport ? <span className="font-medium">Task update</span> : message.turn === 'watch' ? <span className="font-medium">Watch check</span> : null}
-        <time dateTime={message.at} title={new Date(message.at).toLocaleString()}>{managerMessageTime(message.at)}</time>
-      </p>
+      <div className="mb-1">
+        <CommandsRow
+          commands={message.commands}
+          lead={(
+            <p data-slot="manager-message-meta" className="flex items-baseline gap-2 text-xs text-muted-foreground">
+              {message.turn === 'job' && message.jobName ? <span className="font-medium">{message.automationReport ? 'Automation' : 'Job'}: {message.jobName}</span> : null}
+              {message.taskReport ? <span className="font-medium">Task update</span> : message.turn === 'watch' ? <span className="font-medium">Watch check</span> : null}
+              <time dateTime={message.at} title={new Date(message.at).toLocaleString()}>{managerMessageTime(message.at)}</time>
+            </p>
+          )}
+        />
+      </div>
       {message.important ? (
         <p data-slot="manager-important" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-foreground">
           <BellRingIcon aria-hidden="true" className="size-3.5 text-pending-strong" />
           {message.headline ?? 'Important'}
         </p>
       ) : null}
-      <CommandsRow commands={message.commands} />
       {message.streaming && message.text.trim() === '' ? <Thinking /> : null}
       <OriginContext.Provider value={origin}>
         <ReferenceStatusProvider requests={references}>
+          <div data-slot="manager-prose" className="max-w-[70ch]">
           <ClampedBody clamp={message.taskReport !== undefined && isLong(message.text)}>
             {segments.map((segment, index) =>
               segment.kind === 'markdown' ? (
@@ -367,11 +429,12 @@ function AssistantMessage({
               ),
             )}
           </ClampedBody>
+          </div>
         </ReferenceStatusProvider>
       </OriginContext.Provider>
       {message.ask ? (
         <div className="mt-3 max-w-2xl">
-          <ManagerQuestions source={<DecisionSources message={message} origin={origin} />} origin={origin} messageId={message.id} ask={message.ask} answer={message.askAnswer} answerOnCard={answerOnCard} closed={message.askClosed} stale={message.askStale} superseded={superseded} />
+          <ManagerQuestions source={<DecisionSources message={message} origin={origin} />} origin={origin} messageId={message.id} ask={message.ask} answer={message.askAnswer} answerOnCard={answerOnCard} closed={message.askClosed} stale={message.askStale} superseded={superseded} earlier={earlierAsk} />
         </div>
       ) : null}
       {message.stopped ? <p className="mt-1 text-sm text-muted-foreground italic">Response stopped.</p> : null}
@@ -529,12 +592,15 @@ export const ManagerMessageRow = memo(function ManagerMessageRow({
   projects = NO_PROJECTS,
   answerOnCard = false,
   superseded = false,
+  earlierAsk = false,
   authLive = true,
   onRetry,
   planUsage,
 }: {
   message: ManagerMessage
   origin: ManagerOrigin
+  /** An open question card with a newer open card below it: drawn folded. */
+  earlierAsk?: boolean
   /** False for an older failure on an account whose newest failure draws the live card. */
   authLive?: boolean
   /** Sends the question again; only the newest failed chat reply has one. */
@@ -551,7 +617,7 @@ export const ManagerMessageRow = memo(function ManagerMessageRow({
 }) {
   return (
     <ManagerProjectsContext.Provider value={projects}>
-      <MessageBody message={message} origin={origin} onDecide={onDecide} projects={projects} answerOnCard={answerOnCard} superseded={superseded} authLive={authLive} onRetry={onRetry} planUsage={planUsage} />
+      <MessageBody message={message} origin={origin} onDecide={onDecide} projects={projects} answerOnCard={answerOnCard} superseded={superseded} earlierAsk={earlierAsk} authLive={authLive} onRetry={onRetry} planUsage={planUsage} />
     </ManagerProjectsContext.Provider>
   )
 })
@@ -563,12 +629,14 @@ function MessageBody({
   projects,
   answerOnCard,
   superseded,
+  earlierAsk,
   authLive,
   onRetry,
   planUsage,
 }: {
   message: ManagerMessage
   origin: ManagerOrigin
+  earlierAsk: boolean
   onRetry: (() => void) | undefined
   planUsage: ReplyUsage | undefined
   answerOnCard: boolean
@@ -588,7 +656,7 @@ function MessageBody({
         </div>
       )
     case 'assistant':
-      return <AssistantMessage message={message} origin={origin} projects={projects} answerOnCard={answerOnCard} superseded={superseded} authLive={authLive} onRetry={onRetry} planUsage={planUsage} />
+      return <AssistantMessage message={message} origin={origin} projects={projects} answerOnCard={answerOnCard} superseded={superseded} earlierAsk={earlierAsk} authLive={authLive} onRetry={onRetry} planUsage={planUsage} />
     case 'action':
       return <ActionCard origin={origin} message={message} onDecide={onDecide} />
     case 'notice':

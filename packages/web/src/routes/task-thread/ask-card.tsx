@@ -165,6 +165,7 @@ export function AskForm({
   asker,
   composerBelow = true,
   framed = true,
+  compact = false,
 }: {
   ask: Pick<ThreadAsk, 'id' | 'questions'>
   /** Keys the held picks, so they outlive a virtualized row. */
@@ -175,6 +176,8 @@ export function AskForm({
   composerBelow?: boolean
   /** The host draws its own frame and status (a manager card, a Questions row): no box, no asker row. */
   framed?: boolean
+  /** Tighter option rows and text-link extras: a manager card, where several cards stack. */
+  compact?: boolean
 }) {
   const blocked = delivery.blockedBy !== undefined
   const questions = ask.questions
@@ -245,10 +248,11 @@ export function AskForm({
           ) : null}
         </div>
       ) : null}
-      <div className="flex flex-col gap-4">
+      <div className={compact ? 'flex flex-col gap-3' : 'flex flex-col gap-4'}>
         {questions.map((question, index) => (
           <AskQuestionBlock
             key={question.id ?? index}
+            compact={compact}
             question={question}
             disabled={delivery.isPending || blocked}
             oneTap={oneTap}
@@ -323,6 +327,7 @@ export function AskForm({
 }
 
 function AskQuestionBlock({
+  compact,
   question,
   disabled,
   oneTap,
@@ -330,6 +335,7 @@ function AskQuestionBlock({
   onChange,
   onSubmit,
 }: {
+  compact: boolean
   question: UiAskQuestion
   disabled: boolean
   /** The card's only question, single-select: a final pick sends at once. */
@@ -382,35 +388,42 @@ function AskQuestionBlock({
   return (
     <div role="group" aria-labelledby={questionId}>
       <div className="mb-0.5 flex items-center gap-2">
-        <span className="rounded-md bg-primary px-1.5 py-0.5 eyebrow text-primary-foreground">
+        <span
+          data-slot="ask-header"
+          className={compact
+            ? 'rounded-sm bg-violet/12 px-1.5 py-px eyebrow text-violet'
+            : 'rounded-md bg-primary px-1.5 py-0.5 eyebrow text-primary-foreground'}
+        >
           {question.header}
         </span>
         {multiSelect ? (
           <span aria-hidden="true" className="ml-auto text-micro text-soft-foreground">select all that apply</span>
         ) : null}
       </div>
-      <p id={questionId} className="mb-2.5 break-words text-body font-semibold text-foreground">
+      <p id={questionId} className={cn('break-words text-body font-semibold text-foreground', compact ? 'mb-2' : 'mb-2.5')}>
         {text.render(question.question)}
         {multiSelect ? <span className="sr-only"> (select all that apply)</span> : null}
       </p>
-      <div className="flex flex-col gap-2">
+      <div className={compact ? 'flex flex-col gap-1.5' : 'flex flex-col gap-2'}>
         {question.options.map((option) => (
           <AskChoice
             key={option.label}
             label={option.label}
             description={option.description}
             checkbox={multiSelect}
+            compact={compact}
             selected={answer.labels.includes(option.label)}
             disabled={disabled}
             onClick={() => pick(option.label)}
           />
         ))}
-        <div className="flex flex-wrap gap-2">
-          <AskExtraChoice slot="ask-other" selected={otherOpen} disabled={disabled} onClick={toggleOther}>
+        <div className={compact ? 'flex flex-wrap items-center gap-x-1 gap-y-1' : 'flex flex-wrap gap-2'}>
+          <AskExtraChoice slot="ask-other" compact={compact} selected={otherOpen} disabled={disabled} onClick={toggleOther}>
             Other…
           </AskExtraChoice>
           <AskExtraChoice
             slot="ask-more-info"
+            compact={compact}
             selected={answer.moreInfo === true}
             disabled={disabled}
             onClick={toggleMoreInfo}
@@ -465,6 +478,7 @@ function AskChoice({
   label,
   description,
   checkbox,
+  compact = false,
   selected,
   disabled,
   onClick,
@@ -472,6 +486,7 @@ function AskChoice({
   label: string
   description?: string
   checkbox: boolean
+  compact?: boolean
   selected: boolean
   disabled: boolean
   onClick: () => void
@@ -479,7 +494,9 @@ function AskChoice({
   const text = useContext(AskTextContext)
   const descriptionId = useId()
   const box = cn(
-    'flex w-full flex-col gap-0.5 rounded-md border px-3.5 py-2.5 text-left outline-none transition-colors motion-reduce:transition-none pointer-coarse:min-h-11',
+    'flex w-full flex-col rounded-md border text-left',
+    compact ? 'gap-px px-3 py-1.5' : 'gap-0.5 px-3.5 py-2.5',
+    'outline-none outline-none transition-colors motion-reduce:transition-none pointer-coarse:min-h-11',
     selected ? 'border-primary/60 bg-primary/[0.06]' : 'border-border bg-card',
   )
   const content = (
@@ -499,7 +516,7 @@ function AskChoice({
         <span className="min-w-0 break-words">{text.render(label, 'option')}</span>
       </span>
       {description ? (
-        <span id={descriptionId} className="min-w-0 break-words text-label text-muted-foreground">{text.render(description, 'option')}</span>
+        <span id={descriptionId} className={cn('min-w-0 break-words text-muted-foreground', compact ? 'text-meta' : 'text-label')}>{text.render(description, 'option')}</span>
       ) : null}
     </>
   )
@@ -550,17 +567,39 @@ function AskChoice({
 /** The two answers cezar adds to every question — smaller than the agent's own options. */
 function AskExtraChoice({
   slot,
+  compact = false,
   selected,
   disabled,
   onClick,
   children,
 }: {
   slot: string
+  compact?: boolean
   selected: boolean
   disabled: boolean
   onClick: () => void
   children: ReactNode
 }) {
+  if (compact) {
+    // Secondary answers, so secondary weight: a text button, not a dashed tile beside the options.
+    return (
+      <button
+        type="button"
+        data-slot={slot}
+        disabled={disabled}
+        aria-pressed={selected}
+        onClick={onClick}
+        className={cn(
+          'rounded-md px-2 py-1 text-label font-medium outline-none transition-colors motion-reduce:transition-none',
+          'focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:min-h-11 pointer-coarse:px-3',
+          'hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50',
+          selected ? 'bg-primary/[0.08] text-foreground ring-1 ring-primary/50' : 'text-muted-foreground',
+        )}
+      >
+        {children}
+      </button>
+    )
+  }
   return (
     <button
       type="button"

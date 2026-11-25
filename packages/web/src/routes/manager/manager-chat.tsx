@@ -563,7 +563,10 @@ function ManagerChat({ manager }: { manager: ManagerSummary }) {
     revealAt: scroll.revealAt,
   })
   // A waiting card is answered from the card or the composer; a chip would answer it with a command.
-  const questionOpen = chat.messages.some((message) => message.kind === 'assistant' && message.ask !== undefined && message.askAnswer === undefined && message.askClosed === undefined && !superseded.has(message.id))
+  const openAsks = useMemo(() => chat.messages.filter((message) => message.kind === 'assistant' && message.ask !== undefined && message.askAnswer === undefined && message.askClosed === undefined && !superseded.has(message.id)).map((message) => message.id), [chat.messages, superseded])
+  const questionOpen = openAsks.length > 0
+  // Every open card but the newest is drawn folded, so the one that just arrived leads.
+  const earlierAsks = useMemo(() => new Set(openAsks.slice(0, -1)), [openAsks])
   const asking = manager.pendingActions > 0 || questionOpen
   const now = useNow(30_000)
   const usageRunner = manager.runner ?? 'claude'
@@ -841,6 +844,7 @@ function ManagerChat({ manager }: { manager: ManagerSummary }) {
                   onDecide={onDecide}
                   projects={connected}
                   superseded={superseded.has(message.id)}
+                  earlierAsk={earlierAsks.has(message.id)}
                   authLive={authLive.has(message.id)}
                   {...(usageProvider ? { planUsage: planUsage.replies.get(message.id) } : {})}
                   answerOnCard={onCard.has(chat.messages[index + 1]?.id ?? '')}

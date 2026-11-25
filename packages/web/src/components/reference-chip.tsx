@@ -116,6 +116,7 @@ export function ReferenceChip({
   projectId,
   className,
   compact = false,
+  quiet = false,
 }: {
   reference: { kind: 'PR' | 'Issue'; number?: number; url?: string }
   taskTitle: string
@@ -144,6 +145,9 @@ export function ReferenceChip({
    * label, exactly as in the full treatment.
    */
   compact?: boolean
+  /** Inside running prose (a manager's reply): no border and no ↗, a light wash instead, so a
+   *  sentence with several references still reads as a sentence. Tone, glyph and name stay. */
+  quiet?: boolean
 }) {
   const { number } = reference
   // An explicit `status` wins — it is what a test or a one-off caller passes — and otherwise the
@@ -171,6 +175,7 @@ export function ReferenceChip({
   const chipClass = cn(
     'inline-flex h-5 items-center gap-1 rounded-full border px-2 font-mono text-ui font-medium',
     TONE_CLASS[presentation?.tone ?? 'neutral'],
+    quiet && 'border-transparent bg-muted/70 px-1.5',
     className,
   )
   // The overridden status rides along into the tooltip whenever the conflict took the chip.
@@ -226,7 +231,7 @@ export function ReferenceChip({
         className={cn(chipClass, TONE_HOVER[presentation?.tone ?? 'neutral'])}
       >
         {body}
-        <ArrowUpRightIcon className="size-2.5" aria-hidden="true" />
+        {quiet ? null : <ArrowUpRightIcon className="size-2.5" aria-hidden="true" />}
       </a>
     )
 

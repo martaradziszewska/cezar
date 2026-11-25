@@ -37,11 +37,13 @@ export function usePrTitles(messages: readonly ManagerMessage[]): ReadonlyMap<st
 
 /** The chat's one PR/issue chip, in a sentence and on a proposal card alike: the same bubble the
  *  task tables show, its status from the surrounding provider. Coarse pointers get a 44 px target. */
-export function ForgeReference({ kind, projectId, number, title, tight = false }: {
+export function ForgeReference({ kind, projectId, number, title, tight = false, quiet = false }: {
   kind: 'PR' | 'Issue'
   projectId: string
   number: number
   title?: string
+  /** In a reply's prose: the lighter chip (`ReferenceChip` `quiet`). */
+  quiet?: boolean
   /** No 44 px halo: inside a pick button it would swallow taps meant to pick. */
   tight?: boolean
 }) {
@@ -54,6 +56,7 @@ export function ForgeReference({ kind, projectId, number, title, tight = false }
   return (
     <ReferenceChip
       compact
+      quiet={quiet}
       reference={{ kind, number, ...(project?.repoUrl ? { url: `${project.repoUrl}/${kind === 'PR' ? 'pull' : 'issues'}/${number}` } : {}) }}
       taskTitle={`#${number}${about ? `, ${about}` : ''}`}
       {...(projectId === UNKNOWN_PROJECT ? {} : { projectId })}

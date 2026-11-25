@@ -1377,6 +1377,12 @@ describe('/manager/:id', () => {
     const base = { questions: [{ header: 'Base', question: 'Which base?', options: [{ label: 'main' }, { label: 'dev' }] }] }
     server.messages = [userMessage(1), assistantMessage(2, { text: 'Two decisions.', ask }), assistantMessage(3, { text: 'And one more.', ask: base })]
     renderAt('/manager/global')
+    // The older open card is folded under the newer one until it is opened.
+    await screen.findByText('And one more.')
+    const folded = document.querySelector<HTMLElement>('#decision-m2')!
+    expect(folded.getAttribute('data-state')).toBe('earlier')
+    expect(document.querySelector('#decision-m3')?.getAttribute('data-state')).toBe('open')
+    fireEvent.click(within(folded).getByRole('button', { name: /Which shell\?/ }))
     const [first] = await screen.findAllByRole('button', { name: 'Send answer' })
     fireEvent.click(screen.getByRole('button', { name: /Capacitor/ }))
     fireEvent.click(screen.getByRole('button', { name: /^No/ }))
