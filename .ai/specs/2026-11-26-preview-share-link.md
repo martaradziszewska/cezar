@@ -342,9 +342,12 @@ whole guest flow runs offline and in the e2e suite.
   hosts) may render partly broken. The picker still needs the app's CSP to allow a same-origin
   script.
 - **A new address every time.** Stopping and sharing again gives a different link.
-- **An existing `cloudflared` setup.** Unverified, from memory of Cloudflare's docs: a quick
-  tunnel refuses to start when `~/.cloudflared/config.yaml` exists. Confirm it before building
-  the adapter; if true, those users land in "a tunnel that will not start".
+- **An existing `cloudflared` setup.** Cloudflare's Quick Tunnels page
+  (https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/,
+  read 2026-11-27) does not mention `~/.cloudflared/config.yaml` at all, so whether it blocks a
+  quick tunnel is still unconfirmed. The adapter needs no special case: if cloudflared refuses,
+  its own last output line lands in "a tunnel that will not start". The page does list a limit
+  of 200 in-flight requests per quick tunnel (more get a `429`).
 
 ## Left to the builder
 
