@@ -67,6 +67,9 @@ const HOST_SOURCE = String.raw`(function () {
   var ENDED = 'This link has ended — your comment was not saved.';
   var FAILED = 'Your comment could not be saved. Try again.';
   var CSS = ` + JSON.stringify(STYLE) + String.raw`;
+  // Taken before the app's own scripts run: an app that wraps fetch must not see or alter these requests.
+  var fetchOwn = window.fetch.bind(window);
+  var RETRY_MAX = 6;
 
   var picker = null;
   var comments = [];
@@ -81,6 +84,7 @@ const HOST_SOURCE = String.raw`(function () {
   var rects = {};
   var path = location.pathname;
   var lastMarks = '';
+  var retries = 0;
 
   var element = document.createElement('cezar-share-guest');
   var root = element.attachShadow({ mode: 'closed' });
@@ -137,7 +141,10 @@ const HOST_SOURCE = String.raw`(function () {
 
   // A saved comment's element may render after the page loads, or be rendered again: one the
   // picker has not framed is dropped and asked for again, so it is found by its selector anew.
+  // A few tries, then nothing until the path changes or a frame moves: an element that is gone
+  // must not cost a selector search and a layout read twice a second for the life of the page.
   function retryMissing() {
+    if (retries >= RETRY_MAX) return;
     var list = wanted();
     var found = [];
     var missing = false;
@@ -146,6 +153,7 @@ const HOST_SOURCE = String.raw`(function () {
       else found.push(list[i]);
     }
     if (!missing) return;
+    retries++;
     tell({ type: 'set-marks', marks: found });
     sendMarks(true);
   }
@@ -157,6 +165,7 @@ const HOST_SOURCE = String.raw`(function () {
     if (location.pathname !== path) {
       path = location.pathname;
       rects = {};
+      retries = 0;
       sendMarks(true);
       return;
     }
@@ -301,8 +310,9 @@ const HOST_SOURCE = String.raw`(function () {
     ui.text.focus();
   }
 
+  // Not while a save or delete is in flight: a failed answer must find the text still in the popup.
   function close() {
-    if (!editing) return;
+    if (!editing || busy) return;
     var hadFocus = root.activeElement !== null;
     editing = null;
     busy = false;
@@ -314,6 +324,7 @@ const HOST_SOURCE = String.raw`(function () {
   // Text the guest has typed and not saved: a stray click must not throw it away.
   function dirty() {
     if (!editing) return false;
+    if (busy) return true;
     var text = ui.text.value.trim();
     if (!editing.id) return text !== '';
     var saved = find(editing.id);
@@ -329,6 +340,7 @@ const HOST_SOURCE = String.raw`(function () {
     busy = next;
     ui.save.disabled = next;
     ui.remove.disabled = next;
+    ui.cancel.disabled = next;
   }
 
   function onPopupKey(event) {
@@ -350,7 +362,7 @@ const HOST_SOURCE = String.raw`(function () {
       init.headers['content-type'] = 'application/json';
       init.body = JSON.stringify(payload);
     }
-    return fetch(BASE + name, init).then(function (res) {
+    return fetchOwn(BASE + name, init).then(function (res) {
       if (res.status === 204) return { status: 204, body: null };
       return res.json().then(function (body) { return { status: res.status, body: body }; }, function () { return { status: res.status, body: null }; });
     }, function () {
@@ -420,9 +432,9 @@ const HOST_SOURCE = String.raw`(function () {
         comments.push(comment);
       }
       if (ok) renderCount();
+      setBusy(false);
       if (editing !== target) { sendMarks(); return; }
       if (ok) { close(); return; }
-      setBusy(false);
       say(failure(answer));
     });
   }
@@ -433,6 +445,7 @@ const HOST_SOURCE = String.raw`(function () {
     setBusy(true);
     say('');
     request('DELETE', 'comments/' + encodeURIComponent(target.id), {}).then(function (answer) {
+      setBusy(false);
       if (answer.status === 204) {
         comments = comments.filter(function (comment) { return comment.id !== target.id; });
         delete aliases[target.id];
@@ -443,7 +456,6 @@ const HOST_SOURCE = String.raw`(function () {
       }
       // A 404 can be a failed disk write too, so the text stays where the guest can copy it.
       if (editing !== target) return;
-      setBusy(false);
       say(failure(answer));
     });
   }
@@ -457,6 +469,7 @@ const HOST_SOURCE = String.raw`(function () {
       load();
     } else if (message.type === 'rects') {
       rects = {};
+      retries = 0;
       var list = Array.isArray(message.rects) ? message.rects : [];
       for (var i = 0; i < list.length; i++) if (list[i] && typeof list[i].key === 'string') rects[list[i].key] = list[i];
       place();
@@ -477,8 +490,8 @@ const HOST_SOURCE = String.raw`(function () {
         }
       }
     } else if (message.type === 'cancel') {
-      // Esc in the app: closes the open comment, else leaves comment mode.
-      if (editing) close();
+      // Esc in the app: closes the open comment unless it holds unsaved text, else leaves comment mode.
+      if (editing) { if (!dirty()) close(); }
       else setActive(false);
     }
   }

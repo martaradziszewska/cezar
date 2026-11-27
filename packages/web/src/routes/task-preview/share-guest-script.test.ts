@@ -31,11 +31,19 @@ let dom: Dom
 let win: Window & typeof globalThis
 let root: ShadowRoot
 let calls: Call[]
-let answers: Answer[]
+let answers: Array<Answer | Promise<Answer>>
 let appClicks: number
 
 /** Let fetch answers and their `.then`s land. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** An answer the test hands out later — a request still in flight over the tunnel. */
+function later() {
+  let answer!: (value: Answer) => void
+  const promise = new Promise<Answer>((resolve) => (answer = resolve))
+  return { promise, answer }
+}
 
 function boot({
   path = '/settings',
@@ -58,7 +66,7 @@ function boot({
       headers: (init.headers ?? {}) as Record<string, string>,
       body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined,
     })
-    const answer = answers.shift() ?? { status: 500 }
+    const answer = await (answers.shift() ?? { status: 500 })
     if (answer === 'offline') throw new TypeError('Failed to fetch')
     return {
       status: answer.status,
@@ -239,7 +247,119 @@ describe('commenting', () => {
   })
 })
 
+describe('a save in flight', () => {
+  /** Every way to close the popup, tried while the answer is still on its way. */
+  function tryToClose() {
+    key(textarea(), { key: 'Escape' })
+    popupButton('Cancel')!.click()
+    key(win.document.body, { key: 'Escape' }) // Esc in the app, comment mode on
+  }
+
+  it('keeps a new comment open until its answer, and shows why it was not saved', async () => {
+    boot()
+    await settle()
+    toggleCommentMode()
+    click(button())
+    type('mid flight')
+    const pending = later()
+    answers.push(pending.promise)
+    key(textarea(), { key: 'Enter', ctrlKey: true })
+    expect(popupButton('Cancel')!.disabled).toBe(true)
+    tryToClose()
+    expect(popupOpen()).toBe(true)
+    pending.answer({ status: 404, body: { error: 'This link is no longer active.' } })
+    await settle()
+    expect(popupOpen()).toBe(true)
+    expect(popupText()).toBe('mid flight')
+    expect(popupMessage()).toBe(ENDED)
+    expect(popupButton('Cancel')!.disabled).toBe(false)
+  })
+
+  it('keeps an edit open until its answer, and shows why it was not saved', async () => {
+    boot({ stored: [stored('c1', 'http://localhost:5173/settings')] })
+    await settle()
+    toggleCommentMode()
+    click(button())
+    type('edited mid flight')
+    const pending = later()
+    answers.push(pending.promise)
+    popupButton('Save')!.click()
+    tryToClose()
+    expect(popupOpen()).toBe(true)
+    pending.answer({ status: 404, body: { error: 'That comment is no longer there.' } })
+    await settle()
+    expect(lastPost()).toMatchObject({ method: 'PUT' })
+    expect(popupOpen()).toBe(true)
+    expect(popupText()).toBe('edited mid flight')
+    expect(popupMessage()).toBe(ENDED)
+  })
+
+  it('keeps unsaved text when Esc is pressed in the app, and closes an empty comment', async () => {
+    boot()
+    await settle()
+    toggleCommentMode()
+    click(button())
+    type('not yet saved')
+    key(win.document.body, { key: 'Escape' })
+    expect(popupOpen()).toBe(true)
+    expect(popupText()).toBe('not yet saved')
+    type('')
+    key(win.document.body, { key: 'Escape' })
+    expect(popupOpen()).toBe(false)
+  })
+
+  it("sends through the page's fetch as it was when the script started, not the app's wrapper", async () => {
+    boot()
+    await settle()
+    const wrapper = vi.fn(() => Promise.reject(new Error('the app broke it')))
+    win.fetch = wrapper as unknown as typeof fetch
+    toggleCommentMode()
+    click(button())
+    type('words')
+    answers.push({ status: 201, body: { comment: stored('c1', 'http://localhost:5173/settings', 'words') } })
+    await save()
+    expect(wrapper).not.toHaveBeenCalled()
+    expect(lastPost().body).toMatchObject({ body: 'words' })
+    expect(popupOpen()).toBe(false)
+  })
+})
+
 describe('marks', () => {
+  it('frames a saved comment whose element the app draws after load', async () => {
+    boot({ stored: [{ ...stored('c1', 'http://localhost:5173/settings'), selector: 'body > main > button.later' }] })
+    await settle()
+    expect(marks()).toHaveLength(0)
+    const late = win.document.createElement('button')
+    late.className = 'later'
+    win.document.querySelector('main')!.appendChild(late)
+    await wait(600)
+    expect(marks()).toHaveLength(1)
+    expect(marks()[0]!.textContent).toBe('1')
+  })
+
+  it('stops looking for a missing element after a few tries, until the path changes', async () => {
+    const selector = 'body > main > button.gone'
+    boot({ stored: [{ ...stored('c1', 'http://localhost:5173/settings'), selector }] })
+    let searches = 0
+    const search = win.document.querySelectorAll.bind(win.document)
+    win.document.querySelectorAll = ((query: string) => {
+      if (query === selector) searches++
+      return search(query)
+    }) as typeof win.document.querySelectorAll
+    await wait(4000)
+    const settled = searches
+    // The load's own search and six retries, then nothing.
+    expect(settled).toBe(7)
+    await wait(1100)
+    expect(searches).toBe(settled)
+    win.history.pushState({}, '', '/elsewhere')
+    win.dispatchEvent(new win.PopStateEvent('popstate'))
+    win.history.pushState({}, '', '/settings')
+    win.dispatchEvent(new win.PopStateEvent('popstate'))
+    await wait(600)
+    expect(searches).toBeGreaterThan(settled)
+  }, 10_000)
+
   it('marks only the comments of this page', async () => {
     boot({ stored: [stored('c1', 'http://localhost:5173/other'), stored('c2', 'http://localhost:5173/settings')] })
     await settle()
