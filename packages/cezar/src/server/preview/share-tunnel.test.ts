@@ -328,7 +328,10 @@ describe('splitLines', () => {
 
   it('keeps a multibyte character split across chunks', () => {
     const bytes = Buffer.from('zażółć\n');
-    expect(run((s) => { s.write(bytes.subarray(0, 4)); s.write(bytes.subarray(4)); })).toEqual(['zażółć']);
+    // Byte 3 is the second half of `ż`: the cut really is inside a character.
+    expect(bytes.subarray(0, 3).toString('utf8')).not.toBe('zaż');
+    expect(Buffer.from('zaż')).toHaveLength(4);
+    expect(run((s) => { s.write(bytes.subarray(0, 3)); s.write(bytes.subarray(3)); })).toEqual(['zażółć']);
   });
 
   it('flushes a partial last line at the end of the stream', async () => {

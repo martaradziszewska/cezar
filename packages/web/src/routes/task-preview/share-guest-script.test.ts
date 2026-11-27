@@ -45,11 +45,21 @@ function later() {
   return { promise, answer }
 }
 
+/** With `handTicked`: every interval the script armed. The test fires them, so no test waits on a clock. */
+let intervals: Array<() => void>
+async function tick(times = 1) {
+  for (let turn = 0; turn < times; turn += 1) {
+    for (const fire of [...intervals]) fire()
+    await settle()
+  }
+}
+
 function boot({
   path = '/settings',
   name = 'Ana',
   stored = [] as unknown[],
-}: { path?: string; name?: string; stored?: unknown[] } = {}) {
+  handTicked = false,
+}: { path?: string; name?: string; stored?: unknown[]; handTicked?: boolean } = {}) {
   dom = new JSDOM(
     '<!doctype html><html><head></head><body><main><h1 id="title">Settings</h1><button class="save">Save</button></main></body></html>',
     { url: `https://abc.trycloudflare.com${path}`, runScripts: 'outside-only', pretendToBeVisual: true },
@@ -83,6 +93,11 @@ function boot({
     const made = attach.call(this, init)
     root = made
     return made
+  }
+  intervals = []
+  if (handTicked) {
+    win.setInterval = ((fire: () => void) => intervals.push(fire)) as unknown as typeof win.setInterval
+    win.clearInterval = (() => {}) as typeof win.clearInterval
   }
   ;(win as unknown as { eval(source: string): unknown }).eval(guestScript({ upstreamOrigin: 'http://localhost:5173', name }))
 }
@@ -339,26 +354,31 @@ describe('marks', () => {
 
   it('stops looking for a missing element after a few tries, until the path changes', async () => {
     const selector = 'body > main > button.gone'
-    boot({ stored: [{ ...stored('c1', 'http://localhost:5173/settings'), selector }] })
+    boot({ stored: [{ ...stored('c1', 'http://localhost:5173/settings'), selector }], handTicked: true })
     let searches = 0
     const search = win.document.querySelectorAll.bind(win.document)
     win.document.querySelectorAll = ((query: string) => {
       if (query === selector) searches++
       return search(query)
     }) as typeof win.document.querySelectorAll
-    await wait(4000)
-    const settled = searches
-    // The load's own search and six retries, then nothing.
-    expect(settled).toBe(7)
-    await wait(1100)
-    expect(searches).toBe(settled)
+    await settle()
+    // The load's own search, then one for each of six polls.
+    expect(searches).toBe(1)
+    for (let poll = 1; poll <= 6; poll += 1) {
+      await tick()
+      expect(searches).toBe(1 + poll)
+    }
+    // Then nothing, however long the page stays open.
+    await tick(10)
+    expect(searches).toBe(7)
     win.history.pushState({}, '', '/elsewhere')
     win.dispatchEvent(new win.PopStateEvent('popstate'))
+    await tick()
     win.history.pushState({}, '', '/settings')
     win.dispatchEvent(new win.PopStateEvent('popstate'))
-    await wait(600)
-    expect(searches).toBeGreaterThan(settled)
-  }, 10_000)
+    await tick()
+    expect(searches).toBeGreaterThan(7)
+  })
 
   it('marks only the comments of this page', async () => {
     boot({ stored: [stored('c1', 'http://localhost:5173/other'), stored('c2', 'http://localhost:5173/settings')] })

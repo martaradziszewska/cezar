@@ -144,6 +144,36 @@ function outcome(port: number, host: string, path: string, cookie: string, onDat
 
 const idOf = (cookie: string): string => createHash('sha256').update(cookie).digest('hex').slice(0, 16);
 
+interface CapturedTimer {
+  fire(): void;
+  cleared: boolean;
+}
+
+/**
+ * The timers armed with exactly `ms`, held instead of started: the test fires them itself, so no
+ * case waits on a clock. Every other timer stays real. Undone by `vi.restoreAllMocks()`.
+ */
+function captureTimers(ms: number): CapturedTimer[] {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  const held = new Map<object, CapturedTimer>();
+  const timers: CapturedTimer[] = [];
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((run: () => void, delay?: number) => {
+    if (delay !== ms) return realSet(run, delay);
+    const handle = { unref: () => handle, ref: () => handle, hasRef: () => false };
+    const timer: CapturedTimer = { fire: run, cleared: false };
+    held.set(handle, timer);
+    timers.push(timer);
+    return handle;
+  }) as unknown as typeof setTimeout);
+  vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((handle?: unknown) => {
+    const timer = typeof handle === 'object' && handle !== null ? held.get(handle) : undefined;
+    if (timer) timer.cleared = true;
+    else realClear(handle as Parameters<typeof clearTimeout>[0]);
+  }) as typeof clearTimeout);
+  return timers;
+}
+
 async function refuses(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = connect(port, '127.0.0.1');
@@ -1402,12 +1432,17 @@ describe('the share listener', () => {
     });
 
     it('expires a request on its own timer and tells the cockpit', async () => {
-      const brief = build({ waitingMs: 40 });
+      const waitingMs = 7_777_001;
+      const timers = captureTimers(waitingMs);
+      const brief = build({ waitingMs });
       await open({ runId: 'r7' }, brief);
       const cookie = await join();
       await ask(cookie);
-      expect(changes.some((change) => change.share?.guests.length === 1)).toBe(true);
-      await vi.waitFor(() => expect(changes.at(-1)).toMatchObject({ runId: 'r7', share: { guests: [] } }));
+      expect(changes.at(-1)).toMatchObject({ runId: 'r7', share: { guests: [{ state: 'waiting' }] } });
+      expect(timers).toHaveLength(1);
+      // The wall clock has not moved: only the timer can have expired it.
+      timers[0]!.fire();
+      expect(changes.at(-1)).toMatchObject({ runId: 'r7', share: { guests: [] } });
       expect(await stateOf(cookie)).toBe('guest:/__cezar_share__/status:expired');
     });
 
@@ -1621,18 +1656,25 @@ describe('the share listener', () => {
     });
 
     it('keeps the join limit and arms only one lifetime timer', async () => {
-      const brief = build({ lifetimeMs: 1_000 });
-      const opened = Date.now();
+      const lifetimeMs = 3_600_001;
+      const timers = captureTimers(lifetimeMs);
+      clock = Date.parse('2026-11-27T10:00:00Z');
+      const brief = build({ lifetimeMs });
       await open({}, brief);
       for (let i = 0; i < 10; i += 1) expect((await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).status).toBe(302);
-      await new Promise((resolve) => setTimeout(resolve, 500 - (Date.now() - opened)));
+      expect(timers.map((timer) => timer.cleared)).toEqual([false]);
+      clock += 500;
       const extended = brief.extend('r1')!;
+      expect(extended.expiresAt).toBe(new Date(clock + lifetimeMs).toISOString());
       expect((await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).status).toBe(429);
-      // The first timer would have ended it here.
-      await new Promise((resolve) => setTimeout(resolve, 1_200 - (Date.now() - opened)));
+      // The first timer is gone, so the old end cannot end it; exactly one is armed.
+      expect(timers.map((timer) => timer.cleared)).toEqual([true, false]);
       expect(brief.get('r1')?.expiresAt).toBe(extended.expiresAt);
-      await vi.waitFor(() => expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: 'expired' }), { timeout: 5_000 });
+      expect(changes.every((change) => change.share !== null)).toBe(true);
+      timers[1]!.fire();
+      expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: 'expired' });
       expect(tunnels.stopped).toBe(1);
+      expect(timers.map((timer) => timer.cleared)).toEqual([true, true]);
     });
 
     it('never shortens a share and cannot revive an ended one', async () => {
@@ -1710,9 +1752,14 @@ describe('the share listener', () => {
     });
 
     it('the lifetime running out', async () => {
-      const brief = build({ lifetimeMs: 600 });
+      const lifetimeMs = 3_600_002;
+      const timers = captureTimers(lifetimeMs);
+      const brief = build({ lifetimeMs });
       const session = await live(brief);
-      await vi.waitFor(() => expect(changes.at(-1)!.share).toBeNull(), { timeout: 5_000 });
+      expect(timers).toHaveLength(1);
+      expect(brief.get('r1')).not.toBeNull();
+      // The wall clock is nowhere near the end: only the timer can have ended it.
+      timers[0]!.fire();
       await expectGone(session, brief, 'expired');
     });
 
