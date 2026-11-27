@@ -736,6 +736,7 @@ function WorkspaceView({
             <BrowserView
               state={column.browser ?? emptyBrowserState()}
               onChange={(browser) => setColumnBrowser(index, browser)}
+              runId={run.id}
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
