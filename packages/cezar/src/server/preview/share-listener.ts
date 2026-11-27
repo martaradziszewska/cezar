@@ -60,11 +60,14 @@ export interface GuestRequest {
 
 type GuestState = 'new' | 'waiting' | 'allowed' | 'denied' | 'expired';
 
+/** C10. `not-cezar` only for an origin that answered HTTP; silence is `no-answer`, never a "no". */
+export type CezarVerdict = 'cezar' | 'not-cezar' | 'no-answer';
+
 export interface PreviewSharesOptions {
   tunnel: TunnelAdapter;
   guestRoutes: GuestRoutes;
-  /** C10. The default probes `${origin}/api/v1/health`. */
-  isCezar?(origin: string): Promise<boolean>;
+  /** C10. The default probes `${origin}/api/v1/health`. One that throws or rejects counts as `cezar`. */
+  isCezar?(origin: string): Promise<CezarVerdict>;
   /** Fires on start, on every change to the listed guests, and with `null` when the share ends. */
   onChange(projectId: string, runId: string, share: PreviewShare | null, ended?: string): void;
   now?(): number;
@@ -81,7 +84,13 @@ const WAIT_PATH = `${SHARE_PREFIX}/wait`;
 const GUEST_TAG = `<script src="${SHARE_PREFIX}/guest.js" data-cezar-design></script>`;
 const GONE = 'This link is no longer active.';
 const CEZAR_ITSELF = 'Sharing cannot be pointed at cezar itself';
+const TURNED_CEZAR = 'the app turned out to be cezar';
+const UNREACHABLE = 'The app is not running right now.';
 const STOPPED = 'Sharing was stopped';
+// C10 while live (spec 2026-11-26-preview-share-link § States): how soon a doubted app is asked
+// again, and how old a verdict may grow before a request has it checked in the background.
+const RETRY_PROBE_MS = 1_000;
+const REPROBE_MS = 60_000;
 // A tunnel's edge caches static files whatever cookie asked for them, and a cached byte is served
 // without reaching the gate (spec 2026-11-26-preview-share-link § Anti-goals).
 const UNCACHEABLE = { 'cache-control': 'private, no-store', 'cdn-cache-control': 'no-store' } as const;
@@ -133,6 +142,11 @@ interface Entry {
   forward: ForwardOptions;
   guests: Map<string, Guest>;
   joins: Map<string, number[]>;
+  /** C10 while live: `false` from a failed connect until a probe says the app is still not a cezar. */
+  verified: boolean;
+  /** When the last verdict, or the failed connect, was noted. */
+  checkedAt: number;
+  probing: Promise<CezarVerdict> | null;
 }
 
 interface Listener {
@@ -196,26 +210,36 @@ function clientAddress(req: IncomingMessage): string {
  * C10's default. A narrow mark instead of `healthResponseSchema`: the cezar a task previews is
  * another version of it, and one the strict schema rejects would be shared.
  */
-export async function answersAsCezar(origin: string): Promise<boolean> {
+export async function answersAsCezar(origin: string): Promise<CezarVerdict> {
+  let text: string;
   try {
     const res = await fetch(`${origin}/api/v1/health`, {
       redirect: 'manual',
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(2_000),
     });
-    if (!res.ok || res.body === null) return false;
+    if (!res.ok || res.body === null) {
+      void res.body?.cancel().catch(() => {});
+      return 'not-cezar';
+    }
     const chunks: Uint8Array[] = [];
     let size = 0;
     for await (const chunk of res.body) {
       size += chunk.length;
-      if (size > PROBE_BODY_MAX) return false;
+      if (size > PROBE_BODY_MAX) return 'not-cezar';
       chunks.push(chunk);
     }
-    const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    return isRecord(body) && typeof body.version === 'string' && typeof body.repoRoot === 'string' && isRecord(body.capabilities);
+    text = Buffer.concat(chunks).toString('utf8');
   } catch {
-    // An app that is down is not a cezar; the gate and the 502 page take it from there.
-    return false;
+    // Down, booting or slow: a cezar can be any of those, so silence is never a "no".
+    return 'no-answer';
+  }
+  try {
+    const body: unknown = JSON.parse(text);
+    const marked = isRecord(body) && typeof body.version === 'string' && typeof body.repoRoot === 'string' && isRecord(body.capabilities);
+    return marked ? 'cezar' : 'not-cezar';
+  } catch {
+    return 'not-cezar';
   }
 }
 
@@ -224,7 +248,7 @@ export class PreviewShares {
   private readonly pending = new Map<string, Pending>();
   private readonly tunnel: TunnelAdapter;
   private readonly guestRoutes: GuestRoutes;
-  private readonly isCezar: (origin: string) => Promise<boolean>;
+  private readonly isCezar: (origin: string) => Promise<CezarVerdict>;
   private readonly onChange: PreviewSharesOptions['onChange'];
   private readonly now: () => number;
   private readonly lifetimeMs: number;
@@ -358,14 +382,13 @@ export class PreviewShares {
 
   private async open(runId: string, projectId: string, upstream: URL, path: string, pending: Pending): Promise<ShareStart> {
     const stopped = (): boolean => pending.abort.signal.aborted;
-    // Fail closed: a probe that throws or rejects is not a "no".
-    let cezar = true;
-    try {
-      cezar = await this.isCezar(upstream.origin);
-    } catch {
-      cezar = true;
+    const verdict = await this.verdict(upstream.origin);
+    if (verdict === 'cezar') return { ok: false, status: 400, error: CEZAR_ITSELF };
+    // A cezar that is booting or slow at the click answers nothing yet, and must not be shared.
+    if (verdict === 'no-answer') {
+      return { ok: false, status: 400, error: `The app at ${upstream.origin} is not answering. Start it, then share.` };
     }
-    if (cezar) return { ok: false, status: 400, error: CEZAR_ITSELF };
+    const checkedAt = this.now();
     if (stopped()) return { ok: false, status: 409, error: STOPPED };
 
     let listener: Listener;
@@ -442,10 +465,14 @@ export class PreviewShares {
         dropCookies: [SHARE_COOKIE],
         rewriteAnswer: uncacheable,
         injectHtml: (html) => injectTag(html, GUEST_TAG),
-        unreachable: 'The app is not running right now.',
+        unreachable: UNREACHABLE,
+        onUnreachable: () => this.doubt(entry),
       },
       guests: new Map(),
       joins: new Map(),
+      verified: true,
+      checkedAt,
+      probing: null,
     };
     // Never the reason a process stays alive.
     entry.timer.unref();
@@ -563,7 +590,27 @@ export class PreviewShares {
     }
     guest.live.add(res);
     res.on('close', () => guest.live.delete(res));
-    forwardRequest(req, res, entry.forward);
+    const due = this.probeDue(entry);
+    if (entry.verified) {
+      if (due) void this.probe(entry);
+      forwardRequest(req, res, entry.forward);
+      return;
+    }
+    if (!due) {
+      plain(res, 502, UNREACHABLE);
+      return;
+    }
+    // Held for the one probe: forwarded only if the app answers as something that is not a cezar.
+    void this.probe(entry).then((verdict) => {
+      // Remove, or the share ending, destroyed it while the probe was out.
+      if (res.destroyed) return;
+      try {
+        if (verdict === 'not-cezar' && entry.verified) forwardRequest(req, res, entry.forward);
+        else plain(res, 502, UNREACHABLE);
+      } catch {
+        res.destroy();
+      }
+    });
   }
 
   private upgrade(entry: Entry, req: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -581,8 +628,62 @@ export class PreviewShares {
       socket.destroy();
       return;
     }
+    const due = this.probeDue(entry);
+    if (due) void this.probe(entry);
+    // A hot-reload client asks again by itself, so an upgrade is never held for the verdict.
+    if (!entry.verified) {
+      socket.destroy();
+      return;
+    }
     guest.live.add(socket);
     spliceUpgrade(req, socket, head, entry.forward, () => guest.live.delete(socket));
+  }
+
+  private async verdict(origin: string): Promise<CezarVerdict> {
+    try {
+      const verdict = await this.isCezar(origin);
+      // Fail closed: a probe that throws, rejects or answers anything else is not a "no".
+      return verdict === 'not-cezar' || verdict === 'no-answer' ? verdict : 'cezar';
+    } catch {
+      return 'cezar';
+    }
+  }
+
+  /** A failed connect: the port may be free for another server, a cezar included (C10). */
+  private doubt(entry: Entry): void {
+    if (!entry.verified) return;
+    entry.verified = false;
+    try {
+      entry.checkedAt = this.now();
+    } catch {
+      // The old time stands, so the next request asks at once.
+    }
+  }
+
+  private probeDue(entry: Entry): boolean {
+    return entry.probing !== null || this.now() - entry.checkedAt >= (entry.verified ? REPROBE_MS : RETRY_PROBE_MS);
+  }
+
+  /** One probe at a time per share. Never rejects. */
+  private probe(entry: Entry): Promise<CezarVerdict> {
+    if (entry.probing !== null) return entry.probing;
+    const probing = this.verdict(entry.upstream.origin)
+      .then((verdict) => {
+        entry.probing = null;
+        if (this.entries.get(entry.runId) !== entry) return verdict;
+        if (verdict === 'cezar') {
+          this.end(entry, TURNED_CEZAR);
+          return verdict;
+        }
+        // Shut first, so a clock that throws leaves the gate closed.
+        entry.verified = false;
+        entry.checkedAt = this.now();
+        entry.verified = verdict === 'not-cezar';
+        return verdict;
+      })
+      .catch((): CezarVerdict => 'no-answer');
+    entry.probing = probing;
+    return probing;
   }
 
   private join(entry: Entry, req: IncomingMessage, res: ServerResponse, url: string): void {

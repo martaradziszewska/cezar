@@ -186,7 +186,7 @@ describe('the share listener’s own pages', () => {
           return guestRoutes.handle(ctx, req, res);
         },
       },
-      isCezar: async () => false,
+      isCezar: async () => 'not-cezar',
       onChange: () => {},
       now: () => clock,
     });

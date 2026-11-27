@@ -347,6 +347,16 @@ describe('the preview-share API', () => {
       expect(shares.get(runId)).toBeNull();
     });
 
+    it('refuses an app that is not answering: it may be a cezar that is still booting (C10)', async () => {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      const res = await post(runId);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: `The app at ${upstreamOrigin} is not answering. Start it, then share.` });
+      expect(tunnel.started).toEqual([]);
+      expect(shares.get(runId)).toBeNull();
+    });
+
     it('carries the install command when no tunnel binary is found', async () => {
       tunnel.fail = new TunnelError('Sharing needs cloudflared', 'no-tunnel', 'brew install cloudflared');
       const res = await post(runId);

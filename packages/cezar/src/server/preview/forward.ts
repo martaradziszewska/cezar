@@ -25,6 +25,8 @@ export interface ForwardOptions {
   injectHtml(html: string): string;
   /** The 502 body when the upstream cannot be reached. */
   unreachable: string;
+  /** The upstream did not answer a request or accept an upgrade; never called for a client that left. */
+  onUnreachable?(): void;
 }
 
 /** `[::1]` → `::1`: `URL.hostname` keeps the brackets, a socket address does not take them. */
@@ -148,14 +150,20 @@ export function forwardRequest(req: IncomingMessage, res: ServerResponse, option
       incoming.on('error', () => res.destroy());
     },
   );
+  // Destroying `outgoing` for a client that left raises the same error an unreachable app does.
+  let clientGone = false;
   outgoing.on('error', () => {
     if (res.headersSent) {
       res.destroy();
       return;
     }
+    if (!clientGone) options.onUnreachable?.();
     res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end(options.unreachable);
   });
-  res.on('close', () => outgoing.destroy());
+  res.on('close', () => {
+    clientGone = true;
+    outgoing.destroy();
+  });
   req.pipe(outgoing);
 }
 
@@ -173,7 +181,12 @@ export function spliceUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
     socket.destroy();
     upstream.destroy();
   };
+  let connected = false;
+  upstream.on('error', () => {
+    if (!connected) options.onUnreachable?.();
+  });
   upstream.on('connect', () => {
+    connected = true;
     const lines = [`${req.method} ${req.url} HTTP/1.1`];
     for (const [name, value] of Object.entries(headers)) {
       for (const single of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${single}`);

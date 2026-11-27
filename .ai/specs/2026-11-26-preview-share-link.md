@@ -72,7 +72,7 @@ Proposed by the author and not objected to; the owner may change any of them:
 | C7 | A live share is shown **outside the Preview too**: a badge on the task's row and one workspace-wide "N live links" indicator in the app shell, each with Stop. | The second anti-goal. The Preview toolbar disappears the moment the owner opens another task. |
 | C8 | The exposure text is shown **every time** a share starts, in the popover that holds **Create link**. Nothing is remembered. | Each project exposes different source, and a stored "seen it" would let a second repository go public with no warning. Sharing is rare enough for one extra click. |
 | C9 | One share per run. A second target on the same run is **refused** (409) until the first is stopped; it never replaces a link teammates already hold. | A replaced link fails silently for the people using it. |
-| C10 | A target that **answers as a cezar** is refused, on top of the mirror's origin checks. | A task in cezar's own repository previews another cezar on another port. Sharing that would put an API with an unrestricted shell behind the link. |
+| C10 | A target that **answers as a cezar** is refused, on top of the mirror's origin checks. So is one that does not answer, and the question is asked again while the share is live (§ States, "The app is down"). | A task in cezar's own repository previews another cezar on another port. Sharing that would put an API with an unrestricted shell behind the link. A cezar that is booting or restarting at the click answers nothing, so silence is never read as "not a cezar". |
 | C11 | Off for a paired phone (`narrowForRelay`), like Design Mode. | A relay request is a hosted request; a phone cannot start a public listener on the desktop. |
 
 Added after the safety review with Marta (2026-11-26):
@@ -163,7 +163,8 @@ Comment mode off, the app behaves normally. The name is the one given on the wai
    asks `POST /runs/:id/preview-share { target, parentOrigin }`. `parentOrigin` is the cockpit's
    own origin, as in the Design Mode request: under the Vite dev proxy the request's `Host` is the
    API's, so the body is the only way the server learns the cockpit's. Both are refused as
-   targets, and so is any target whose `/api/v1/health` answers as a cezar (C10).
+   targets, and so is any target whose `/api/v1/health` answers as a cezar, or that does not
+   answer at all (C10).
 2. **Listener.** The server opens a *share listener* on `127.0.0.1:<ephemeral>` that mirrors that
    one dev server: pass-through, WebSocket splice, one script tag in HTML documents. It is a new
    class beside `DesignProxies`, sharing its forwarding code; the Design Mode mirror is not
@@ -264,7 +265,7 @@ between that and the internet: the token, and the owner's Allow (D3).
 | A stranger with the link typing a teammate's name | The 4-digit code on both sides (C12). The owner can also **Remove** an allowed guest at any time, which cuts their session at once. |
 | Join requests as a nuisance | 5 waiting at once, 10 minutes each, a rate limit per address on `join`; **Stop sharing** ends all of it. |
 | Open proxy | Forwards only to the one loopback origin it was opened for (`parseDesignTarget`). |
-| Reaching cezar | The cockpit origin (from the body) and the API origin (the request's `Host`) are refused as targets under every loopback spelling, as in the mirror. Those two checks miss a second cezar on another port, so a target that answers as a cezar is refused as well (C10). The listener serves the mirror and `/__cezar_share__/*` only. |
+| Reaching cezar | The cockpit origin (from the body) and the API origin (the request's `Host`) are refused as targets under every loopback spelling, as in the mirror. Those two checks miss a second cezar on another port, so a target that answers as a cezar, or does not answer, is refused as well (C10). A live share asks again after a failed connect and when its last answer is a minute old; a cezar found then ends the share. The listener serves the mirror and `/__cezar_share__/*` only. |
 | A paired phone starting a share | The capability is narrowed off in `narrowForRelay` (C11). |
 | Forged comment requests | The comment endpoints need the cookie, an `Origin` equal to the tunnel's, and a JSON body. |
 | The app's script forging or reading comments (C3) | Accepted. Comments are labelled as a guest's, capped twice, fenced in the review, and never delivered without the owner's click. |
@@ -280,7 +281,7 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
 
 - **A share** (listener + tunnel child + token; one per run, four at once). Started by the route.
   Ended by: **Stop sharing**; 8 hours after it started or was last extended; the tunnel child exiting; the task being archived or
-  deleted, or its worktree reclaimed; server shutdown. Nothing is persisted, so a restart ends
+  deleted, or its worktree reclaimed; the app turning out to be a cezar (C10); server shutdown. Nothing is persisted, so a restart ends
   every share — the quick tunnel's address would have changed anyway. Asking again for the same
   target while one is live answers the same link; a different target is refused (C9), and a
   Preview tab on another origin shows the same "Sharing localhost:5173" control with Stop.
@@ -298,8 +299,12 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
   again, within the limits in § Exposure.
 - **A guest comment.** Created by a guest. Gone when the guest deletes it, the owner deletes its
   chip, a review carries it, or the run is deleted.
-- **The app is down.** The listener answers a plain "The app is not running right now" page. The
-  share stays up, so starting the app again brings the link back.
+- **The app is down.** A share cannot start on an app that is not answering. Once live, the
+  listener answers a plain "The app is not running right now" page and the share stays up. After
+  a failed connect nothing is forwarded until one health probe (at most one a second, started by
+  a guest's request) says the port is still not a cezar: the app coming back brings the link
+  back, and a cezar on that port ends the share ("the app turned out to be cezar"). A verdict
+  older than a minute is checked again in the background when a request arrives.
 
 ## API and contract
 

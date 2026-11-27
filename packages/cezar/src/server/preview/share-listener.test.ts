@@ -9,6 +9,7 @@ import {
   PreviewShares,
   safeNext,
   TunnelError,
+  type CezarVerdict,
   type GuestRequest,
   type GuestRoutes,
   type PreviewSharesOptions,
@@ -168,6 +169,8 @@ describe('the share listener', () => {
   let guestCalls: GuestRequest[];
   let changes: Change[];
   let cezarProbes: string[];
+  /** What the fake probe answers; a function is awaited, so a test can hold a probe open. */
+  let verdict: CezarVerdict | (() => Promise<CezarVerdict>);
   let clock: number | null;
   let shares: PreviewShares;
   let extra: PreviewShares[];
@@ -208,7 +211,7 @@ describe('the share listener', () => {
       guestRoutes,
       isCezar: async (origin) => {
         cezarProbes.push(origin);
-        return false;
+        return typeof verdict === 'function' ? verdict() : verdict;
       },
       onChange: (projectId, runId, share, ended) => changes.push({ projectId, runId, share, ended }),
       now: () => clock ?? Date.now(),
@@ -226,6 +229,7 @@ describe('the share listener', () => {
     guestCalls = [];
     changes = [];
     cezarProbes = [];
+    verdict = 'not-cezar';
     clock = null;
     extra = [];
     addresses = 0;
@@ -276,6 +280,13 @@ describe('the share listener', () => {
     upstream.closeAllConnections();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   });
+
+  async function stopApp(): Promise<void> {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+
+  const startApp = (): Promise<void> => new Promise((resolve) => upstream.listen(appPort, '127.0.0.1', resolve));
 
   const start = (input: Partial<Parameters<PreviewShares['start']>[0]> = {}, on: PreviewShares = shares) =>
     on.start({ runId: 'r1', projectId: 'p1', target: `${app}/settings?tab=1`, parentOrigin: COCKPIT, forbidden: [], ...input });
@@ -347,7 +358,7 @@ describe('the share listener', () => {
     });
 
     it('refuses a target that answers as a cezar, whatever its port (C10)', async () => {
-      const guarded = build({ isCezar: async (origin) => origin === app });
+      const guarded = build({ isCezar: async (origin) => (origin === app ? 'cezar' : 'not-cezar') });
       expect(await start({}, guarded)).toEqual({ ok: false, status: 400, error: 'Sharing cannot be pointed at cezar itself' });
       expect(tunnels.started).toHaveLength(0);
       expect(guarded.get('r1')).toBeNull();
@@ -453,11 +464,25 @@ describe('the share listener', () => {
     });
 
     it.each([
-      ['throws', (() => { throw new Error('boom'); }) as unknown as (origin: string) => Promise<boolean>],
-      ['rejects', (): Promise<boolean> => Promise.reject(new Error('boom'))],
+      ['throws', (() => { throw new Error('boom'); }) as unknown as (origin: string) => Promise<CezarVerdict>],
+      ['rejects', (): Promise<CezarVerdict> => Promise.reject(new Error('boom'))],
+      ['answers something that is not a verdict', (async () => false) as unknown as (origin: string) => Promise<CezarVerdict>],
     ])('refuses the target when the cezar probe %s, as if it had said yes', async (_label, isCezar) => {
       expect(await start({}, build({ isCezar }))).toEqual({ ok: false, status: 400, error: 'Sharing cannot be pointed at cezar itself' });
       expect(tunnels.started).toHaveLength(0);
+    });
+
+    it('refuses an app that is not answering, and opens nothing (C10)', async () => {
+      const listen = vi.spyOn(NetServer.prototype, 'listen');
+      verdict = 'no-answer';
+      expect(await start()).toEqual({ ok: false, status: 400, error: `The app at ${app} is not answering. Start it, then share.` });
+      expect(listen).not.toHaveBeenCalled();
+      expect(tunnels.started).toHaveLength(0);
+      expect(shares.get('r1')).toBeNull();
+      expect(changes).toHaveLength(0);
+      // Once it answers, the same click works.
+      verdict = 'not-cezar';
+      expect((await start()).ok).toBe(true);
     });
 
     it('aborts a start that a stop or a shutdown interrupts, and never one that went live', async () => {
@@ -614,7 +639,7 @@ describe('the share listener', () => {
       expect((await start({}, unprobed())).ok).toBe(true);
     });
 
-    it('does not follow a redirect to a real cezar, and shares an app that is down', async () => {
+    it('does not follow a redirect to a real cezar, and refuses an app that is down', async () => {
       const cezar = createServer((_req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ version: '1', repoRoot: '/r', capabilities: {} }));
       });
@@ -635,7 +660,12 @@ describe('the share listener', () => {
         expect((await start({ runId: 'r2', target: cezarOrigin }, probing)).ok).toBe(false);
         redirecting.closeAllConnections();
         await new Promise<void>((resolve) => redirecting.close(() => resolve()));
-        expect((await start({ runId: 'r3', target: redirectingOrigin }, probing)).ok).toBe(true);
+        expect(await start({ runId: 'r3', target: redirectingOrigin }, probing)).toEqual({
+          ok: false,
+          status: 400,
+          error: `The app at ${redirectingOrigin} is not answering. Start it, then share.`,
+        });
+        expect(tunnels.started).toHaveLength(1);
       } finally {
         cezar.closeAllConnections();
         redirecting.closeAllConnections();
@@ -840,15 +870,257 @@ describe('the share listener', () => {
       }
     });
 
-    it('answers 502 while the app is down and forwards again once it is back', async () => {
+    it('answers 502 while the app is down and forwards again once it is back and one probe passed', async () => {
+      clock = Date.now();
       const guest = visitor(await allowedGuest());
-      upstream.closeAllConnections();
-      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await stopApp();
       expect((await guest.get('/')).status).toBe(502);
       expect((await guest.get('/')).body).toBe('The app is not running right now.');
-      await new Promise<void>((resolve) => upstream.listen(appPort, '127.0.0.1', resolve));
+      await startApp();
+      clock += 1_000;
       expect((await guest.get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(2);
       expect(shares.get('r1')).not.toBeNull();
+      expect(changes.every((change) => change.share !== null)).toBe(true);
+    });
+  });
+
+  describe('an app that stops answering while it is shared (C10)', () => {
+    const DOWN = 'The app is not running right now.';
+    const TURNED = 'the app turned out to be cezar';
+    let cookie: string;
+
+    beforeEach(async () => {
+      clock = Date.parse('2026-11-27T10:00:00Z');
+      await open();
+      cookie = await allowedGuest();
+    });
+
+    /** The app goes away, one forward finds out, and the app (or whatever took its port) is back. */
+    async function doubted(): Promise<void> {
+      await stopApp();
+      expect((await visitor(cookie).get('/')).status).toBe(502);
+      await startApp();
+      upstreamRequests.length = 0;
+    }
+
+    /** A probe the test answers when it chooses. */
+    function heldProbe(): (answer: CezarVerdict) => void {
+      let release!: (answer: CezarVerdict) => void;
+      verdict = () => new Promise<CezarVerdict>((resolve) => (release = resolve));
+      return (answer) => release(answer);
+    }
+
+    it('forwards nothing after a failed connect, even to an app that is back, until a probe has passed', async () => {
+      await doubted();
+      clock! += 999;
+      for (const path of ['/', '/assets/app.js', '/api/v1/runs']) {
+        const res = await visitor(cookie).get(path);
+        expect(res.status).toBe(502);
+        expect(res.body).toBe(DOWN);
+        expectUncacheable(res);
+      }
+      expect((await upgrade(port, host, '/hmr', cookie)).opened).toBe(false);
+      expect(upstreamRequests).toHaveLength(0);
+      expect(upstreamUpgrades).toBe(0);
+      expect(cezarProbes).toHaveLength(1);
+      expect(shares.get('r1')).not.toBeNull();
+    });
+
+    it('probes once after a second and forwards the request that asked, when the app is still not a cezar', async () => {
+      await doubted();
+      clock! += 1_000;
+      expect((await visitor(cookie).get('/settings')).status).toBe(200);
+      expect(cezarProbes).toEqual([app, app]);
+      expect(upstreamRequests.map((seen) => seen.url)).toEqual(['/settings']);
+      // Verified again: no probe per request.
+      expect((await visitor(cookie).get('/echo')).status).toBe(200);
+      const live = await upgrade(port, host, '/hmr', cookie);
+      expect(live.opened).toBe(true);
+      live.socket.destroy();
+      expect(cezarProbes).toHaveLength(2);
+    });
+
+    it('stays shut while the probe gets no answer, and asks again only a second later', async () => {
+      await doubted();
+      verdict = 'no-answer';
+      clock! += 1_000;
+      expect((await visitor(cookie).get('/')).status).toBe(502);
+      expect(cezarProbes).toHaveLength(2);
+      clock! += 999;
+      expect((await visitor(cookie).get('/')).status).toBe(502);
+      expect(cezarProbes).toHaveLength(2);
+      clock! += 1;
+      verdict = 'not-cezar';
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(3);
+      expect(upstreamRequests).toHaveLength(1);
+      expect(shares.get('r1')).not.toBeNull();
+    });
+
+    it.each([
+      ['says it is a cezar', async (): Promise<CezarVerdict> => 'cezar'],
+      ['rejects', (): Promise<CezarVerdict> => Promise.reject(new Error('boom'))],
+    ])('ends the share when the probe %s, and forwards nothing', async (_label, answer) => {
+      await doubted();
+      verdict = answer;
+      clock! += 1_000;
+      await expect(visitor(cookie).get('/')).rejects.toThrow();
+      expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: TURNED });
+      expect(shares.get('r1')).toBeNull();
+      expect(tunnels.stopped).toBe(1);
+      expect(await refuses(port)).toBe(true);
+      expect(upstreamRequests).toHaveLength(0);
+    });
+
+    it('ends the share when a cezar comes up on the port the app left, and no request reaches it', async () => {
+      const probing = build({ isCezar: undefined });
+      await open({ runId: 'r5' }, probing);
+      const guest = await join();
+      await ask(guest);
+      expect(probing.decide('r5', idOf(guest), 'allow')).toBe(true);
+      await stopApp();
+      expect((await visitor(guest).get('/')).status).toBe(502);
+      health = { version: '1.0.0', repoRoot: '/r', capabilities: { localHandoff: true } };
+      await startApp();
+      upstreamRequests.length = 0;
+
+      expect((await visitor(guest).get('/api/v1/runs')).status).toBe(502);
+      expect((await upgrade(port, host, '/api/v1/ws', guest)).opened).toBe(false);
+      expect(upstreamRequests).toHaveLength(0);
+      clock! += 1_000;
+      await expect(visitor(guest).get('/api/v1/runs')).rejects.toThrow();
+      expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r5', share: null, ended: TURNED });
+      expect(probing.get('r5')).toBeNull();
+      // Only cezar's own question reached it.
+      expect(upstreamRequests.map((seen) => seen.url)).toEqual(['/api/v1/health']);
+      expect(upstreamUpgrades).toBe(0);
+    });
+
+    it('asks once for ten requests that arrive together', async () => {
+      await doubted();
+      const answer = heldProbe();
+      clock! += 1_000;
+      const waiting = Array.from({ length: 10 }, () => visitor(cookie).get('/echo'));
+      await vi.waitFor(() => expect(cezarProbes).toHaveLength(2));
+      // Held: nothing is forwarded before the verdict.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(upstreamRequests).toHaveLength(0);
+      answer('not-cezar');
+      expect((await Promise.all(waiting)).map((res) => res.status)).toEqual(Array.from({ length: 10 }, () => 200));
+      expect(cezarProbes).toHaveLength(2);
+      expect(upstreamRequests).toHaveLength(10);
+    });
+
+    it('does not forward a request whose guest was removed while the probe was out', async () => {
+      await doubted();
+      const answer = heldProbe();
+      clock! += 1_000;
+      const cut = outcome(port, host, '/echo', cookie);
+      await vi.waitFor(() => expect(cezarProbes).toHaveLength(2));
+      expect(shares.removeGuest('r1', idOf(cookie))).toBe(true);
+      answer('not-cezar');
+      expect(await cut).toBe('cut');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(upstreamRequests).toHaveLength(0);
+    });
+
+    it('lets an upgrade start the probe too, and never splices one before the verdict', async () => {
+      await doubted();
+      const answer = heldProbe();
+      clock! += 1_000;
+      expect((await upgrade(port, host, '/hmr', cookie)).opened).toBe(false);
+      expect(cezarProbes).toHaveLength(2);
+      expect(upstreamUpgrades).toBe(0);
+      answer('not-cezar');
+      await vi.waitFor(async () => {
+        const live = await upgrade(port, host, '/hmr', cookie);
+        live.socket.destroy();
+        expect(live.opened).toBe(true);
+      });
+      expect(cezarProbes).toHaveLength(2);
+    });
+
+    it('doubts the app when an upgrade cannot connect', async () => {
+      await stopApp();
+      expect((await upgrade(port, host, '/hmr', cookie)).opened).toBe(false);
+      await startApp();
+      expect((await visitor(cookie).get('/')).status).toBe(502);
+      expect(upstreamRequests).toHaveLength(0);
+    });
+
+    it('does not doubt the app when it is the guest who hangs up', async () => {
+      upstream.removeAllListeners('request');
+      const reached = new Promise<void>((resolve) => upstream.once('request', () => resolve()));
+      const req = request({ host: '127.0.0.1', port, path: '/slow', headers: { host, cookie: `__cezar_share=${cookie}` } });
+      req.on('error', () => {});
+      req.end();
+      await reached;
+      req.destroy();
+      upstream.on('request', (_req, res) => res.end('back'));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect((await visitor(cookie).get('/')).body).toBe('back');
+      expect(cezarProbes).toHaveLength(1);
+    });
+
+    it('asks again in the background once the verdict is a minute old, without holding the request', async () => {
+      clock! += 59_999;
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(1);
+
+      const answer = heldProbe();
+      clock! += 1;
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect((await visitor(cookie).get('/echo')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(2);
+      answer('not-cezar');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // A fresh minute starts at the verdict.
+      verdict = 'not-cezar';
+      clock! += 59_999;
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(2);
+      clock! += 1;
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(3);
+      expect(shares.get('r1')).not.toBeNull();
+    });
+
+    it('ends the share when the background probe finds a cezar', async () => {
+      const live = await upgrade(port, host, '/hmr', cookie);
+      expect(live.opened).toBe(true);
+      verdict = 'cezar';
+      clock! += 60_000;
+      await visitor(cookie).get('/').catch(() => undefined);
+      await vi.waitFor(() => expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: TURNED }));
+      expect(await live.closed).toBe(true);
+      expect(await refuses(port)).toBe(true);
+    });
+
+    it('shuts the gate when the background probe gets no answer', async () => {
+      verdict = 'no-answer';
+      clock! += 60_000;
+      expect((await visitor(cookie).get('/')).status).toBe(200);
+      expect(cezarProbes).toHaveLength(2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      upstreamRequests.length = 0;
+      expect((await visitor(cookie).get('/')).status).toBe(502);
+      expect(upstreamRequests).toHaveLength(0);
+      expect(shares.get('r1')).not.toBeNull();
+    });
+
+    it('drops a verdict that arrives after the share ended', async () => {
+      await doubted();
+      const answer = heldProbe();
+      clock! += 1_000;
+      const cut = outcome(port, host, '/echo', cookie);
+      await vi.waitFor(() => expect(cezarProbes).toHaveLength(2));
+      shares.stop('r1');
+      const ended = changes.length;
+      answer('cezar');
+      expect(await cut).toBe('cut');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(changes).toHaveLength(ended);
     });
   });
 
