@@ -120,6 +120,22 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
   })
 
+  it('badges a comment the next send would hold back, and only that one', () => {
+    render(
+      <MemoryRouter>
+        <DiffCommentChips runId="r1" comments={[guest, { ...guest, id: 'g2', author: 'Piotr', fresh: true }, base]} onRemove={vi.fn()} />
+      </MemoryRouter>,
+    )
+    const badges = [...document.querySelectorAll('[data-slot="guest-comment-new"]')]
+    expect(badges.map((badge) => badge.textContent)).toEqual(['new'])
+    expect(badges[0]!.closest('[data-slot="diff-comment-chip"]')?.textContent).toContain('Piotr')
+    // Spoken too: the link's label replaces its text, so the badge is the link's description.
+    const held = screen.getByRole('link', { name: 'Comment from Piotr on http://localhost:5173/settings element Save' })
+    expect(held.getAttribute('aria-describedby')).toBe(badges[0]!.id)
+    expect(badges[0]!.getAttribute('aria-label')).toBe('New: a review sent now leaves it behind')
+    expect(screen.getByRole('link', { name: 'Comment from Ana on http://localhost:5173/settings element Save' }).hasAttribute('aria-describedby')).toBe(false)
+  })
+
   it('with the workspace callback, a click opens the Preview on the stored address and does not navigate', () => {
     const onOpenInPreview = vi.fn()
     const asset = { kind: 'asset' as const, id: 'e', asset: 'mock/recipe.html', selector: 'main > h2', label: '', excerpt: '', body: 'b' }

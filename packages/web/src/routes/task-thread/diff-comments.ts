@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { deleteGuestComment, getRunDrafts, markGuestCommentsSent, putRunDraft } from '@/api/client'
 import { queryKeys, useGuestComments, useRunDrafts } from '@/api/queries'
@@ -54,7 +54,13 @@ export type NewAssetComment = Omit<AssetComment, 'id' | 'kind'>
  *  § Storage): read from its own query, never stored in the `diff-comments` draft. */
 export interface GuestReviewComment extends GuestComment {
   kind: 'guest'
+  /** Shown for less than `GUEST_HOLD_MS`: a send now leaves it behind. */
+  fresh?: boolean
 }
+
+/** A guest comment rides a review only after the owner has had this long to read it: the cache
+ *  holds one the moment its frame lands (spec 2026-11-26-preview-share-link § Exposure, C1). */
+export const GUEST_HOLD_MS = 5_000
 
 /** Everything the review carries: a diff line comment, an asset element comment or a guest's. */
 export type ReviewComment = DiffComment | AssetComment | GuestReviewComment
@@ -562,15 +568,23 @@ interface CommentsStore {
   base: Map<string, ReviewComment[]>
   /** Per run: saves queued or in flight. A listing that arrives meanwhile is left to them. */
   pending: Map<string, number>
+  /** Per run: when each guest comment `id:revision` was first in a rendered list. Shared by every
+   *  host, so switching tabs does not start a comment's hold again. */
+  seen: Map<string, Map<string, number>>
 }
 const stores = new WeakMap<object, CommentsStore>()
 function storeFor(client: object): CommentsStore {
   let store = stores.get(client)
   if (!store) {
-    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map(), base: new Map(), pending: new Map() }
+    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map(), base: new Map(), pending: new Map(), seen: new Map() }
     stores.set(client, store)
   }
   return store
+}
+
+/** An edit is a new comment to the owner's eyes: it gets its own clock. */
+function guestKey(comment: { id: string; revision: number }): string {
+  return `${comment.id}:${comment.revision}`
 }
 
 const NO_COMMENTS: ReviewComment[] = []
@@ -581,14 +595,40 @@ function asGuestComments(listing: GuestCommentsResponse | undefined): GuestRevie
   return comments.length === 0 ? NO_GUEST_COMMENTS : sortGuestComments(comments.map((c) => ({ ...c, kind: 'guest' as const })))
 }
 
-export function useDiffComments(runId: string): DiffComments {
+export function useDiffComments(runId: string, options: { now?: () => number } = {}): DiffComments {
   const queryClient = useQueryClient()
   const store = storeFor(queryClient)
   const drafts = useRunDrafts(runId === '' ? undefined : runId)
   // Derived from the query on every render, never copied into the store: an emptied list (the
   // server restarted) must take the chips with it (spec 2026-11-26-preview-share-link § Storage).
   const guestListing = useGuestComments(runId === '' ? undefined : runId).data
-  const guestComments = useMemo(() => asGuestComments(guestListing), [guestListing])
+  const listedGuests = useMemo(() => asGuestComments(guestListing), [guestListing])
+  const now = useRef(options.now ?? Date.now)
+  now.current = options.now ?? Date.now
+  // The time `fresh` was last judged at; a timer moves it on when the next hold ends.
+  const [judgedAt, setJudgedAt] = useState(() => now.current())
+  // After the render that showed them: only a comment that was on screen starts its hold.
+  useEffect(() => {
+    if (runId === '' || guestListing === undefined) return
+    const seen = store.seen.get(runId) ?? new Map<string, number>()
+    store.seen.set(runId, seen)
+    const at = now.current()
+    const listed = new Set(listedGuests.map(guestKey))
+    for (const key of [...seen.keys()]) if (!listed.has(key)) seen.delete(key)
+    for (const key of listed) if (!seen.has(key)) seen.set(key, at)
+    const left = [...seen.values()].map((first) => first + GUEST_HOLD_MS - at).filter((ms) => ms > 0)
+    if (left.length === 0) return
+    const timer = setTimeout(() => setJudgedAt(now.current()), Math.min(...left))
+    return () => clearTimeout(timer)
+  }, [guestListing, judgedAt, listedGuests, runId, store])
+  const guestComments = useMemo(() => {
+    const seen = store.seen.get(runId)
+    const isFresh = (comment: GuestReviewComment): boolean => {
+      const first = seen?.get(guestKey(comment))
+      return first === undefined || judgedAt - first < GUEST_HOLD_MS
+    }
+    return listedGuests.some(isFresh) ? listedGuests.map((c) => (isFresh(c) ? { ...c, fresh: true } : c)) : listedGuests
+  }, [judgedAt, listedGuests, runId, store])
   const storedText = drafts.data?.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
   const serverComments = useMemo(
     () => parseDiffComments(typeof storedText === 'string' ? storedText : ''),
@@ -794,9 +834,21 @@ export function useDiffComments(runId: string): DiffComments {
   const submit = useCallback(
     async <T>(action: (held: ReviewComment[]) => Promise<T>): Promise<T> => {
       const held = current()
+      // Only what the owner has had `GUEST_HOLD_MS` to read: the cache can hold a comment no render
+      // has shown yet, and one edited a moment ago is new words under an old chip (C1).
+      const seen = store.seen.get(runId)
+      const at = now.current()
+      const listed = currentGuests()
       // Captured WITH their revisions: one a guest edits mid-send stays, unsent (spec § Mechanism 10).
-      const guests = currentGuests()
+      const guests = listed.filter((c) => {
+        const first = seen?.get(guestKey(c))
+        return first !== undefined && at - first >= GUEST_HOLD_MS
+      })
+      const unread = listed.length - guests.length
       const result = await action(guests.length === 0 ? held : [...held, ...guests])
+      if (unread > 0) {
+        toast(unread === 1 ? '1 new guest comment was not sent — read it first' : `${unread} new guest comments were not sent — read them first`)
+      }
       if (guests.length > 0) {
         // The review is already sent: a failed mark is not the user's error, and must not resend.
         // The chips then wait for the server's next listing, which is the authority.
@@ -821,7 +873,7 @@ export function useDiffComments(runId: string): DiffComments {
       }
       return result
     },
-    [current, currentGuests, queryClient, runId, write],
+    [current, currentGuests, queryClient, runId, store, write],
   )
 
   // Ready once the list has loaded ONCE: a later background refetch that fails (every send

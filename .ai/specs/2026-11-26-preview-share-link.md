@@ -198,7 +198,8 @@ Comment mode off, the app behaves normally. The name is the one given on the wai
 9. **Arrival.** The server validates the comment (zod, the caps of `parseDesignPick`), stores it
    on the run, and tells open cockpits. The cockpit shows it as a review comment chip.
 10. **Sending.** The owner sends the review as today: the message is composed in the browser and
-   posted as text, so the server never sees which comments it carried. After a successful send the
+   posted as text, so the server never sees which comments it carried. It carries only guest
+   comments that have been on the owner's screen for 5 seconds (§ Exposure). After a successful send the
    cockpit calls `POST /runs/:id/guest-comments/sent` with each carried comment's id and revision.
    The server removes only those still at that revision, in one write. A comment a guest edited
    while the send was in flight stays, unsent, which is what `submit` already does for the owner's
@@ -276,6 +277,7 @@ between that and the internet: the token, and the owner's Allow (D3).
 | Forged comment requests | The comment endpoints need the cookie, an `Origin` equal to the tunnel's, and a JSON body. |
 | The app's script forging or reading comments (C3) | Accepted. Comments are labelled as a guest's, capped twice, fenced in the review, and never delivered without the owner's click. |
 | Hostile comment text in a prompt | Same trust level as the diff the agent already reads; the owner reads it first. |
+| A comment arriving as the owner clicks Send | Held back for 5 seconds after it first appears; the owner is told. An edit counts as a new comment. The chip wears a `new` badge until then. |
 | Flooding | The caps in § Storage, plus a per-guest rate limit. |
 | The app's session | The guest starts logged out: cookies are per browser. `Set-Cookie` from the app passes through with any `Domain` attribute removed. |
 | A stray child process | `cloudflared` is killed on Stop, on expiry and on server shutdown (`onDispose`). |

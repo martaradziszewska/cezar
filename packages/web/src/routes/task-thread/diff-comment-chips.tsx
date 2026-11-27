@@ -1,4 +1,5 @@
 import { FileIcon, MessageSquareIcon, MousePointerClickIcon, XIcon } from 'lucide-react'
+import { useId } from 'react'
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Link } from '@/lib/project-router'
@@ -196,6 +197,22 @@ function GuestCommentChip({
   const label = oneLine(comment.label)
   const tail = selectorTail(oneLine(comment.selector))
   const element = label || tail
+  const opens = `Comment from ${author} on ${comment.url} element ${element}`
+  const heldId = useId()
+  // What the next send would leave behind (spec 2026-11-26-preview-share-link § Exposure). The
+  // label above replaces the chip's text for a screen reader, so the badge is its description.
+  const badge =
+    comment.fresh ?
+      <span
+        id={heldId}
+        data-slot="guest-comment-new"
+        aria-label="New: a review sent now leaves it behind"
+        className="mr-1.5 rounded-sm bg-foreground/10 px-1 text-[10px] font-semibold tracking-wide uppercase"
+      >
+        new
+      </span>
+    : null
+  const described = comment.fresh ? heldId : undefined
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -212,8 +229,10 @@ function GuestCommentChip({
               type="button"
               onClick={() => onOpenInPreview(comment.url)}
               className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
+              aria-label={opens}
+              aria-describedby={described}
             >
+              {badge}
               {author} · {tail}
               {label ? ` “${label}”` : null}
             </button>
@@ -221,8 +240,10 @@ function GuestCommentChip({
             <Link
               to={previewTarget(runId)}
               className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
+              aria-label={opens}
+              aria-describedby={described}
             >
+              {badge}
               {author} · {tail}
               {label ? ` “${label}”` : null}
             </Link>
