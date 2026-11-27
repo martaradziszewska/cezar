@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   GUEST_COMMENTS_MAX,
   GUEST_COMMENTS_TEXT_BUDGET,
+  guestCommentCost,
   guestCommentSchema,
   type GuestComment,
   type GuestCommentInput,
@@ -54,9 +55,7 @@ function save(dataDir: string, runId: string, list: StoredGuestComment[]): boole
 }
 
 /** The review message holds 100,000 characters; this is what the list may spend of them. */
-function textSize(c: StoredGuestComment): number {
-  return c.body.length + c.excerpt.length + c.label.length + c.selector.length + c.url.length + (c.component?.length ?? 0);
-}
+const textSize = guestCommentCost;
 
 const total = (list: readonly StoredGuestComment[]): number => list.reduce((n, c) => n + textSize(c), 0);
 

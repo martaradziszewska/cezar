@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  GUEST_COMMENT_BODY_MAX,
+  GUEST_COMMENT_LINE_COST,
+  GUEST_COMMENT_OVERHEAD,
+  GUEST_COMMENTS_MAX,
+  GUEST_COMMENTS_TEXT_BUDGET,
+  GUEST_COMPONENT_MAX,
+  GUEST_EXCERPT_MAX,
+  GUEST_LABEL_MAX,
+  GUEST_NAME_MAX,
+  GUEST_SELECTOR_MAX,
+  GUEST_URL_MAX,
+  guestCommentCost,
+} from '@open-mercato/cezar-api-client'
+
+import {
   cleanAssetLabel,
   isAssetComment,
   isGuestComment,
@@ -407,5 +422,78 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
   it('still refuses a message the review would push past the cap, guest comments included', () => {
     const big: GuestReviewComment = { ...guest, body: 'x'.repeat(2000) }
     expect(() => messageWithReview('y'.repeat(MESSAGE_TEXT_MAX - 100), [big])).toThrow(/Too long with the comment attached/)
+  })
+
+  describe('the list the server accepts always fits a review message (spec § Storage)', () => {
+    const BREAKS = ['\n', '\r\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029']
+    const capped = {
+      author: 'N'.repeat(GUEST_NAME_MAX),
+      url: `http://localhost:5173/${'u'.repeat(GUEST_URL_MAX - 22)}`,
+      selector: 's'.repeat(GUEST_SELECTOR_MAX),
+      label: 'l'.repeat(GUEST_LABEL_MAX),
+      component: 'c'.repeat(GUEST_COMPONENT_MAX),
+    }
+    /** A body of `GUEST_COMMENT_BODY_MAX` characters, as many of them line breaks as the trim allows. */
+    const brokenBody = (lineBreak: string) => `a${lineBreak.repeat(Math.floor((GUEST_COMMENT_BODY_MAX - 2) / lineBreak.length))}b`
+    const brokenExcerpt = (lineBreak: string) => lineBreak.repeat(Math.floor(GUEST_EXCERPT_MAX / lineBreak.length))
+
+    const { component: _component, ...bare } = guest
+    const PAD = { ...bare, url: 'http://localhost:1/', selector: 'a', label: '', excerpt: '' }
+    const spentBy = (list: readonly GuestReviewComment[]) => list.reduce((sum, comment) => sum + guestCommentCost(comment), 0)
+
+    /**
+     * What `addGuestComment` would hold after a guest posted `fields` until refused: at most 50
+     * comments and the budget, by the contract's cost. Plain comments then use up what is left.
+     */
+    function filled(fields: Partial<GuestReviewComment>): GuestReviewComment[] {
+      const kept: GuestReviewComment[] = []
+      const offer = (comment: GuestReviewComment): boolean => {
+        if (kept.length >= GUEST_COMMENTS_MAX || spentBy(kept) + guestCommentCost(comment) > GUEST_COMMENTS_TEXT_BUDGET) return false
+        kept.push(comment)
+        return true
+      }
+      while (offer({ ...bare, ...fields, id: `g${kept.length}` })) {
+        // Until the server would refuse the next one.
+      }
+      for (;;) {
+        const room = GUEST_COMMENTS_TEXT_BUDGET - spentBy(kept) - guestCommentCost({ ...PAD, body: '' })
+        if (room < 1 || !offer({ ...PAD, id: `pad${kept.length}`, body: 'x'.repeat(Math.min(room, GUEST_COMMENT_BODY_MAX)) })) break
+      }
+      return kept
+    }
+
+    it.each([
+      ...BREAKS.map((lineBreak) => [`bodies made of ${JSON.stringify(lineBreak)}`, { body: brokenBody(lineBreak) }] as const),
+      ...BREAKS.map((lineBreak) => [`excerpts made of ${JSON.stringify(lineBreak)}`, { excerpt: brokenExcerpt(lineBreak), body: 'x' }] as const),
+      ['excerpts made of backticks', { excerpt: '`'.repeat(GUEST_EXCERPT_MAX), body: 'x' }] as const,
+      ['excerpts of backtick runs and line breaks', { excerpt: '```\n`\n'.repeat(GUEST_EXCERPT_MAX / 6), body: brokenBody('\n') }] as const,
+      ['every one-line field at its cap', { ...capped, body: 'x' }] as const,
+      ['every field at its cap, the body made of line breaks', { ...capped, excerpt: brokenExcerpt('\n'), body: brokenBody('\n') }] as const,
+      ['the smallest comments, 50 of them', { author: capped.author, label: capped.label, url: 'http://localhost:1/', selector: 'a', excerpt: '', body: 'x' }] as const,
+      ['quotes and backticks in the one-line fields', { author: '"'.repeat(GUEST_NAME_MAX), label: '"`'.repeat(GUEST_LABEL_MAX / 2), selector: '`'.repeat(GUEST_SELECTOR_MAX), body: 'x' }] as const,
+    ])('with %s', (_label, fields) => {
+      const list = filled(fields)
+      const charged = spentBy(list)
+      // Full: the server would refuse one more comment, however small.
+      expect(list.length === GUEST_COMMENTS_MAX || GUEST_COMMENTS_TEXT_BUDGET - charged < guestCommentCost({ ...PAD, body: 'x' })).toBe(true)
+      const heading = `${REVIEW_GENERAL_HEADING}\n\n`.length
+      const review = formatDiffComments(list)
+      expect(review.length).toBeLessThanOrEqual(MESSAGE_TEXT_MAX - 20_000)
+      // The rule itself: no comment becomes a longer review item than it was charged for.
+      expect(review.length).toBeLessThanOrEqual(heading + charged)
+      expect(formatDiffComments([list[0]!]).length).toBeLessThanOrEqual(heading + guestCommentCost(list[0]!))
+      // And the owner still has 20,000 characters for the message and their own comments.
+      expect(() => messageWithReview('y'.repeat(20_000 - 2), list)).not.toThrow()
+    })
+
+    it('charges by the two constants the server uses', () => {
+      const bare = { url: 'u', selector: 's', label: '', excerpt: '', body: 'b' }
+      expect(guestCommentCost(bare)).toBe(3 + GUEST_COMMENT_OVERHEAD)
+      expect(guestCommentCost({ ...bare, body: 'b\nb' }) - guestCommentCost({ ...bare, body: 'bb' })).toBe(GUEST_COMMENT_LINE_COST)
+      expect(guestCommentCost({ ...bare, body: 'b\r\nb' })).toBe(guestCommentCost({ ...bare, body: 'b\nb' }))
+      expect(guestCommentCost({ ...bare, excerpt: '`' })).toBe(guestCommentCost(bare) + GUEST_COMMENT_LINE_COST)
+      // A backtick outside the excerpt fences nothing.
+      expect(guestCommentCost({ ...bare, body: 'b`' })).toBe(guestCommentCost(bare) + 1)
+    })
   })
 })

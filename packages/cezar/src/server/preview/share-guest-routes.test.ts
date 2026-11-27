@@ -6,7 +6,7 @@ import { connect, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, GUEST_URL_MAX, type GuestComment } from '@open-mercato/cezar-contract';
+import { GUEST_COMMENT_OVERHEAD, GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, GUEST_URL_MAX, type GuestComment } from '@open-mercato/cezar-contract';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { addGuestComment, guestCommentsRoot, readGuestComments } from '../../runs/guest-comments.ts';
@@ -887,7 +887,7 @@ describe('the share listener’s own pages', () => {
 
       it('answers 409 once the run’s unsent text would pass its budget', async () => {
         const big = { ...comment(), excerpt: 'e'.repeat(600), selector: 's'.repeat(1000), body: 'b'.repeat(2000) };
-        const each = big.url.length + big.selector.length + big.label.length + big.excerpt.length + big.body.length;
+        const each = big.url.length + big.selector.length + big.label.length + big.excerpt.length + big.body.length + GUEST_COMMENT_OVERHEAD;
         for (let i = 0; i < Math.floor(GUEST_COMMENTS_TEXT_BUDGET / each); i += 1) {
           expect(addGuestComment(dir, 'r1', { ...big, author: 'Piotr', guestId: piotr.id }).ok).toBe(true);
         }
@@ -986,9 +986,13 @@ describe('the share listener’s own pages', () => {
       it('answers 409 when the longer text would pass the run’s budget', async () => {
         const first = (await ana.post('comments', comment())).json.comment;
         const big = { ...comment(), excerpt: 'e'.repeat(600), selector: 's'.repeat(1000), body: 'b'.repeat(2000) };
-        while (addGuestComment(dir, 'r1', { ...big, author: 'Piotr', guestId: piotr.id }).ok) {
-          /* fill what is left */
+        // Big ones, then small ones: what is left is less than one small comment, whatever the cost rule.
+        for (const filler of [big, comment()]) {
+          while (addGuestComment(dir, 'r1', { ...filler, author: 'Piotr', guestId: piotr.id }).ok) {
+            /* fill what is left */
+          }
         }
+        expect(stored().length).toBeLessThan(GUEST_COMMENTS_MAX);
         const res = await ana.put(`comments/${first.id}`, { body: 'x'.repeat(2000) });
         expect(res.status).toBe(409);
         expect(res.json).toEqual({ error: INBOX_FULL });

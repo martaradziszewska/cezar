@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET } from '@open-mercato/cezar-contract';
+import {
+  GUEST_COMMENT_LINE_COST,
+  GUEST_COMMENT_OVERHEAD,
+  GUEST_COMMENTS_MAX,
+  GUEST_COMMENTS_TEXT_BUDGET,
+} from '@open-mercato/cezar-contract';
 import {
   addGuestComment,
   deleteGuestComment,
@@ -27,8 +32,11 @@ function add(body: string, guestId = 'g1', runId = 'r1') {
   if (!r.ok) throw new Error(`add refused: ${r.reason}`);
   return r.comment;
 }
+/** What a comment with no line break and no backtick is charged: its text and the fixed overhead. */
 const size = (c: { body: string; excerpt: string; label: string; selector: string; url: string; component?: string }) =>
-  c.body.length + c.excerpt.length + c.label.length + c.selector.length + c.url.length + (c.component?.length ?? 0);
+  c.body.length + c.excerpt.length + c.label.length + c.selector.length + c.url.length + (c.component?.length ?? 0) + GUEST_COMMENT_OVERHEAD;
+/** How many comments of `charge` the budget holds. */
+const fits = (charge: number) => Math.floor(GUEST_COMMENTS_TEXT_BUDGET / charge);
 
 describe('guest comments', () => {
   it('adds, lists and bumps the revision on an edit', () => {
@@ -89,6 +97,70 @@ describe('guest comments', () => {
       reason: 'budget',
     });
     expect(readGuestComments(dir, 'r1')).toHaveLength(n);
+  });
+
+  it('charges 200 characters for each comment on top of its text', () => {
+    expect(GUEST_COMMENT_OVERHEAD).toBe(200);
+    const body = 'x'.repeat(2000);
+    // 2,043 characters of text each: 29 would fit by text alone, 26 with the item's structure.
+    expect(fits(2043)).toBe(29);
+    expect(fits(size({ ...pick, body }))).toBe(26);
+    for (let i = 0; i < 26; i++) add(body);
+    expect(addGuestComment(dir, 'r1', { ...pick, body, author: 'Ana', guestId: 'g1' })).toEqual({ ok: false, reason: 'budget' });
+    expect(readGuestComments(dir, 'r1')).toHaveLength(26);
+  });
+
+  it.each([
+    ['\\n', '\n', 1],
+    ['\\r\\n, as one break', '\r\n', 2],
+    ['\\r', '\r', 1],
+    ['a vertical tab', '\v', 1],
+    ['a form feed', '\f', 1],
+    ['U+0085', '\u0085', 1],
+    ['U+2028', '\u2028', 1],
+    ['U+2029', '\u2029', 1],
+  ])('charges a body line break of %s as 3 characters', (_label, lineBreak, width) => {
+    expect(GUEST_COMMENT_LINE_COST).toBe(3);
+    // 2,000 characters, almost all of them breaks: the review indents every line it starts.
+    const breaks = Math.floor(1998 / width);
+    const body = `a${lineBreak.repeat(breaks)}b`;
+    const charge = size({ ...pick, body: '' }) + 2 + 3 * breaks;
+    const n = fits(charge);
+    // Raw characters alone would let 29 of these in.
+    expect(n).toBeLessThan(fits(size({ ...pick, body })));
+    for (let i = 0; i < n; i++) add(body);
+    expect(addGuestComment(dir, 'r1', { ...pick, body, author: 'Ana', guestId: 'g1' })).toEqual({ ok: false, reason: 'budget' });
+    expect(readGuestComments(dir, 'r1')).toHaveLength(n);
+    // What is left over still takes a comment that fits it exactly, and not one character more.
+    const room = GUEST_COMMENTS_TEXT_BUDGET - n * charge - size({ ...pick, body: '' });
+    expect(room).toBeGreaterThan(1);
+    expect(addGuestComment(dir, 'r1', { ...pick, body: 'x'.repeat(room + 1), author: 'Ana', guestId: 'g1' })).toEqual({ ok: false, reason: 'budget' });
+    expect(addGuestComment(dir, 'r1', { ...pick, body: 'x'.repeat(room), author: 'Ana', guestId: 'g1' }).ok).toBe(true);
+  });
+
+  it('charges a line break and a backtick of the excerpt as 3 characters each', () => {
+    // The review fences the excerpt with a run one longer than its longest, above and below.
+    const body = 'x'.repeat(1000);
+    for (const [excerpt, plain, costly, n] of [
+      ['a\n'.repeat(300), 300, 300, 24],
+      ['`'.repeat(600), 0, 600, 19],
+      ['<b>\r\n'.repeat(100), 300, 100, 32],
+    ] as const) {
+      const run = `r-${n}`;
+      expect(fits(size({ ...pick, excerpt: '', body }) + plain + 3 * costly)).toBe(n);
+      for (let i = 0; i < n; i++) expect(addGuestComment(dir, run, { ...pick, excerpt, body, author: 'Ana', guestId: 'g1' }).ok).toBe(true);
+      expect(addGuestComment(dir, run, { ...pick, excerpt, body, author: 'Ana', guestId: 'g1' })).toEqual({ ok: false, reason: 'budget' });
+    }
+  });
+
+  it('charges an edit that adds line breaks by the same rule', () => {
+    const body = `a${'\n'.repeat(1998)}b`;
+    const charge = size({ ...pick, body: '' }) + 2 + 3 * 1998;
+    const n = fits(charge);
+    for (let i = 0; i < n; i++) add(body);
+    const small = add('s');
+    expect(updateGuestComment(dir, 'r1', small.id, 'g1', body)).toEqual({ ok: false, reason: 'budget' });
+    expect(readGuestComments(dir, 'r1').find((c) => c.id === small.id)?.body).toBe('s');
   });
 
   it('refuses an edit that would pass the budget and changes nothing', () => {

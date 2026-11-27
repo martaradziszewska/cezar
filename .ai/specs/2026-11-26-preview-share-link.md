@@ -241,6 +241,12 @@ read and its write would be lost.
   message holds 100,000 characters and `messageWithReview` throws past that; the owner cannot
   edit a guest's words, so the list must always fit with room for the owner's own comments. A
   guest who hits the budget is told the reviewer's inbox is full.
+- The budget is charged in what the review item will take, not in raw characters
+  (`guestCommentCost` in the contract): 200 per comment for the item's structure and author, and
+  3 for every line break in the body or the excerpt (the review indents each line) and for every
+  backtick in the excerpt (its fence is one backtick longer than its longest run, twice). A
+  comment therefore never formats to more than it was charged, and a full list leaves the owner
+  about 40,000 characters.
 - Each comment carries a revision that changes on every guest edit (step 10 of § Mechanism).
 
 ## Exposure

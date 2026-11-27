@@ -14,6 +14,44 @@ export const GUEST_URL_MAX = 2000;
 export const GUEST_COMPONENT_MAX = 300;
 export const GUEST_COMMENTS_MAX = 50;
 export const GUEST_COMMENTS_TEXT_BUDGET = 60_000;
+/** What a line break of the body or excerpt, or a backtick of the excerpt, costs in a review. */
+export const GUEST_COMMENT_LINE_COST = 3;
+/** Charged once per comment: the review item's own structure and its author. */
+export const GUEST_COMMENT_OVERHEAD = 200;
+
+/**
+ * What a comment spends of `GUEST_COMMENTS_TEXT_BUDGET`: never less than the review item it becomes
+ * (spec 2026-11-26-preview-share-link § Storage). The server charges it; the cockpit's tests hold
+ * the formatter to it.
+ */
+export function guestCommentCost(comment: {
+  body: string;
+  excerpt: string;
+  label: string;
+  selector: string;
+  url: string;
+  component?: string | undefined;
+}): number {
+  return (
+    GUEST_COMMENT_OVERHEAD +
+    costOf(comment.body, LINE_BREAK) +
+    costOf(comment.excerpt, LINE_BREAK_OR_BACKTICK) +
+    comment.label.length +
+    comment.selector.length +
+    comment.url.length +
+    (comment.component?.length ?? 0)
+  );
+}
+
+/** `\r\n` is one break. A review indents every line it starts. */
+const LINE_BREAK = /\r\n|[\r\n\v\f\u0085\u2028\u2029]/g;
+/** The excerpt is fenced by a backtick run longer than any it holds, above and below. */
+const LINE_BREAK_OR_BACKTICK = /\r\n|[\r\n\v\f\u0085\u2028\u2029`]/g;
+
+function costOf(text: string, costly: RegExp): number {
+  const matches = text.match(costly)?.length ?? 0;
+  return text.replace(costly, '').length + matches * GUEST_COMMENT_LINE_COST;
+}
 
 /** What a guest posts. Every string is capped: it comes from a page the cockpit does not control. */
 export const guestCommentInputSchema = z.object({
