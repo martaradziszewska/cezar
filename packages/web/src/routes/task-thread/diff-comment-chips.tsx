@@ -214,7 +214,7 @@ function GuestCommentChip({
         id={heldId}
         data-slot={mark.slot}
         aria-label={mark.says}
-        className="mr-1.5 rounded-sm bg-foreground/10 px-1 text-[10px] font-semibold tracking-wide uppercase"
+        className="mr-1.5 rounded-full bg-foreground/10 px-1.5 py-px text-micro font-medium"
       >
         {mark.text}
       </span>

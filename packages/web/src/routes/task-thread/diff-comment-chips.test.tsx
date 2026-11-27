@@ -200,14 +200,14 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     })
 
     it.each([
-      ['a script', 'javascript:alert(document.domain)'],
+      ['a script', 'javascript:boom(document.domain)'],
       ['another site', 'https://evil.example/'],
       ['another site over http', 'http://evil.example/'],
       ['https on this machine', 'https://localhost:5173/'],
       ['a name that only starts like this machine', 'http://localhost.evil.example/'],
       ['an address that only starts like loopback', 'http://127.0.0.1.evil.example/'],
       ['this machine as a user name', 'http://localhost:5173@evil.example/'],
-      ['a data page', 'data:text/html,<script>alert(1)</script>'],
+      ['a data page', 'data:text/html,<script>boom(1)</script>'],
       ['not an address', 'settings'],
     ])('is %s: the chip is the plain Preview link and the address goes nowhere', (_label, url) => {
       const onOpenInPreview = chipFor(url)
