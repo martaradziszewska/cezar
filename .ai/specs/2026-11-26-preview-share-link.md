@@ -1,6 +1,6 @@
 # Preview share link — a teammate comments on the task's app from a browser
 
-> Slug: `preview-share-link` · Status: proposed (design only, 2026-11-26)
+> Slug: `preview-share-link` · Status: implemented (2026-11-27), pending owner ratification
 > Gate: **pending owner ratification** — a new, click-started network exposure (§ Exposure).
 > Extends: `2026-10-09-design-mode.md` (the mirror and the picker), #2446 (comments on elements of
 > HTML assets, which ride the review comments).
@@ -115,7 +115,7 @@ Owner, Preview toolbar:
 [←][→][⟳]  localhost:5173/settings          [Design Mode ⌥D]  [Share]
                                                      │ click
 [←][→][⟳]  localhost:5173/settings   [Design Mode ⌥D]  [● Sharing · 3 comments · until 18:40 ▾]
-                                                          Copy link · Stop sharing
+                                                          Copy link · Extend 8 hours · Stop sharing
                                                           ─────────────────────────
                                                           Ana · 4821 wants to join
                                                                       [Deny] [Allow]
@@ -303,7 +303,7 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
 
 ## API and contract
 
-All shapes in `packages/contract/src/preview.ts`; routes chained into the runs family and mounted
+All shapes in `packages/contract/src/preview-share.ts`; routes chained into the runs family and mounted
 under both `/api/v1/…` and `/api/v1/p/:projectId/…`.
 
 - `POST /runs/:id/preview-share` `{ target, parentOrigin }` → `{ share }`. 409 `{ error }` when

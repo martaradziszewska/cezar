@@ -832,6 +832,111 @@ Expected: every command exits 0; `test:e2e` prints `TEST_E2E_STATUS=passed` (a `
 - [ ] **Step 6: Manual check with a real tunnel** (needs `cloudflared` installed): `npm run dev`, share a real dev server, open the link on a phone off the local network, get let in, leave a comment, send the review. Record what happened in the PR body.
 - [ ] **Step 7: Commit** — `git commit -m "feat(web): live share indicators, docs and the zero-config entry"`
 
+### Task 13: Extend a live share
+
+Added by the owner on 2026-11-27.
+
+The owner asked for it mid-run: "let's also add extend option". It changes spec decision C5
+("A share ends 8 hours after it starts, whatever happens") to: a share ends 8 hours after it
+starts **or after its last Extend**. Every extension is an explicit click by the owner; nothing
+extends on its own.
+
+**Files:**
+- Modify: `.ai/specs/2026-11-26-preview-share-link.md` (C5, § States "A share", § API and contract,
+  § Exposure's "for at most 8 hours" sentence and its risk-table row)
+- Modify: `packages/cezar/src/server/preview/share-listener.ts`, `share-listener.test.ts`
+- Modify: `packages/cezar/src/server/preview-share-routes.ts`, `packages/cezar/src/server/preview-share-api.test.ts`,
+  `BACKWARD_COMPATIBILITY.md` (§2 route inventory)
+- Modify: `packages/web/src/api/client.ts`, `client.test.ts`
+- Modify: `packages/web/src/routes/task-preview/share-control.tsx`, `share-control.test.tsx`
+
+**Interfaces — Produces:**
+
+```ts
+// share-listener.ts
+class PreviewShares {
+  /** Sets the share to end `lifetimeMs` from now. Null when the run has no live share. */
+  extend(runId: string): PreviewShare | null;
+}
+
+// route (chained into the existing preview-share family, both mounts)
+// POST /runs/:id/preview-share/extend  → previewShareStateResponseSchema ({ share })
+//   404 `{ error }` when the run is unknown or has no live share
+//   409 `{ error: 'Sharing is not available on this cockpit' }` when the capability is off
+//   (it steers a share, so it is capability-gated like the guest decision routes)
+
+// client.ts
+export function extendPreviewShare(runId: string): Promise<PreviewShareStateResponse>;
+```
+
+No new contract schema: the answer is `previewShareStateResponseSchema`; the path param is the
+existing run id param schema the neighbouring routes use.
+
+**Rules:**
+
+- `extend` sets `expiresAt = now + lifetimeMs` (8 hours by default), re-arms the lifetime timer
+  (the old timer is cleared; the new one is `unref()`'d), and fires `onChange(projectId, runId, share)`
+  so every open cockpit sees the new `expiresAt`. It never shortens a share: if the new expiry would
+  be earlier than the current one, keep the current one.
+- Nothing else about the share changes: same token, same link, same listener, same tunnel, same
+  guests (allowed stay allowed, waiting stay waiting with their own 10-minute clocks, denied stay
+  denied).
+- A share that has already expired or ended cannot be extended (`null` → 404). A pending start
+  (tunnel not up yet) cannot be extended (`null`).
+- `startedAt` does not change.
+- The wall-clock expiry check that `get()`/`list()` and the request gate already do must use the
+  extended `expiresAt`.
+- UI: in the live control's menu, between **Copy link** and **Stop sharing**, an item
+  **Extend 8 hours**. On success: set the returned state into `queryKeys.runs.previewShare(runId)`
+  and toast `Sharing until <HH:MM>` (same time format the control already uses). On failure: the
+  server's message as a toast; nothing else changes. Disabled while the request is in flight. Not
+  shown when the capability reads false (the server would refuse it).
+- Spec edits, exact:
+  - C5 call becomes: `A share ends **8 hours** after it starts or after its last **Extend**. No idle rule, and nothing extends on its own.` Its "Why" gains: `Extend (added 2026-11-27 at the owner's request) keeps a long review on one link; each extension is a click.`
+  - § States "A share": add `Extend` to the list — "Ended by: **Stop sharing**; 8 hours after it started or was last extended; …".
+  - § API and contract: add `POST /runs/:id/preview-share/extend` → `{ share }`.
+  - § Exposure: "for at most 8 hours" → "for 8 hours, longer only when the owner clicks **Extend**"; the first risk row's "ends at 8 hours" → "ends 8 hours after the start or the last Extend".
+
+- [x] **Step 1: Write the failing tests**
+
+```ts
+// share-listener.test.ts (fake clock via options.now and a short lifetimeMs)
+it('extends a live share to a full lifetime from now and keeps the link and guests', async () => {
+  // start at t=0 with lifetimeMs L; allow one guest; at t=L-1 extend →
+  // share.expiresAt === iso(t + L); url unchanged; the guest still gets the app at t=L+1;
+  // onChange fired with the new expiresAt; the share ends ('expired') at the new time.
+});
+it('never shortens a share and cannot revive an ended one', async () => {
+  // extend twice in a row → expiresAt does not move backwards; stop → extend returns null
+});
+it('does not extend a start that is still waiting for its tunnel', async () => {});
+
+// preview-share-api.test.ts
+it('extends a live share, 404s without one, and 409s when sharing is off', async () => {});
+it('answers the extend route under /api/v1/p/<boot>/ as well', async () => {});
+
+// share-control.test.tsx
+it('extends the share from the menu and says until when', async () => {
+  // click Extend 8 hours → extendPreviewShare('r1') called once; toast `Sharing until HH:MM`;
+  // the control's "until" shows the new time
+});
+it('offers no Extend when the capability is off', async () => {});
+```
+
+- [x] **Step 2: Run, confirm red**
+
+Run: `npm test -- packages/cezar/src/server/preview/share-listener.test.ts packages/cezar/src/server/preview-share-api.test.ts packages/web/src/routes/task-preview/share-control.test.tsx packages/web/src/api/client.test.ts`
+
+- [x] **Step 3: Implement** the method, the route, the client call, the menu item and the spec edits.
+- [x] **Step 4: Run the gates**
+
+Run the Step 2 command, then
+`npm test -- packages/cezar/src/server/route-parity.test.ts packages/cezar/src/server/bc-route-inventory.test.ts packages/cezar/src/server/typed-bodies.test.ts packages/cezar/src/server/versioned-surface.test.ts packages/cezar/src/server/preview/design-proxy.test.ts`,
+the contract-parity test files by path (`ls packages/cezar/src/server/contract-parity*.test.ts`), then `npm run typecheck`.
+Expected: PASS.
+
+- [x] **Step 5: Commit** — `git commit -m "feat(preview): extend a live share by another 8 hours"`
+
 ---
 
 ## After the last task

@@ -1,0 +1,72 @@
+---
+title: "Share a preview for comments"
+description: "Give a teammate a public link to the task's running app, let them in, and collect their comments in your review."
+nav_title: "Share a preview"
+related:
+  links:
+    - features/tasks-and-sessions/app-preview
+    - features/tasks-and-sessions/design-mode
+    - features/tasks-and-sessions/design-notes
+sources:
+  - label: "Share control"
+    path: packages/web/src/routes/task-preview/share-control.tsx
+    line: 39
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+  - label: "Share listener and its limits"
+    path: packages/cezar/src/server/preview/share-listener.ts
+    line: 222
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+  - label: "Guest join page and comments"
+    path: packages/cezar/src/server/preview/share-guest-routes.ts
+    line: 138
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+  - label: "Live link indicators"
+    path: packages/web/src/components/live-shares-indicator.tsx
+    line: 21
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+  - label: "Capability and CEZ_PREVIEW_SHARE"
+    path: packages/cezar/src/server/capabilities.ts
+    line: 212
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+  - label: "Specification"
+    path: .ai/specs/2026-11-26-preview-share-link.md
+    line: 1
+    commit: 1a24db5234930f01b43e70848bdfb99be66fbaa5
+---
+**Share** gives a public `https://` link to the app a task is running. A teammate opens it in any browser, with nothing installed, and asks to join. You let them in from the cockpit. They click elements of the page and write comments. Each comment arrives in your task as a review comment with the teammate's name on it, and the agent reads it only when you send the review. The teammate never sees the cockpit and never prompts the agent.
+
+## Where to find it
+
+Task → Preview → **Share**
+
+## How to use it
+
+1. Open the app's local `http://` address in Preview, click **Share**, read what the link exposes, and click **Create link**. The link is copied for you; **Copy link** in the Sharing menu copies it again.
+2. Send the link to your teammate. They type a name and click **Ask to join**, and their page shows a 4-digit code. In the cockpit, the Sharing menu shows `<name> · <code> wants to join`. Check the code with them if you are unsure who it is, then click **Allow** or **Deny**.
+3. Your teammate clicks **Comment**, picks an element, and saves a comment. It appears in the task's composer as a chip, such as `Ana · button.btn-primary “Save”`. Clicking the chip opens the Preview on that comment's page. Send the review as usual; the guest comments go with it.
+
+## While a link is live
+
+- The Preview toolbar shows `Sharing · <N> comments · until <time>`. Its menu holds **Copy link**, **Extend 8 hours** and **Stop sharing**, and lists who asked to join and who is in.
+- **Remove** cuts an allowed guest off at once. A browser you denied or removed cannot rejoin the same link; the way back is a private window or a new link.
+- The task's row in the sidebar shows **Sharing**, and a bar above every page says `1 live link` or `<N> live links`, with `· <M> waiting` when someone is asking to join. Its menu has **Open** (the task's Preview) and **Stop sharing** for each link.
+- A guest sees and edits only their own comments. You can delete a guest's comment from its chip, but you cannot edit it.
+
+## When a link ends
+
+A link ends 8 hours after it starts, on **Stop sharing**, when the cockpit server stops, or when the task is archived or deleted or its worktree is reclaimed. **Extend 8 hours** moves the end to 8 hours from now and keeps the same link. Sharing again after a link ends gives a new address. Comments outlive the link: they stay in your review until you send them or delete them.
+
+## Limits
+
+- **One origin.** The link carries one local address. A page that calls a second local port from the browser, such as an API on `localhost:4000`, fails for the guest. An app that proxies its API through its dev server works.
+- **No Server-Sent Events** pass through the tunnel. WebSocket hot reload works; an `EventSource` feature does not stream.
+- **200 requests in flight** at most; more get a `429` from Cloudflare.
+- **Your computer must be awake** with the app running. If the app stops, the guest sees "The app is not running right now" until you start it again.
+- **You must be at the cockpit** when a teammate first opens the link, to let them in. After that they can come and go until the link ends.
+
+> **Good to know**:
+>
+> - Sharing needs `cloudflared` on your `PATH` (`brew install cloudflared` on macOS). Without it, **Share** shows the install command and **Retry**. No Cloudflare account is needed.
+> - Traffic passes through Cloudflare, which terminates TLS. Anyone you let in can read whatever your dev server serves, including source files.
+> - Nothing listens and no process starts until you click **Create link**. `CEZ_PREVIEW_SHARE=0` turns sharing off.
+> - Sharing is unavailable in a hosted cockpit and from a paired phone.
