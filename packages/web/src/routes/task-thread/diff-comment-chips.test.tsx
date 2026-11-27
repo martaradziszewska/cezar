@@ -136,6 +136,23 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     expect(screen.getByRole('link', { name: 'Comment from Ana on http://localhost:5173/settings element Save' }).hasAttribute('aria-describedby')).toBe(false)
   })
 
+  it('badges a comment that already went to the agent but is still listed, and keeps its ✕', () => {
+    const onRemove = vi.fn()
+    render(
+      <MemoryRouter>
+        <DiffCommentChips runId="r1" comments={[{ ...guest, sent: true }, { ...guest, id: 'g2', author: 'Piotr' }]} onRemove={onRemove} />
+      </MemoryRouter>,
+    )
+    const badges = [...document.querySelectorAll('[data-slot="guest-comment-sent"]')]
+    expect(badges.map((badge) => badge.textContent)).toEqual(['sent'])
+    expect(document.querySelector('[data-slot="guest-comment-new"]')).toBeNull()
+    const link = screen.getByRole('link', { name: 'Comment from Ana on http://localhost:5173/settings element Save' })
+    expect(link.getAttribute('aria-describedby')).toBe(badges[0]!.id)
+    expect(badges[0]!.getAttribute('aria-label')).toBe('Sent: the agent already has it')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove comment from Ana on element Save' }))
+    expect(onRemove).toHaveBeenCalledWith('g1')
+  })
+
   it('with the workspace callback, a click opens the Preview on the stored address and does not navigate', () => {
     const onOpenInPreview = vi.fn()
     const asset = { kind: 'asset' as const, id: 'e', asset: 'mock/recipe.html', selector: 'main > h2', label: '', excerpt: '', body: 'b' }

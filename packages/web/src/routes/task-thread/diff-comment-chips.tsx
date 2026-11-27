@@ -204,18 +204,22 @@ function GuestCommentChip({
   const heldId = useId()
   // What the next send would leave behind (spec 2026-11-26-preview-share-link § Exposure). The
   // label above replaces the chip's text for a screen reader, so the badge is its description.
+  const mark =
+    comment.sent ? { slot: 'guest-comment-sent', text: 'sent', says: 'Sent: the agent already has it' }
+    : comment.fresh ? { slot: 'guest-comment-new', text: 'new', says: 'New: a review sent now leaves it behind' }
+    : null
   const badge =
-    comment.fresh ?
+    mark ?
       <span
         id={heldId}
-        data-slot="guest-comment-new"
-        aria-label="New: a review sent now leaves it behind"
+        data-slot={mark.slot}
+        aria-label={mark.says}
         className="mr-1.5 rounded-sm bg-foreground/10 px-1 text-[10px] font-semibold tracking-wide uppercase"
       >
-        new
+        {mark.text}
       </span>
     : null
-  const described = comment.fresh ? heldId : undefined
+  const described = mark ? heldId : undefined
   const openInPreview = onOpenInPreview && isLocalHttpAddress(comment.url) ? onOpenInPreview : undefined
   return (
     <Tooltip>

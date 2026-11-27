@@ -46,19 +46,19 @@ function stubServer(stored: DiffComment[]) {
   return puts
 }
 
-function mountChangesHost(now?: () => number) {
+function mountChangesHost(options?: Parameters<typeof useDiffComments>[1]) {
   const client = createQueryClient()
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  const changes = renderHook(() => useDiffComments('r1', now ? { now } : undefined), { wrapper })
+  const changes = renderHook(() => useDiffComments('r1', options), { wrapper })
   return { client, wrapper, changes }
 }
 
 /** A host whose clock the test moves: a guest comment rides a send only once it has been shown for
  *  `GUEST_HOLD_MS` (spec 2026-11-26-preview-share-link § Exposure). */
-function mountClockedHost() {
+function mountClockedHost(options: { markRetryMs?: number } = {}) {
   let at = Date.parse('2026-11-27T10:00:00Z')
   const now = () => at
-  return { ...mountChangesHost(now), now, pass: (ms: number) => void (at += ms) }
+  return { ...mountChangesHost({ now, ...options }), now, pass: (ms: number) => void (at += ms) }
 }
 
 describe('diff comments shared across hosts', () => {
@@ -303,7 +303,7 @@ const GUEST: GuestComment = {
 }
 
 /** The drafts store (like `statefulServer`) plus the run's server-owned guest list. */
-function guestServer(initialDrafts: DiffComment[], initialGuests: GuestComment[], opts: { failSent?: boolean } = {}) {
+function guestServer(initialDrafts: DiffComment[], initialGuests: GuestComment[], opts: { failSent?: boolean | number } = {}) {
   let stored = JSON.stringify(initialDrafts)
   let guests = [...initialGuests]
   const puts: string[] = []
@@ -319,7 +319,8 @@ function guestServer(initialDrafts: DiffComment[], initialGuests: GuestComment[]
       if (path.endsWith('/runs/r1/guest-comments/sent') && method === 'POST') {
         const body = JSON.parse(String(init.body)) as { comments: { id: string; revision: number }[] }
         sent.push(body)
-        if (opts.failSent) return json({ error: 'gone' }, 500)
+        // `true` fails every mark; a number, that many of the first ones.
+        if (opts.failSent === true || (typeof opts.failSent === 'number' && sent.length <= opts.failSent)) return json({ error: 'gone' }, 500)
         const removed = body.comments
           .filter((c) => guests.some((g) => g.id === c.id && g.revision === c.revision))
           .map((c) => c.id)
@@ -600,27 +601,112 @@ describe('guest comments in the shared store (spec 2026-11-26-preview-share-link
     expect(changes.result.current.guestComments).toHaveLength(1)
   })
 
-  it('a failed mark still counts as sent: no error, no resend, the chip waits for the next listing', async () => {
-    const server = guestServer([], [GUEST], { failSent: true })
-    const { client, changes, pass } = mountClockedHost()
-    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
-    pass(GUEST_HOLD_MS)
-    let result: string | undefined
-    await act(async () => {
-      result = await changes.result.current.submit(async () => 'delivered')
+  describe('a mark that fails after the review went', () => {
+    const MARK = { comments: [{ id: 'g1', revision: 2 }] }
+    const settled = () =>
+      act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60))
+      })
+    async function sent(host: ReturnType<typeof mountClockedHost>): Promise<string[]> {
+      let held: ReviewComment[] = []
+      await act(async () => {
+        expect(
+          await host.changes.result.current.submit(async (comments) => {
+            held = comments
+            return 'delivered'
+          }),
+        ).toBe('delivered')
+      })
+      return held.map((c) => c.id)
+    }
+
+    it('is tried once more after a moment, and the chip goes when that lands', async () => {
+      const server = guestServer([], [GUEST], { failSent: 1 })
+      const host = mountClockedHost({ markRetryMs: 20 })
+      await waitFor(() => expect(host.changes.result.current.guestComments).toHaveLength(1))
+      host.pass(GUEST_HOLD_MS)
+      expect(await sent(host)).toEqual(['g1'])
+      await waitFor(() => expect(server.sent).toEqual([MARK, MARK]))
+      await waitFor(() => expect(host.changes.result.current.guestComments).toEqual([]))
+      expect(toast).not.toHaveBeenCalled()
     })
-    expect(result).toBe('delivered')
-    await waitFor(() => expect(server.sent).toHaveLength(1))
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20))
+
+    it('twice: the comment is never carried again from this window, and its chip stays, marked sent and removable', async () => {
+      const server = guestServer([C1], [GUEST], { failSent: true })
+      const host = mountClockedHost({ markRetryMs: 20 })
+      await waitFor(() => expect(host.changes.result.current.all).toHaveLength(2))
+      host.pass(GUEST_HOLD_MS)
+      expect(await sent(host)).toEqual(['c1', 'g1'])
+      await waitFor(() => expect(server.sent).toEqual([MARK, MARK]))
+      await settled()
+      // No third try, no error for the owner: the review did go.
+      expect(server.sent).toHaveLength(2)
+      expect(toast).not.toHaveBeenCalled()
+      expect(host.changes.result.current.guestComments.map((c) => [c.id, c.sent])).toEqual([['g1', true]])
+
+      // The next message: the agent already has g1, and the server still lists it.
+      act(() => {
+        host.changes.result.current.add({ path: 'src/b.ts', side: 'new', line: 1, excerpt: '', body: 'next' })
+      })
+      host.pass(60_000)
+      const next = await sent(host)
+      expect(next).toHaveLength(1)
+      expect(next).not.toContain('g1')
+      await settled()
+      expect(server.sent).toHaveLength(2)
+      // Not "new" either: it was sent, not held back.
+      expect(toast).not.toHaveBeenCalled()
+
+      // Another host of the same window knows too.
+      host.changes.unmount()
+      const session = renderHook(() => useDiffComments('r1', { now: host.now }), { wrapper: host.wrapper })
+      expect(session.result.current.guestComments.map((c) => [c.id, c.sent])).toEqual([['g1', true]])
+      let again: ReviewComment[] = [C1]
+      await act(async () => {
+        await session.result.current.submit(async (comments) => {
+          again = comments
+        })
+      })
+      expect(again).toEqual([])
+
+      act(() => session.result.current.remove('g1'))
+      await waitFor(() => expect(session.result.current.all).toEqual([]))
+      expect(server.deleted).toEqual(['g1'])
     })
-    expect(server.sent).toHaveLength(1)
-    expect(changes.result.current.guestComments).toHaveLength(1)
-    // The server is the authority: its next listing decides.
-    act(() => {
-      client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [] })
+
+    it('twice, and then the guest edits it: the new words are a new comment and ride the next review', async () => {
+      const server = guestServer([], [GUEST], { failSent: 2 })
+      const host = mountClockedHost({ markRetryMs: 20 })
+      await waitFor(() => expect(host.changes.result.current.guestComments).toHaveLength(1))
+      host.pass(GUEST_HOLD_MS)
+      expect(await sent(host)).toEqual(['g1'])
+      await waitFor(() => expect(server.sent).toHaveLength(2))
+      await settled()
+      const edited = { ...GUEST, revision: 3, body: 'brand green, darker' }
+      server.setGuests([edited])
+      act(() => {
+        host.client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [edited] })
+      })
+      await waitFor(() => expect(host.changes.result.current.guestComments.map((c) => [c.revision, c.sent ?? false])).toEqual([[3, false]]))
+      host.pass(GUEST_HOLD_MS)
+      expect(await sent(host)).toEqual(['g1'])
+      await waitFor(() => expect(server.sent.at(-1)).toEqual({ comments: [{ id: 'g1', revision: 3 }] }))
+      await waitFor(() => expect(host.changes.result.current.guestComments).toEqual([]))
     })
-    await waitFor(() => expect(changes.result.current.guestComments).toEqual([]))
+
+    it('twice: the chip goes once the server stops listing the comment', async () => {
+      const server = guestServer([], [GUEST], { failSent: true })
+      const host = mountClockedHost({ markRetryMs: 20 })
+      await waitFor(() => expect(host.changes.result.current.guestComments).toHaveLength(1))
+      host.pass(GUEST_HOLD_MS)
+      await sent(host)
+      await waitFor(() => expect(server.sent).toHaveLength(2))
+      // The server is the authority: its next listing decides.
+      act(() => {
+        host.client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [] })
+      })
+      await waitFor(() => expect(host.changes.result.current.guestComments).toEqual([]))
+    })
   })
 
   it('keeps a guest comment edited while the send was in flight', async () => {

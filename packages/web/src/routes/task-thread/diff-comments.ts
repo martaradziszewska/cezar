@@ -62,6 +62,8 @@ export interface GuestReviewComment extends GuestComment {
   kind: 'guest'
   /** Shown for less than `GUEST_HOLD_MS`: a send now leaves it behind. */
   fresh?: boolean
+  /** A review carried it but the server could not be told: the agent has it, no send takes it again. */
+  sent?: boolean
 }
 
 /** A guest comment rides a review only after the owner has had this long to read it: the cache
@@ -596,16 +598,31 @@ interface CommentsStore {
   /** Per run: when each guest comment `id:revision` was first in a rendered list. Shared by every
    *  host, so switching tabs does not start a comment's hold again. */
   seen: Map<string, Map<string, number>>
+  /** Per run: guest comments `id:revision` a review carried whose mark never landed. The agent
+   *  has them, the server still lists them: no send from this window carries them again. */
+  sent: Map<string, Set<string>>
 }
 const stores = new WeakMap<object, CommentsStore>()
 function storeFor(client: object): CommentsStore {
   let store = stores.get(client)
   if (!store) {
-    store = { lists: new Map(), listeners: new Map(), chains: new Map(), removed: new Map(), base: new Map(), pending: new Map(), seen: new Map() }
+    store = {
+      lists: new Map(),
+      listeners: new Map(),
+      chains: new Map(),
+      removed: new Map(),
+      base: new Map(),
+      pending: new Map(),
+      seen: new Map(),
+      sent: new Map(),
+    }
     stores.set(client, store)
   }
   return store
 }
+
+/** How long after a failed mark the one retry goes out. */
+const MARK_RETRY_MS = 1_000
 
 /** An edit is a new comment to the owner's eyes: it gets its own clock. */
 function guestKey(comment: { id: string; revision: number }): string {
@@ -620,7 +637,7 @@ function asGuestComments(listing: GuestCommentsResponse | undefined): GuestRevie
   return comments.length === 0 ? NO_GUEST_COMMENTS : sortGuestComments(comments.map((c) => ({ ...c, kind: 'guest' as const })))
 }
 
-export function useDiffComments(runId: string, options: { now?: () => number } = {}): DiffComments {
+export function useDiffComments(runId: string, options: { now?: () => number; markRetryMs?: number } = {}): DiffComments {
   const queryClient = useQueryClient()
   const store = storeFor(queryClient)
   const drafts = useRunDrafts(runId === '' ? undefined : runId)
@@ -628,22 +645,27 @@ export function useDiffComments(runId: string, options: { now?: () => number } =
   // server restarted) must take the chips with it (spec 2026-11-26-preview-share-link § Storage).
   const guestListing = useGuestComments(runId === '' ? undefined : runId).data
   const listedGuests = useMemo(() => asGuestComments(guestListing), [guestListing])
-  const now = useRef(options.now ?? Date.now)
-  now.current = options.now ?? Date.now
+  const clock = useRef(options.now ?? Date.now)
+  clock.current = options.now ?? Date.now
   // The time `fresh` was last judged at; a timer moves it on when the next hold ends.
-  const [judgedAt, setJudgedAt] = useState(() => now.current())
+  const [judgedAt, setJudgedAt] = useState(() => clock.current())
+  // Bumped when a mark fails for good, so the chip shows `sent` without waiting for a listing.
+  const [marks, setMarks] = useState(0)
+  const markRetryMs = options.markRetryMs ?? MARK_RETRY_MS
   // After the render that showed them: only a comment that was on screen starts its hold.
   useEffect(() => {
     if (runId === '' || guestListing === undefined) return
     const seen = store.seen.get(runId) ?? new Map<string, number>()
     store.seen.set(runId, seen)
-    const at = now.current()
+    const at = clock.current()
     const listed = new Set(listedGuests.map(guestKey))
     for (const key of [...seen.keys()]) if (!listed.has(key)) seen.delete(key)
     for (const key of listed) if (!seen.has(key)) seen.set(key, at)
+    const sent = store.sent.get(runId)
+    for (const key of [...(sent ?? [])]) if (!listed.has(key)) sent?.delete(key)
     const left = [...seen.values()].map((first) => first + GUEST_HOLD_MS - at).filter((ms) => ms > 0)
     if (left.length === 0) return
-    const timer = setTimeout(() => setJudgedAt(now.current()), Math.min(...left))
+    const timer = setTimeout(() => setJudgedAt(clock.current()), Math.min(...left))
     return () => clearTimeout(timer)
   }, [guestListing, judgedAt, listedGuests, runId, store])
   const guestComments = useMemo(() => {
@@ -652,8 +674,12 @@ export function useDiffComments(runId: string, options: { now?: () => number } =
       const first = seen?.get(guestKey(comment))
       return first === undefined || judgedAt - first < GUEST_HOLD_MS
     }
-    return listedGuests.some(isFresh) ? listedGuests.map((c) => (isFresh(c) ? { ...c, fresh: true } : c)) : listedGuests
-  }, [judgedAt, listedGuests, runId, store])
+    // Mutated in place, hence `marks` below.
+    const sent = store.sent.get(runId)
+    const wasSent = (comment: GuestReviewComment): boolean => sent?.has(guestKey(comment)) ?? false
+    if (!listedGuests.some((c) => wasSent(c) || isFresh(c))) return listedGuests
+    return listedGuests.map((c) => (wasSent(c) ? { ...c, sent: true } : isFresh(c) ? { ...c, fresh: true } : c))
+  }, [judgedAt, listedGuests, marks, runId, store])
   const storedText = drafts.data?.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
   const serverComments = useMemo(
     () => parseDiffComments(typeof storedText === 'string' ? storedText : ''),
@@ -862,8 +888,10 @@ export function useDiffComments(runId: string, options: { now?: () => number } =
       // Only what the owner has had `GUEST_HOLD_MS` to read: the cache can hold a comment no render
       // has shown yet, and one edited a moment ago is new words under an old chip (C1).
       const seen = store.seen.get(runId)
-      const at = now.current()
-      const listed = currentGuests()
+      const at = clock.current()
+      // Not the ones an earlier review carried but could not mark: the agent has those already.
+      const alreadySent = store.sent.get(runId)
+      const listed = currentGuests().filter((c) => !alreadySent?.has(guestKey(c)))
       // Captured WITH their revisions: one a guest edits mid-send stays, unsent (spec § Mechanism 10).
       const guests = listed.filter((c) => {
         const first = seen?.get(guestKey(c))
@@ -875,16 +903,24 @@ export function useDiffComments(runId: string, options: { now?: () => number } =
         toast(unread === 1 ? '1 new guest comment was not sent — read it first' : `${unread} new guest comments were not sent — read them first`)
       }
       if (guests.length > 0) {
-        // The review is already sent: a failed mark is not the user's error, and must not resend.
-        // The chips then wait for the server's next listing, which is the authority.
-        markGuestCommentsSent(runId, guests.map(({ id, revision }) => ({ id, revision })))
+        const carried = guests.map(({ id, revision }) => ({ id, revision }))
+        const mark = () => markGuestCommentsSent(runId, carried)
+        // The review is already sent: a failed mark is not the user's error. One retry, then this
+        // window remembers what went, so a comment the server still lists is never sent twice.
+        void mark()
+          .catch(() => new Promise((resolve) => setTimeout(resolve, markRetryMs)).then(mark))
           .then(({ removed }) => {
             if (removed.length === 0) return
             queryClient.setQueryData<GuestCommentsResponse>(queryKeys.runs.guestComments(runId), (listing) =>
               listing ? { comments: listing.comments.filter((c) => !removed.includes(c.id)) } : listing,
             )
           })
-          .catch(() => {})
+          .catch(() => {
+            const sent = store.sent.get(runId) ?? new Set<string>()
+            for (const comment of carried) sent.add(guestKey(comment))
+            store.sent.set(runId, sent)
+            setMarks((count) => count + 1)
+          })
       }
       if (held.length > 0) {
         // Drop what was SENT, as it was sent: a comment added meanwhile, or edited after it was
@@ -898,7 +934,7 @@ export function useDiffComments(runId: string, options: { now?: () => number } =
       }
       return result
     },
-    [current, currentGuests, queryClient, runId, store, write],
+    [current, currentGuests, markRetryMs, queryClient, runId, store, write],
   )
 
   // Ready once the list has loaded ONCE: a later background refetch that fails (every send
