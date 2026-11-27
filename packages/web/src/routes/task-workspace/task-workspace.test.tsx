@@ -854,3 +854,36 @@ describe('the built-in Review layout', () => {
     expect(localStorage.getItem('cez:hidden-layouts')).toBeNull()
   })
 })
+
+describe('a guest comment chip in the Chat column (spec 2026-11-26-preview-share-link)', () => {
+  it('opens the Preview beside the chat, on the comment’s page', async () => {
+    const waiting: ApiRun = { ...RUN, status: 'waiting' }
+    const guest = {
+      id: 'g1',
+      revision: 1,
+      author: 'Ana',
+      createdAt: '2026-11-26T10:00:00.000Z',
+      url: 'http://localhost:5173/settings',
+      selector: 'main > button',
+      label: 'Save',
+      excerpt: '',
+      body: 'brand green',
+    }
+    stubFetch()
+    const base = vi.mocked(fetch)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = String(input)
+      if ((init.method ?? 'GET') === 'GET') {
+        if (path === `/api/v1/runs/${RUN.id}`) return jsonResponse(waiting)
+        if (path === '/api/v1/runs') return jsonResponse([waiting])
+        if (path === `/api/v1/runs/${RUN.id}/guest-comments`) return jsonResponse({ comments: [guest] })
+      }
+      return base(input, init)
+    }))
+    renderWorkspace()
+    await ready()
+    fireEvent.click(await screen.findByRole('button', { name: 'Comment from Ana on http://localhost:5173/settings element Save' }))
+    await waitFor(() => expect(columnViews()).toEqual(['session', 'browser']))
+    expect(document.querySelector('[data-view="browser"]')?.textContent).toContain('localhost:5173/settings')
+  })
+})

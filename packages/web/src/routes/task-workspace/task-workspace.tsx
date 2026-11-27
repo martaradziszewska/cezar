@@ -688,7 +688,14 @@ function WorkspaceView({
     (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => {
       switch (view) {
         case 'session':
-          return <ConversationColumn run={run} onMarkedUnread={onMarkedUnread} onOpenReference={openReference} />
+          return (
+            <ConversationColumn
+              run={run}
+              onMarkedUnread={onMarkedUnread}
+              onOpenReference={openReference}
+              onOpenInPreview={openInBrowser}
+            />
+          )
         case 'changes':
           // Keyed by run, like the standalone route, so its deferred diff can never hand one task's
           // files to the next. (Today the layouts' reload on a task change already remounts it.)
@@ -968,10 +975,12 @@ export function ConversationColumn({
   run,
   onMarkedUnread,
   onOpenReference,
+  onOpenInPreview,
 }: {
   run: ApiRun
   onMarkedUnread: (runId: string) => void
   onOpenReference?: (reference: ThreadReference) => void
+  onOpenInPreview?: (url: string) => void
 }) {
   const history = useRunHistory(run.id)
   const thread = useMemo(
@@ -1018,6 +1027,7 @@ export function ConversationColumn({
         history={history}
         onMarkedUnread={onMarkedUnread}
         embedded
+        onOpenInPreview={onOpenInPreview}
       />
     </div>
   )

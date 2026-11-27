@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffCommentChips } from './diff-comment-chips'
@@ -118,6 +118,30 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove comment from Ana on element Save' }))
     expect(onRemove).toHaveBeenCalledWith('g1')
     expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
+  })
+
+  it('with the workspace callback, a click opens the Preview on the stored address and does not navigate', () => {
+    const onOpenInPreview = vi.fn()
+    const asset = { kind: 'asset' as const, id: 'e', asset: 'mock/recipe.html', selector: 'main > h2', label: '', excerpt: '', body: 'b' }
+    function Where() {
+      return <span data-testid="where">{useLocation().pathname}</span>
+    }
+    render(
+      <MemoryRouter initialEntries={['/tasks/r1']}>
+        <DiffCommentChips runId="r1" comments={[base, asset, guest]} onRemove={vi.fn()} onOpenInPreview={onOpenInPreview} />
+        <Where />
+      </MemoryRouter>,
+    )
+    const open = screen.getByRole('button', { name: 'Comment from Ana on http://localhost:5173/settings element Save' })
+    fireEvent.click(open)
+    expect(onOpenInPreview).toHaveBeenCalledTimes(1)
+    expect(onOpenInPreview).toHaveBeenCalledWith('http://localhost:5173/settings')
+    expect(screen.getByTestId('where').textContent).toBe('/tasks/r1')
+    // The diff and asset chips are the links they always were.
+    expect(screen.getAllByRole('link').map((l) => l.getAttribute('href'))).toEqual([
+      '/tasks/r1/changes?file=src%2Fapp%2Fpage.tsx&side=new&line=11&comment=a',
+      '/tasks/r1/assets/mock%2Frecipe.html',
+    ])
   })
 
   // F1: the owner can only gate what they can see — every field the agent reads must be on both

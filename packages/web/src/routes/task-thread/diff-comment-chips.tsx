@@ -25,6 +25,7 @@ export function DiffCommentChips({
   comments,
   onRemove,
   onOpen,
+  onOpenInPreview,
 }: {
   runId: string
   comments: readonly ReviewComment[]
@@ -33,6 +34,9 @@ export function DiffCommentChips({
    *  itself would do nothing, scrolls the diff to the comment's file instead. Absent, it links to
    *  the tab. An asset comment always links to its asset. */
   onOpen?: (comment: DiffComment) => void
+  /** Given (the task workspace), a GUEST comment's label is a button that opens the Preview on its
+   *  page. Absent, it links to the Preview tab. */
+  onOpenInPreview?: (url: string) => void
 }) {
   if (comments.length === 0) return null
   return (
@@ -41,7 +45,11 @@ export function DiffCommentChips({
     <TooltipProvider delayDuration={300}>
       {sortReviewComments(comments).map((comment) => {
         if (isAssetComment(comment)) return <AssetCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
-        if (isGuestComment(comment)) return <GuestCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
+        if (isGuestComment(comment)) {
+          return (
+            <GuestCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} onOpenInPreview={onOpenInPreview} />
+          )
+        }
         const name = comment.path.split('/').at(-1) ?? comment.path
         const sign = (side: 'old' | 'new') => (side === 'old' ? '−' : '+')
         const span =
@@ -176,10 +184,12 @@ function GuestCommentChip({
   runId,
   comment,
   onRemove,
+  onOpenInPreview,
 }: {
   runId: string
   comment: GuestReviewComment
   onRemove: (id: string) => void
+  onOpenInPreview?: (url: string) => void
 }) {
   // Stranger-typed text: folded to one line, and only ever rendered as text nodes.
   const author = oneLine(comment.author)
@@ -197,14 +207,26 @@ function GuestCommentChip({
           <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
             <MessageSquareIcon className="size-3.5" />
           </span>
-          <Link
-            to={previewTarget(runId)}
-            className="min-w-0 truncate px-2 font-medium hover:underline"
-            aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
-          >
-            {author} · {tail}
-            {label ? ` “${label}”` : null}
-          </Link>
+          {onOpenInPreview ? (
+            <button
+              type="button"
+              onClick={() => onOpenInPreview(comment.url)}
+              className="min-w-0 truncate px-2 font-medium hover:underline"
+              aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
+            >
+              {author} · {tail}
+              {label ? ` “${label}”` : null}
+            </button>
+          ) : (
+            <Link
+              to={previewTarget(runId)}
+              className="min-w-0 truncate px-2 font-medium hover:underline"
+              aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
+            >
+              {author} · {tail}
+              {label ? ` “${label}”` : null}
+            </Link>
+          )}
           <button
             type="button"
             aria-label={`Remove comment from ${author} on element ${element}`}

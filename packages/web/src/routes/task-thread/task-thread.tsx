@@ -197,6 +197,7 @@ export function ThreadView({
   history,
   onMarkedUnread,
   embedded = false,
+  onOpenInPreview,
 }: {
   run: ApiRun
   thread: ThreadState
@@ -208,6 +209,8 @@ export function ThreadView({
   onMarkedUnread?: (runId: string) => void
   /** A task-workspace column: the workspace draws the one run header above every column. */
   embedded?: boolean
+  /** The workspace's Preview opener, for guest comment chips (spec 2026-11-26-preview-share-link). */
+  onOpenInPreview?: (url: string) => void
 }) {
   const footer = threadFooter(run.status, run.error, isAwaitingAnswer(run), isIdleClosed(run), thread, { reason: run.cancelReason, by: run.cancelledBy })
   const markedUnread = useCallback(() => onMarkedUnread?.(run.id), [onMarkedUnread, run.id])
@@ -594,6 +597,7 @@ export function ThreadView({
           diffComments={diffComments}
           continueAction={continueAction}
           getMentionCandidates={() => threadFilePaths(thread)}
+          onOpenInPreview={onOpenInPreview}
         /> : <p className="px-1 text-xs text-muted-foreground">Resolve the worktree operation above before continuing this task.</p>}
         {/* The gauges and the usage chip, bottom-right under the composer: here rather than in
             the header so a folded header does not take them along. The chip's popover edits the
