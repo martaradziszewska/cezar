@@ -223,7 +223,7 @@ export function ShareControl({
             <CopyIcon aria-hidden="true" className="size-3.5" />
             Copy link
           </Button>
-          {/* The server refuses it while sharing is off (C5). */}
+          {/* The server refuses it while sharing is off: the capability gate (C4), a paired phone included (C11). */}
           {enabled ? (
             <Button type="button" variant="ghost" size="sm" disabled={pending.has('extend') || pending.has('stop')} onClick={extend}>
               <ClockPlusIcon aria-hidden="true" className="size-3.5" />

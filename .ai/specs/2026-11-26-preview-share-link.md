@@ -201,7 +201,9 @@ Comment mode off, the app behaves normally. The name is the one given on the wai
    posted as text, so the server never sees which comments it carried. It carries only guest
    comments that have been on the owner's screen for 5 seconds (§ Exposure). After a successful send the
    cockpit calls `POST /runs/:id/guest-comments/sent` with each carried comment's id and revision.
-   The server removes only those still at that revision, in one write. A comment a guest edited
+   The server removes only those still at that revision, in one write. A mark that fails is
+   tried once more; after that the cockpit window remembers what went, never carries those
+   comments again, and shows their chips as `sent`. A comment a guest edited
    while the send was in flight stays, unsent, which is what `submit` already does for the owner's
    own comments.
 
@@ -296,7 +298,8 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
   Preview tab on another origin shows the same "Sharing localhost:5173" control with Stop.
 - **Share state in the cockpit.** Read from `GET /runs/:id/preview-share` and, for the task-row
   badge and the app-shell indicator (C7), `GET /workspace/preview-shares`; both updated live. A
-  share that ended on its own says why in the toolbar ("Sharing stopped: cloudflared exited").
+  share that ended on its own says why in a toast ("Sharing stopped: cloudflared exited"), and
+  the toolbar goes back to **Share**.
 - **A tunnel that will not start.** `cloudflared` is installed but exits before printing an
   address. The toolbar shows its last line of output and **Retry**; no listener is left open.
 - **A join request.** Created when a visitor with a valid token gives a name. Ends by: Allow,
@@ -320,12 +323,15 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
 All shapes in `packages/contract/src/preview-share.ts`; routes chained into the runs family and mounted
 under both `/api/v1/…` and `/api/v1/p/:projectId/…`.
 
-- `POST /runs/:id/preview-share` `{ target, parentOrigin }` → `{ share }`. 409 `{ error }` when
-  off, hosted, the target is refused, the run already shares another target, four shares are
-  live, or no tunnel binary is found (the error carries the install command).
+- `POST /runs/:id/preview-share` `{ target, parentOrigin }` → `{ share }`. 400 `{ error }` when
+  the target is refused: not a local `http://` app, cezar itself, or not answering. 409
+  `{ error }` when off, hosted, the task is archived, the run already shares another target,
+  four shares are live, or no tunnel binary is found (the error carries the install command).
 - `GET /runs/:id/preview-share` → `{ share: Share | null }`. A share lists its guests: id, name,
   code, `waiting` or `allowed`, and when they asked.
 - `DELETE /runs/:id/preview-share`.
+- Every share route answers for its own project only: under another project's mount a run's
+  share reads as `{ share: null }` and is not stopped, extended or steered (404).
 - `POST /runs/:id/preview-share/extend` → `{ share }`: ends 8 hours from now, never earlier. 404 `{ error }`
   without a live share, 409 `{ error }` when off (C5).
 - `POST /runs/:id/preview-share/guests/:guestId` `{ decision: 'allow' | 'deny' }`;
