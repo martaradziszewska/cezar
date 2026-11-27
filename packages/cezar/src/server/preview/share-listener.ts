@@ -18,9 +18,10 @@ export interface Tunnel {
   onExit(listener: (reason: string) => void): void;
 }
 
-/** `start` rejects with a `TunnelError`. */
+/** `start` rejects with a `TunnelError`. `signal` aborts a start that has not answered yet: the
+ *  adapter must then leave no process behind. */
 export interface TunnelAdapter {
-  start(port: number): Promise<Tunnel>;
+  start(port: number, signal?: AbortSignal): Promise<Tunnel>;
 }
 
 export class TunnelError extends Error {
@@ -81,6 +82,11 @@ const GUEST_TAG = `<script src="${SHARE_PREFIX}/guest.js" data-cezar-design></sc
 const GONE = 'This link is no longer active.';
 const CEZAR_ITSELF = 'Sharing cannot be pointed at cezar itself';
 const STOPPED = 'Sharing was stopped';
+// A tunnel's edge caches static files whatever cookie asked for them, and a cached byte is served
+// without reaching the gate (spec 2026-11-26-preview-share-link § Anti-goals).
+const UNCACHEABLE = { 'cache-control': 'private, no-store', 'cdn-cache-control': 'no-store' } as const;
+/** What the app could send to outrank `UNCACHEABLE` or to date a copy. */
+const APP_CACHE_HEADERS = ['expires', 'cloudflare-cdn-cache-control', 'surrogate-control'] as const;
 
 const JOINS_PER_MINUTE = 10;
 const JOIN_WINDOW_MS = 60_000;
@@ -139,7 +145,8 @@ interface Listener {
 
 interface Pending {
   origin: string;
-  cancelled: boolean;
+  /** Aborted by Stop, by shutdown and by a start that failed: the adapter's cue to leave nothing behind. */
+  abort: AbortController;
   result: Promise<ShareStart>;
 }
 
@@ -151,15 +158,21 @@ function sameSecret(candidate: string, secret: string): boolean {
 }
 
 function plain(res: ServerResponse, status: number, body: string, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', ...headers }).end(body);
+  res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', ...UNCACHEABLE, ...headers }).end(body);
+}
+
+function uncacheable(headers: Record<string, string | string[]>): void {
+  for (const name of APP_CACHE_HEADERS) delete headers[name];
+  Object.assign(headers, UNCACHEABLE);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** A same-origin relative path or nothing: a browser reads `//`, `/\` and a dropped tab as another site. */
-function safeNext(next: string | null): string | null {
+/** A same-origin relative path or nothing: a browser reads `//`, `/\` and a dropped tab as another site.
+ *  The waiting page is directly addressable, so it applies this to its own `next` too. */
+export function safeNext(next: string | null): string | null {
   if (next === null || next.length > NEXT_MAX) return null;
   return /^\/(?![/\\])[^\u0000-\u001f\u007f]*$/.test(next) ? next : null;
 }
@@ -246,10 +259,11 @@ export class PreviewShares {
   /** Also cancels a start still waiting on its tunnel, so no tunnel arrives after a stop. */
   stop(runId: string, ended?: string): boolean {
     const pending = this.pending.get(runId);
-    if (pending !== undefined) pending.cancelled = true;
+    const starting = pending !== undefined && !pending.abort.signal.aborted;
+    pending?.abort.abort();
     const entry = this.entries.get(runId);
     if (entry !== undefined) this.end(entry, ended);
-    return entry !== undefined || pending !== undefined;
+    return entry !== undefined || starting;
   }
 
   decide(runId: string, guestId: string, decision: 'allow' | 'deny'): boolean {
@@ -276,7 +290,7 @@ export class PreviewShares {
   }
 
   closeAll(): void {
-    for (const pending of this.pending.values()) pending.cancelled = true;
+    for (const pending of this.pending.values()) pending.abort.abort();
     for (const entry of [...this.entries.values()]) this.end(entry);
   }
 
@@ -295,28 +309,49 @@ export class PreviewShares {
       if (live.upstream.origin === upstream.origin) return { ok: true, share: this.snapshot(live) };
       return { ok: false, status: 409, error: `Already sharing ${live.upstream.origin} — stop it first` };
     }
+    // A stopped start is still unwinding: it is not a share, and not the answer to a new request.
     const starting = this.pending.get(input.runId);
-    if (starting !== undefined) {
+    if (starting !== undefined && !starting.abort.signal.aborted) {
       if (starting.origin === upstream.origin) return starting.result;
       return { ok: false, status: 409, error: `Already sharing ${starting.origin} — stop it first` };
     }
-    if (this.entries.size + this.pending.size >= this.max) {
+    const shares = [...this.entries.values()].filter((entry) => this.settle(entry)).length;
+    const starts = [...this.pending.values()].filter((other) => !other.abort.signal.aborted).length;
+    if (shares + starts >= this.max) {
       return { ok: false, status: 409, error: `${this.max} share links are already live — stop one first` };
     }
 
     const { pathname, search } = new URL(input.target);
-    const pending: Pending = { origin: upstream.origin, cancelled: false, result: Promise.resolve({ ok: false, status: 409, error: STOPPED }) };
-    pending.result = this.open(input.runId, input.projectId, upstream, pathname + search, pending).finally(() => {
-      if (this.pending.get(input.runId) === pending) this.pending.delete(input.runId);
-    });
+    const pending: Pending = { origin: upstream.origin, abort: new AbortController(), result: Promise.resolve({ ok: false, status: 409, error: STOPPED }) };
+    pending.result = this.open(input.runId, input.projectId, upstream, pathname + search, pending)
+      .then(
+        (started) => {
+          if (!started.ok) pending.abort.abort();
+          return started;
+        },
+        (error: unknown) => {
+          pending.abort.abort();
+          throw error;
+        },
+      )
+      .finally(() => {
+        if (this.pending.get(input.runId) === pending) this.pending.delete(input.runId);
+      });
     this.pending.set(input.runId, pending);
     return pending.result;
   }
 
   private async open(runId: string, projectId: string, upstream: URL, path: string, pending: Pending): Promise<ShareStart> {
-    // Fail closed: a probe that cannot answer is not a "no".
-    if (await this.isCezar(upstream.origin).catch(() => true)) return { ok: false, status: 400, error: CEZAR_ITSELF };
-    if (pending.cancelled) return { ok: false, status: 409, error: STOPPED };
+    const stopped = (): boolean => pending.abort.signal.aborted;
+    // Fail closed: a probe that throws or rejects is not a "no".
+    let cezar = true;
+    try {
+      cezar = await this.isCezar(upstream.origin);
+    } catch {
+      cezar = true;
+    }
+    if (cezar) return { ok: false, status: 400, error: CEZAR_ITSELF };
+    if (stopped()) return { ok: false, status: 409, error: STOPPED };
 
     let listener: Listener;
     try {
@@ -324,20 +359,27 @@ export class PreviewShares {
     } catch (error) {
       return { ok: false, status: 409, error: `could not open a local port for Sharing: ${(error as Error).message}` };
     }
-    const close = (): void => {
+    /** Undoes a start that will not become a share; an adapter that throws must not keep the port open. */
+    const discard = (started?: Tunnel): void => {
+      try {
+        started?.stop();
+      } catch {
+        // The listener closes either way.
+      }
       listener.server.close();
       listener.server.closeAllConnections();
     };
-    if (pending.cancelled) {
-      close();
+    if (stopped()) {
+      discard();
       return { ok: false, status: 409, error: STOPPED };
     }
 
     let tunnel: Tunnel;
     try {
-      tunnel = await this.tunnel.start(listener.port);
+      tunnel = await this.tunnel.start(listener.port, pending.abort.signal);
     } catch (error) {
-      close();
+      discard();
+      if (stopped()) return { ok: false, status: 409, error: STOPPED };
       const known = error instanceof TunnelError ? error : null;
       return {
         ok: false,
@@ -353,15 +395,13 @@ export class PreviewShares {
     } catch {
       origin = null;
     }
-    if (origin === null || (origin.protocol !== 'https:' && origin.protocol !== 'http:')) {
-      tunnel.stop();
-      close();
-      return { ok: false, status: 409, error: 'The tunnel did not give an address', code: 'tunnel-failed' };
-    }
-    if (pending.cancelled) {
-      tunnel.stop();
-      close();
+    if (stopped()) {
+      discard(tunnel);
       return { ok: false, status: 409, error: STOPPED };
+    }
+    if (origin === null || (origin.protocol !== 'https:' && origin.protocol !== 'http:')) {
+      discard(tunnel);
+      return { ok: false, status: 409, error: 'The tunnel did not give an address', code: 'tunnel-failed' };
     }
 
     const startedAt = this.now();
@@ -385,6 +425,7 @@ export class PreviewShares {
         upstream,
         own: origin.origin,
         dropCookies: [SHARE_COOKIE],
+        rewriteAnswer: uncacheable,
         injectHtml: (html) => injectTag(html, GUEST_TAG),
         unreachable: 'The app is not running right now.',
       },
@@ -412,13 +453,29 @@ export class PreviewShares {
         sockets.add(socket);
         socket.on('close', () => sockets.delete(socket));
       });
+      // A throw in a listener is an uncaught exception in the cockpit; nothing is forwarded after one.
       server.on('request', (req, res) => {
-        if (slot.entry === null) plain(res, 403, 'forbidden');
-        else this.handle(slot.entry, req, res);
+        try {
+          // The default for every answer: the 502 page and the guest routes' included.
+          for (const [name, value] of Object.entries(UNCACHEABLE)) res.setHeader(name, value);
+          if (slot.entry === null) plain(res, 403, 'forbidden');
+          else this.handle(slot.entry, req, res);
+        } catch {
+          try {
+            if (res.headersSent) res.destroy();
+            else plain(res, 500, 'error');
+          } catch {
+            res.destroy();
+          }
+        }
       });
       server.on('upgrade', (req, socket, head) => {
-        if (slot.entry === null) socket.destroy();
-        else this.upgrade(slot.entry, req, socket, head);
+        try {
+          if (slot.entry === null) socket.destroy();
+          else this.upgrade(slot.entry, req, socket, head);
+        } catch {
+          socket.destroy();
+        }
       });
       server.once('error', reject);
       server.listen(0, '127.0.0.1', () => {
@@ -465,6 +522,8 @@ export class PreviewShares {
         try {
           handled = this.guestRoutes.handle(this.context(entry, guest, path), req, res);
         } catch {
+          // Half an answer cannot be finished by anyone: cut it instead of leaving it open.
+          if (res.headersSent) res.destroy();
           handled = res.headersSent;
         }
       }
@@ -476,7 +535,7 @@ export class PreviewShares {
       return;
     }
     if (guest.state !== 'allowed') {
-      res.writeHead(302, { location: WAIT_PATH, 'cache-control': 'no-store' }).end();
+      res.writeHead(302, { location: WAIT_PATH, ...UNCACHEABLE }).end();
       return;
     }
     // Only a browser already let in gets here, so this is not a guess at the token.
@@ -523,7 +582,7 @@ export class PreviewShares {
     const headers: Record<string, string> = {
       location: next === null ? WAIT_PATH : `${WAIT_PATH}?next=${encodeURIComponent(next)}`,
       'referrer-policy': 'no-referrer',
-      'cache-control': 'no-store',
+      ...UNCACHEABLE,
     };
     // A browser that already holds a cookie keeps it: a denied one must not become new by reloading.
     if (this.guestOf(entry, req) === null) {

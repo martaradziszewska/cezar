@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PreviewShares,
+  safeNext,
   TunnelError,
   type GuestRequest,
   type GuestRoutes,
@@ -89,21 +90,55 @@ class FakeTunnels implements TunnelAdapter {
   /** Held open to keep a start in flight. */
   gate: Promise<void> | null = null;
   origin: (port: number) => string = (port) => `http://127.0.0.1:${port}`;
+  /** The signal each start was given. */
+  signals: Array<AbortSignal | undefined> = [];
+  /** A start that answers only by rejecting once it is aborted, as a killed child would. */
+  untilAborted = false;
+  stopThrows = false;
 
-  async start(port: number): Promise<Tunnel> {
+  async start(port: number, signal?: AbortSignal): Promise<Tunnel> {
     this.started.push(port);
+    this.signals.push(signal);
+    if (this.untilAborted) {
+      await new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new TunnelError('cloudflared was killed', 'tunnel-failed')), { once: true });
+      });
+    }
     if (this.gate) await this.gate;
     if (this.fail) throw this.fail;
     return {
       origin: this.origin(port),
       stop: () => {
         this.stopped += 1;
+        if (this.stopThrows) throw new Error('stop failed');
       },
       onExit: (listener) => {
         this.exits.push(listener);
       },
     };
   }
+}
+
+function expectUncacheable(res: Answer): void {
+  expect(res.headers['cache-control']).toBe('private, no-store');
+  expect(res.headers['cdn-cache-control']).toBe('no-store');
+  expect(res.headers.expires).toBeUndefined();
+  expect(res.headers['cloudflare-cdn-cache-control']).toBeUndefined();
+  expect(res.headers['surrogate-control']).toBeUndefined();
+}
+
+/** `cut` when the answer was torn down before it ended. */
+function outcome(port: number, host: string, path: string, cookie: string, onData?: () => void): Promise<'cut' | 'ended'> {
+  return new Promise((resolve) => {
+    const req = request({ host: '127.0.0.1', port, path, headers: { host, cookie: `__cezar_share=${cookie}` } }, (res) => {
+      res.once('data', () => onData?.());
+      res.on('error', () => resolve('cut'));
+      res.on('end', () => resolve('ended'));
+      res.on('close', () => resolve('cut'));
+    });
+    req.on('error', () => resolve('cut'));
+    req.end();
+  });
 }
 
 const idOf = (cookie: string): string => createHash('sha256').update(cookie).digest('hex').slice(0, 16);
@@ -147,6 +182,11 @@ describe('the share listener', () => {
     handle(ctx, req, res) {
       guestCalls.push(ctx);
       if (ctx.path === '/__cezar_share__/unknown') return false;
+      if (ctx.path === '/__cezar_share__/half') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.write('half an answer');
+        throw new Error('boom');
+      }
       if (ctx.path === '/__cezar_share__/ask') {
         const name = new URL(req.url ?? '/', 'http://guest').searchParams.get('name') ?? '';
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ctx.ask(name)));
@@ -192,6 +232,19 @@ describe('the share listener', () => {
       }
       if (req.url === '/echo') {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(req.headers));
+        return;
+      }
+      if (req.url === '/assets/app.js') {
+        res
+          .writeHead(200, {
+            'content-type': 'application/javascript',
+            'cache-control': 'public, max-age=31536000, immutable',
+            'cloudflare-cdn-cache-control': 'max-age=600',
+            'surrogate-control': 'max-age=600',
+            expires: 'Thu, 26 Nov 2037 10:00:00 GMT',
+            etag: '"v1"',
+          })
+          .end('console.log("app")');
         return;
       }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<!doctype html><html><head><title>t</title></head><body>app</body></html>');
@@ -367,7 +420,125 @@ describe('the share listener', () => {
       tunnels.origin = () => 'not an origin';
       expect(await start()).toMatchObject({ ok: false, status: 409, code: 'tunnel-failed' });
       expect(tunnels.stopped).toBe(1);
+      expect(tunnels.signals[0]!.aborted).toBe(true);
       expect(await refuses(tunnels.started[0]!)).toBe(true);
+    });
+
+    it('closes the listener even when the adapter throws while it is being stopped', async () => {
+      tunnels.stopThrows = true;
+      tunnels.origin = () => 'not an origin';
+      expect(await start()).toMatchObject({ ok: false, status: 409, code: 'tunnel-failed' });
+      expect(await refuses(tunnels.started[0]!)).toBe(true);
+
+      tunnels.origin = (port) => `http://127.0.0.1:${port}`;
+      let release!: () => void;
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const stopped = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(2));
+      shares.stop('r1');
+      release();
+      expect(await stopped).toEqual({ ok: false, status: 409, error: 'Sharing was stopped' });
+      expect(await refuses(tunnels.started[1]!)).toBe(true);
+
+      tunnels.gate = null;
+      await open();
+      expect(shares.stop('r1')).toBe(true);
+      expect(await refuses(port)).toBe(true);
+      expect(tunnels.stopped).toBe(3);
+    });
+
+    it.each([
+      ['throws', (() => { throw new Error('boom'); }) as unknown as (origin: string) => Promise<boolean>],
+      ['rejects', (): Promise<boolean> => Promise.reject(new Error('boom'))],
+    ])('refuses the target when the cezar probe %s, as if it had said yes', async (_label, isCezar) => {
+      expect(await start({}, build({ isCezar }))).toEqual({ ok: false, status: 400, error: 'Sharing cannot be pointed at cezar itself' });
+      expect(tunnels.started).toHaveLength(0);
+    });
+
+    it('aborts a start that a stop or a shutdown interrupts, and never one that went live', async () => {
+      let release!: () => void;
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const stopped = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(1));
+      expect(tunnels.signals[0]!.aborted).toBe(false);
+      shares.stop('r1');
+      expect(tunnels.signals[0]!.aborted).toBe(true);
+      release();
+      await stopped;
+
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const shutDown = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(2));
+      shares.closeAll();
+      expect(tunnels.signals[1]!.aborted).toBe(true);
+      release();
+      await shutDown;
+
+      tunnels.gate = null;
+      await open();
+      expect(tunnels.signals[2]!.aborted).toBe(false);
+      shares.stop('r1');
+      expect(tunnels.signals[2]!.aborted).toBe(false);
+
+      tunnels.fail = new TunnelError('cloudflared is not installed', 'no-tunnel');
+      await start();
+      expect(tunnels.signals[3]!.aborted).toBe(true);
+    });
+
+    it('answers "stopped" when the adapter gives up on the abort, and leaves no listener', async () => {
+      tunnels.untilAborted = true;
+      const pending = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(1));
+      expect(shares.stop('r1')).toBe(true);
+      expect(await pending).toEqual({ ok: false, status: 409, error: 'Sharing was stopped' });
+      expect(await refuses(tunnels.started[0]!)).toBe(true);
+      expect(shares.stop('r1')).toBe(false);
+    });
+
+    it('starts a new share after a stop, instead of answering with the start that was stopped', async () => {
+      let release!: () => void;
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const first = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(1));
+      shares.stop('r1');
+      tunnels.gate = null;
+      const again = await start({ target: `${app}/again` });
+      expect(again.ok).toBe(true);
+      release();
+      expect(await first).toEqual({ ok: false, status: 409, error: 'Sharing was stopped' });
+      expect(shares.get('r1')).toEqual(again.ok ? again.share : null);
+      expect(tunnels.stopped).toBe(1);
+
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const other = start({ runId: 'r2' });
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(3));
+      shares.stop('r2');
+      tunnels.gate = null;
+      const elsewhere = await start({ runId: 'r2', target: `http://localhost:${appPort}` });
+      expect(elsewhere).toMatchObject({ ok: true, share: { target: `http://localhost:${appPort}` } });
+      release();
+      await other;
+    });
+
+    it('does not count a share that is over, or a start that was stopped, toward the four', async () => {
+      clock = Date.parse('2026-11-27T10:00:00Z');
+      for (const runId of ['r1', 'r2', 'r3', 'r4']) expect((await start({ runId })).ok).toBe(true);
+      clock += 8 * HOUR;
+      expect((await start({ runId: 'r5' })).ok).toBe(true);
+      expect(changes.filter((change) => change.ended === 'expired').map((change) => change.runId)).toEqual(['r1', 'r2', 'r3', 'r4']);
+      expect(shares.list().map((entry) => entry.share.runId)).toEqual(['r5']);
+
+      const single = build({ max: 1 });
+      let release!: () => void;
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const stopped = start({ runId: 'a' }, single);
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(6));
+      single.stop('a');
+      tunnels.gate = null;
+      expect((await start({ runId: 'b' }, single)).ok).toBe(true);
+      expect(await start({ runId: 'c' }, single)).toMatchObject({ ok: false, status: 409 });
+      release();
+      await stopped;
     });
 
     it('serves nothing while the tunnel is still starting', async () => {
@@ -375,7 +546,9 @@ describe('the share listener', () => {
       tunnels.gate = new Promise((resolve) => (release = resolve));
       const pending = start();
       await vi.waitFor(() => expect(tunnels.started).toHaveLength(1));
-      expect((await send(tunnels.started[0]!, `127.0.0.1:${tunnels.started[0]!}`, '/')).status).toBe(403);
+      const early = await send(tunnels.started[0]!, `127.0.0.1:${tunnels.started[0]!}`, '/');
+      expect(early.status).toBe(403);
+      expectUncacheable(early);
       expect(upstreamRequests).toHaveLength(0);
       release();
       expect((await pending).ok).toBe(true);
@@ -674,9 +847,119 @@ describe('the share listener', () => {
     });
   });
 
+  describe('a shared cache in front of the gate', () => {
+    beforeEach(async () => {
+      await open();
+    });
+
+    it('is told to keep nothing of the app, whatever the app asked for', async () => {
+      const allowed = visitor(await allowedGuest());
+      const asset = await allowed.get('/assets/app.js');
+      expect(asset.status).toBe(200);
+      expect(asset.body).toBe('console.log("app")');
+      expectUncacheable(asset);
+      expect(asset.headers.etag).toBe('"v1"');
+      const page = await allowed.get('/');
+      expect(page.body).toContain('/__cezar_share__/guest.js');
+      expectUncacheable(page);
+      expectUncacheable(await allowed.get('/echo'));
+    });
+
+    it('is told to keep nothing of the 502 page', async () => {
+      const allowed = visitor(await allowedGuest());
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      const down = await allowed.get('/assets/app.js');
+      expect(down.status).toBe(502);
+      expectUncacheable(down);
+    });
+
+    it('is told to keep nothing of any answer the listener gives itself', async () => {
+      const waiting = await waitingGuest();
+      const allowed = await allowedGuest('Piotr');
+      const answers: Array<[number, Answer]> = [
+        [404, await visitor().get('/assets/app.js')],
+        [403, await visitor(allowed).get('/', { host: 'evil.example' })],
+        [400, await visitor(allowed).get('http://127.0.0.1:1/x')],
+        [404, await visitor(allowed).get(`/assets/app.js?t=${token}`)],
+        [302, await visitor(waiting).get('/assets/app.js')],
+        [302, await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.9' } })],
+        [404, await send(port, host, `/__cezar_share__/join/${'0'.repeat(64)}`, { headers: { 'cf-connecting-ip': '203.0.113.9' } })],
+        [200, await visitor(waiting).get(`${WAIT}?next=%2F`)],
+        [404, await visitor(waiting).get('/__cezar_share__/unknown')],
+      ];
+      for (let attempt = 0; attempt < 10; attempt += 1) await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.10' } });
+      answers.push([429, await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.10' } })]);
+      for (const [status, answer] of answers) {
+        expect(answer.status).toBe(status);
+        expectUncacheable(answer);
+      }
+      expect(upstreamRequests).toHaveLength(0);
+    });
+  });
+
+  describe('a failure inside the listener', () => {
+    it('answers 500, forwards nothing and leaves the cockpit running', async () => {
+      let broken = false;
+      const fragile = build({
+        now: () => {
+          if (broken) throw new Error('clock');
+          return Date.now();
+        },
+      });
+      await open({}, fragile);
+      const cookie = await join();
+      await ask(cookie);
+      expect(fragile.decide('r1', idOf(cookie), 'allow')).toBe(true);
+      const live = await upgrade(port, host, '/hmr', cookie);
+      expect(live.opened).toBe(true);
+      live.socket.destroy();
+      const seen = upstreamRequests.length;
+
+      broken = true;
+      const failed = await visitor(cookie).get('/assets/app.js');
+      expect(failed.status).toBe(500);
+      expect(failed.body).toBe('error');
+      expectUncacheable(failed);
+      expect((await upgrade(port, host, '/hmr', cookie)).opened).toBe(false);
+      expect(upstreamRequests).toHaveLength(seen);
+
+      broken = false;
+      expect((await visitor(cookie).get('/assets/app.js')).status).toBe(200);
+    });
+  });
+
+  describe('safeNext', () => {
+    it.each(['/', '/settings?tab=1', '/a/b#c', '/__cezar_share__/wait'])('keeps the same-origin path %s', (next) => {
+      expect(safeNext(next)).toBe(next);
+    });
+
+    it.each([
+      ['nothing', null],
+      ['an empty string', ''],
+      ['another site', 'https://evil.example/x'],
+      ['a protocol-relative address', '//evil.example/x'],
+      ['a backslash a browser reads as a slash', '/\\evil.example/x'],
+      ['a tab a browser drops', '/\t/evil.example/x'],
+      ['a line break', '/a\nb'],
+      ['a relative path', 'settings'],
+      ['a javascript: address', 'javascript:alert(1)'],
+      ['more than 2048 characters', `/${'a'.repeat(2048)}`],
+    ])('drops %s', (_label, next) => {
+      expect(safeNext(next)).toBeNull();
+    });
+  });
+
   describe('paths under /__cezar_share__/', () => {
     beforeEach(async () => {
       await open();
+    });
+
+    it('cut an answer a guest route abandoned by throwing, instead of leaving it open', async () => {
+      const cookie = await join();
+      expect(await outcome(port, host, '/__cezar_share__/half', cookie)).toBe('cut');
+      expect(upstreamRequests).toHaveLength(0);
+      expect(await stateOf(cookie)).toBe('guest:/__cezar_share__/status:new');
     });
 
     it('go to the guest routes for any cookie-holder, with the public id and nothing secret', async () => {
