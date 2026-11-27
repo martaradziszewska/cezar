@@ -54,7 +54,7 @@ Task → Preview → **Share**
 
 ## When a link ends
 
-A link ends 8 hours after it starts, on **Stop sharing**, when the cockpit server stops, or when the task is archived or deleted or its worktree is reclaimed. **Extend 8 hours** moves the end to 8 hours from now and keeps the same link. Sharing again after a link ends gives a new address. Comments outlive the link: they stay in your review until you send them or delete them.
+A link ends 8 hours after it starts, on **Stop sharing**, when the cockpit server stops, when the `cloudflared` tunnel process exits, when the task's project leaves the workspace, or when the task is archived or deleted or its worktree is reclaimed. **Extend 8 hours** moves the end to 8 hours from now and keeps the same link. Sharing again after a link ends gives a new address. Comments outlive the link: they stay in your review until you send them or delete them.
 
 ## Limits
 
@@ -69,4 +69,5 @@ A link ends 8 hours after it starts, on **Stop sharing**, when the cockpit serve
 > - Sharing needs `cloudflared` on your `PATH` (`brew install cloudflared` on macOS). Without it, **Share** shows the install command and **Retry**. No Cloudflare account is needed.
 > - Traffic passes through Cloudflare, which terminates TLS. Anyone you let in can read whatever your dev server serves, including source files.
 > - Nothing listens and no process starts until you click **Create link**. `CEZ_PREVIEW_SHARE=0` turns sharing off.
-> - Sharing is unavailable in a hosted cockpit and from a paired phone.
+> - Sharing is unavailable in a hosted cockpit. A paired phone cannot start, extend or steer a share, but it can read the link and stop it.
+> - If cezar is killed hard (a crash, `kill -9`), the `cloudflared` process can keep running. The next time cezar starts, and the next time you share, it ends that leftover tunnel.
