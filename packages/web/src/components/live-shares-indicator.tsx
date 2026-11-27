@@ -24,6 +24,7 @@ export function LiveSharesIndicator() {
   const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set())
   // Synchronous guard: a second click can land before the disabled state renders.
   const inFlight = useRef(new Set<string>())
+  const [open, setOpen] = useState(false)
 
   if (shares.length === 0) return null
   const waiting = shares.reduce((sum, share) => sum + share.waiting, 0)
@@ -48,7 +49,7 @@ export function LiveSharesIndicator() {
   return (
     <div data-slot="live-shares" role="status" className="flex min-h-9 items-center gap-2 border-b border-border bg-success/10 px-4 text-sm text-foreground">
       <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-success" />
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button type="button" variant="ghost" size="sm" className="-ml-2 gap-1">
             <span data-slot="live-shares-label">{label}</span>
@@ -72,7 +73,10 @@ export function LiveSharesIndicator() {
                     </span>
                   </span>
                   <Button asChild variant="ghost" size="sm">
-                    <Link to={`/p/${encodeURIComponent(share.projectId)}${previewTarget(share.runId)}`}>Open</Link>
+                    {/* The bar outlives the navigation, so the list would stay open over the Preview. */}
+                    <Link to={`/p/${encodeURIComponent(share.projectId)}${previewTarget(share.runId)}`} onClick={() => setOpen(false)}>
+                      Open
+                    </Link>
                   </Button>
                   <Button type="button" variant="ghost" size="sm" disabled={stopping.has(key)} onClick={() => void stop(share)}>
                     <SquareIcon aria-hidden="true" className="size-3.5" />

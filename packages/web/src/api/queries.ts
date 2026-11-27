@@ -1568,6 +1568,12 @@ export function useRunArtifacts(id: string | undefined) {
   })
 }
 
+/** Two retries: one failed read must not hide a link that is live (spec 2026-11-26-preview-share-link
+ *  C7). Never for a 4xx, which is the server's considered answer. */
+function retryLiveLink(failureCount: number, error: unknown): boolean {
+  return failureCount < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500)
+}
+
 /** The task's Preview share. The `preview-share` frame replaces it; the refetch on reconnect and
  *  on a returning tab is what answers `{ share: null }` after a server restart. */
 export function usePreviewShare(runId: string | undefined) {
@@ -1578,7 +1584,7 @@ export function usePreviewShare(runId: string | undefined) {
     staleTime: Infinity,
     refetchOnReconnect: 'always',
     refetchOnWindowFocus: 'always',
-    retry: false,
+    retry: retryLiveLink,
   })
 }
 
@@ -1603,7 +1609,7 @@ export function useLiveShares() {
     staleTime: Infinity,
     refetchOnReconnect: 'always',
     refetchOnWindowFocus: 'always',
-    retry: false,
+    retry: retryLiveLink,
   })
 }
 

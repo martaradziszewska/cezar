@@ -102,6 +102,20 @@ describe('LiveSharesIndicator', () => {
     expect(opens.map((link) => link.getAttribute('href'))).toEqual(['/p/cezar/tasks/r1/preview', '/p/other/tasks/r2/preview'])
   })
 
+  it('closes the list when Open is clicked: the Preview it opens is not covered by it', async () => {
+    seed([listed(), listed({ projectId: 'other', runId: 'r2' })])
+    renderWith(<LiveSharesIndicator />)
+    fireEvent.click(screen.getByRole('button', { name: /live links/ }))
+    expect(screen.getByRole('list', { name: 'Live links' })).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('link', { name: 'Open' })[1]!)
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Live links' })).toBeNull())
+    // The bar itself stays: the links are still live.
+    expect(indicator()).not.toBeNull()
+    // And it opens again.
+    fireEvent.click(screen.getByRole('button', { name: /live links/ }))
+    expect(screen.getByRole('list', { name: 'Live links' })).toBeTruthy()
+  })
+
   it('Stop sharing stops that run’s share in its own project', async () => {
     seed([listed(), listed({ projectId: 'other', runId: 'r2' })])
     api.stopPreviewShare.mockResolvedValue({ share: null })
@@ -146,7 +160,8 @@ describe('TaskShareBadge', () => {
     cleanup()
 
     client = createQueryClient()
-    api.getLiveShares.mockRejectedValue(new ApiError(500, 'down'))
+    // A 4xx: the listing is not asked again, so this is the failed state at once.
+    api.getLiveShares.mockRejectedValue(new ApiError(403, 'forbidden'))
     renderWith(<TaskShareBadge runId="r1" projectId="cezar" />)
     await waitFor(() => expect(client.getQueryState(workspaceQueryKeys.liveShares)?.status).toBe('error'))
     expect(badge()).toBeNull()
