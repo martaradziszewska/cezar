@@ -1,8 +1,8 @@
-import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { connect, type Socket } from 'node:net';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import { isLoopbackHostHeader } from '../capabilities.ts';
+import { forwardRequest, spliceUpgrade, type ForwardOptions } from './forward.ts';
 import { PICKER_PATH, pickerScript } from './picker-script.ts';
 
 /**
@@ -32,14 +32,7 @@ import { PICKER_PATH, pickerScript } from './picker-script.ts';
  * asks again.
  */
 
-/** HTML is buffered whole to place the script tag. Past this it is passed through untouched —
- *  a page that large is not a dev server's document, and holding it would be the wrong trade. */
-const HTML_BUFFER_MAX = 4 * 1024 * 1024;
-
 const SCRIPT_TAG = `<script src="${PICKER_PATH}" data-cezar-design></script>`;
-
-/** Hop-by-hop headers: they describe one connection and must not be copied onto the next. */
-const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']);
 
 export type DesignProxyResult = { ok: true; origin: string } | { ok: false; reason: string };
 
@@ -87,26 +80,21 @@ function parseParentOrigin(raw: string): string | null {
   }
 }
 
-/** `[::1]` → `::1`: `URL.hostname` keeps the brackets, a socket address does not take them. */
-function socketHost(url: URL): string {
-  return url.hostname.replace(/^\[|\]$/g, '');
-}
-
-function portOf(url: URL): number {
-  return url.port === '' ? 80 : Number(url.port);
-}
-
-/** Where the script tag goes: as early as a parser allows, so it is in place before the app's
- *  own scripts can throw. */
-export function injectPicker(html: string): string {
+/** Where a script tag goes: as early as a parser allows, so it is in place before the app's
+ *  own scripts can throw. The share listener places its own tag here too. */
+export function injectTag(html: string, tag: string): string {
   for (const pattern of [/<head[^>]*>/i, /<html[^>]*>/i, /<!doctype[^>]*>/i]) {
     const match = pattern.exec(html);
     if (match) {
       const at = match.index + match[0].length;
-      return html.slice(0, at) + SCRIPT_TAG + html.slice(at);
+      return html.slice(0, at) + tag + html.slice(at);
     }
   }
-  return SCRIPT_TAG + html;
+  return tag + html;
+}
+
+export function injectPicker(html: string): string {
+  return injectTag(html, SCRIPT_TAG);
 }
 
 /**
@@ -264,22 +252,15 @@ export class DesignProxies {
     });
   }
 
-  /** The request's headers as the app should see them. */
-  private forwardHeaders(entry: Entry, req: IncomingMessage): Record<string, string | string[]> {
-    const own = `http://${req.headers.host}`;
-    const headers: Record<string, string | string[]> = {};
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (value === undefined || HOP_BY_HOP.has(name)) continue;
-      headers[name] = value;
-    }
-    headers.host = entry.upstream.host;
-    // Only a request from the proxy's OWN pages is presented as same-origin. A foreign origin is
-    // passed through untouched so the app's CORS and CSRF checks judge it as they always would.
-    if (typeof headers.origin === 'string' && headers.origin === own) headers.origin = entry.upstream.origin;
-    if (typeof headers.referer === 'string' && headers.referer.startsWith(`${own}/`)) {
-      headers.referer = entry.upstream.origin + headers.referer.slice(own.length);
-    }
-    return headers;
+  /** What the shared forwarding needs to mirror `entry` for this request. */
+  private forwardOptions(entry: Entry, req: IncomingMessage): ForwardOptions {
+    return {
+      upstream: entry.upstream,
+      own: `http://${req.headers.host}`,
+      rewriteAnswer: (headers) => allowFramingBy(headers, entry.parentOrigin),
+      injectHtml: injectPicker,
+      unreachable: `Design Mode could not reach ${entry.upstream.origin} — is the app still running?`,
+    };
   }
 
   private handle(entry: Entry, req: IncomingMessage, res: ServerResponse): void {
@@ -288,7 +269,6 @@ export class DesignProxies {
       return;
     }
     entry.lastUsed = Date.now();
-    const own = `http://${req.headers.host}`;
 
     if (req.method === 'GET' && (req.url ?? '').split('?')[0] === PICKER_PATH) {
       res
@@ -297,117 +277,26 @@ export class DesignProxies {
       return;
     }
 
-    const headers = this.forwardHeaders(entry, req);
-    // Uncompressed, so an HTML answer can be read and given its script tag. Loopback: the bytes
-    // saved by compression were never crossing a network.
-    headers['accept-encoding'] = 'identity';
-
-    const outgoing = httpRequest(
-      { host: socketHost(entry.upstream), port: portOf(entry.upstream), method: req.method, path: req.url, headers },
-      (incoming) => {
-        const answer: Record<string, string | string[]> = {};
-        for (const [name, value] of Object.entries(incoming.headers)) {
-          if (value === undefined || HOP_BY_HOP.has(name)) continue;
-          answer[name] = value;
-        }
-        allowFramingBy(answer, entry.parentOrigin);
-        // A redirect to the app's own origin stays inside the proxy; one that leaves it, leaves.
-        if (typeof answer.location === 'string' && answer.location.startsWith(entry.upstream.origin)) {
-          answer.location = own + answer.location.slice(entry.upstream.origin.length);
-        }
-        const status = incoming.statusCode ?? 502;
-        const type = String(incoming.headers['content-type'] ?? '');
-        const encoded = incoming.headers['content-encoding'];
-        const html = /^text\/html\b/i.test(type) && (encoded === undefined || encoded === 'identity') && req.method !== 'HEAD';
-        if (!html) {
-          res.writeHead(status, answer);
-          incoming.pipe(res);
-          return;
-        }
-
-        const chunks: Buffer[] = [];
-        let size = 0;
-        let passthrough = false;
-        incoming.on('data', (chunk: Buffer) => {
-          if (passthrough) {
-            res.write(chunk);
-            return;
-          }
-          chunks.push(chunk);
-          size += chunk.length;
-          if (size > HTML_BUFFER_MAX) {
-            passthrough = true;
-            res.writeHead(status, answer);
-            res.write(Buffer.concat(chunks));
-            chunks.length = 0;
-          }
-        });
-        incoming.on('end', () => {
-          if (passthrough) {
-            res.end();
-            return;
-          }
-          const body = Buffer.from(injectPicker(Buffer.concat(chunks).toString('utf8')), 'utf8');
-          delete answer['content-length'];
-          res.writeHead(status, { ...answer, 'content-length': String(body.length) });
-          res.end(body);
-        });
-        incoming.on('error', () => res.destroy());
-      },
-    );
-    outgoing.on('error', () => {
-      if (res.headersSent) {
-        res.destroy();
-        return;
-      }
-      res
-        .writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
-        .end(`Design Mode could not reach ${entry.upstream.origin} — is the app still running?`);
-    });
-    res.on('close', () => outgoing.destroy());
-    req.pipe(outgoing);
+    forwardRequest(req, res, this.forwardOptions(entry, req));
   }
 
-  /** WebSocket upgrades (a dev server's hot reload) are spliced through byte for byte. */
   private upgrade(entry: Entry, req: IncomingMessage, socket: Duplex, head: Buffer): void {
     if (!isLoopbackHostHeader(req.headers.host)) {
       socket.destroy();
       return;
     }
     entry.lastUsed = Date.now();
-    const headers = this.forwardHeaders(entry, req);
-    // `forwardHeaders` drops hop-by-hop headers, and an upgrade is made of exactly two of them.
-    headers.connection = 'Upgrade';
-    headers.upgrade = req.headers.upgrade ?? 'websocket';
-
-    const upstream: Socket = connect(portOf(entry.upstream), socketHost(entry.upstream));
-    const release = () => {
+    entry.sockets.add(socket);
+    spliceUpgrade(req, socket, head, this.forwardOptions(entry, req), () => {
       entry.sockets.delete(socket);
       entry.lastUsed = Date.now();
-      socket.destroy();
-      upstream.destroy();
-    };
-    entry.sockets.add(socket);
-    upstream.on('connect', () => {
-      const lines = [`${req.method} ${req.url} HTTP/1.1`];
-      for (const [name, value] of Object.entries(headers)) {
-        for (const single of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${single}`);
-      }
-      upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
-      if (head.length > 0) upstream.write(head);
-      socket.pipe(upstream);
-      upstream.pipe(socket);
     });
-    upstream.on('error', release);
-    upstream.on('close', release);
-    socket.on('error', release);
-    socket.on('close', release);
   }
 }
 
 /** Every loopback spelling of an origin's host, so `localhost:4321` and `127.0.0.1:4321` are
  *  recognised as the same listener when deciding what must not be mirrored. */
-function loopbackAliases(origin: string): string[] {
+export function loopbackAliases(origin: string): string[] {
   try {
     const url = new URL(origin);
     const port = url.port === '' ? (url.protocol === 'https:' ? '443' : '80') : url.port;
