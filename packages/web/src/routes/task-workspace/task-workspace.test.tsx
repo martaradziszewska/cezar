@@ -78,7 +78,7 @@ const health = (terminal: boolean): HealthResponse => ({
   capabilities: {
     localHandoff: true,
     terminal,
-    designMode: true,
+    designMode: true, previewShare: false,
     tokenMetrics: true,
     tokenUsageMetrics: true,
     costMetrics: true,

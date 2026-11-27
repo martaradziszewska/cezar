@@ -222,6 +222,18 @@ describe('resolveCapabilities — designMode (spec 2026-10-09-design-mode)', () 
   });
 });
 
+describe('resolveCapabilities — previewShare (spec 2026-11-26-preview-share-link)', () => {
+  it('offers previewShare on a local cockpit, and CEZ_PREVIEW_SHARE=0 turns it off', () => {
+    expect(resolveCapabilities({}, '127.0.0.1').previewShare).toBe(true);
+    expect(resolveCapabilities({ CEZ_PREVIEW_SHARE: '0' }, '127.0.0.1').previewShare).toBe(false);
+  });
+
+  it('never offers previewShare on a hosted cockpit', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, '127.0.0.1').previewShare).toBe(false);
+    expect(resolveCapabilities({}, '0.0.0.0').previewShare).toBe(false);
+  });
+});
+
 describe('resolveCapabilities — followups (#471)', () => {
   it('is OFF by default — the global inbox is opt-in', () => {
     expect(resolveCapabilities({}, undefined).followups).toBe(false);
@@ -243,6 +255,7 @@ describe('resolveCapabilities — followups (#471)', () => {
       localHandoff: false,
       terminal: false,
       designMode: false,
+      previewShare: false,
       followups: true,
       phonePairing: true,
       singleProject: false,
@@ -402,7 +415,7 @@ describe('webhook platform availability', () => {
         expect(capabilitiesSchema.strict().parse(capabilities)).toEqual(capabilities);
         expect(capabilities.webhooks).toBe(supported && flag === '1');
         expect(capabilities).toEqual({
-          localHandoff: true, terminal: true, designMode: true, followups: false, phonePairing: true, singleProject: false, automations: true, managers: true, managerSystemNotifications: MANAGER_NOTIFY,
+          localHandoff: true, terminal: true, designMode: true, previewShare: true, followups: false, phonePairing: true, singleProject: false, automations: true, managers: true, managerSystemNotifications: MANAGER_NOTIFY,
           dispatch: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true,
           webhooks: supported && flag === '1',
           ...(supported ? {} : { webhooksUnavailableReason: 'unsupported_platform' }),

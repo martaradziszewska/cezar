@@ -48,6 +48,11 @@ export const capabilitiesSchema = z.object({
    * injected, so it exists only on a LOCAL cockpit, and `CEZ_DESIGN_MODE=0` turns it off there too.
    */
   designMode: z.boolean(),
+  /**
+   * `true` means the task's Preview tab may offer Share, a public link to the task's app (spec
+   * `.ai/specs/2026-11-26-preview-share-link.md`). Local cockpit only; `CEZ_PREVIEW_SHARE=0` turns it off.
+   */
+  previewShare: z.boolean(),
   followups: z.boolean(),
   /**
    * `true` means Settings offers Connect a phone: `CEZ_RELAY=0` is not set. The relay address is a

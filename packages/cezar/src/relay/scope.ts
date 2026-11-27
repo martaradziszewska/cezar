@@ -29,6 +29,7 @@ export function narrowForRelay(capabilities: Capabilities): Capabilities {
     localHandoff: false,
     terminal: false,
     designMode: false,
+    previewShare: false,
     managerSystemNotifications: false,
     phonePairing: false,
   };

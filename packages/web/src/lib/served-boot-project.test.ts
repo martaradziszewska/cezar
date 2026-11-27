@@ -16,7 +16,7 @@ const HEALTH: HealthResponse = {
   capabilities: {
     localHandoff: true,
     terminal: false,
-    designMode: false,
+    designMode: false, previewShare: false,
     tokenMetrics: true,
     tokenUsageMetrics: true,
     costMetrics: true,

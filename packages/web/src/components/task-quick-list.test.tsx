@@ -23,7 +23,7 @@ const HEALTH: HealthResponse = {
   capabilities: {
     localHandoff: true,
     terminal: false,
-    designMode: false,
+    designMode: false, previewShare: false,
     followups: true,
     phonePairing: false,
     singleProject: false,
