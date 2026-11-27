@@ -218,12 +218,12 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
       <MemoryRouter>
         <DiffCommentChips
           runId="r1"
-          comments={[{ ...guest, label: '', author: '<img src=x onerror=alert(1)>' }]}
+          comments={[{ ...guest, label: '', author: '<img src=x onerror=boom(1)>' }]}
           onRemove={vi.fn()}
         />
       </MemoryRouter>,
     )
-    expect(screen.getByText('<img src=x onerror=alert(1)> · button.btn-primary')).not.toBeNull()
+    expect(screen.getByText('<img src=x onerror=boom(1)> · button.btn-primary')).not.toBeNull()
     expect(document.querySelector('img')).toBeNull()
   })
 })
