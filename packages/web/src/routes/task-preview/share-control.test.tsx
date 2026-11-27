@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PreviewShare, PreviewShareGuest } from '@open-mercato/cezar-api-client'
-import { ShareError } from '@/api/client'
+import { ApiError, ShareError } from '@/api/client'
 import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
 
@@ -578,6 +578,42 @@ describe('ShareControl', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     expect(await screen.findByRole('button', { name: 'Create link' })).toBeTruthy()
     expect(screen.queryByText('Four shares are live already')).toBeNull()
+  })
+
+  describe('a failure the server explained is shown, never reported as an error', () => {
+    /** A start that fails with the popover closed, so the failure is the toast. */
+    async function startFailing(error: unknown) {
+      seed(null)
+      let fail: (error: unknown) => void = () => {}
+      api.startPreviewShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
+      renderControl()
+      fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByText(/Traffic passes through Cloudflare/)).toBeNull())
+      await act(async () => fail(error))
+    }
+
+    it.each([
+      ['a refused start (409)', new ShareError(409, 'Four shares are live already'), true],
+      ['a refused target (400)', new ShareError(400, 'The app at http://localhost:5173 is not answering. Start it, then share.'), true],
+      ['a missing tunnel binary (409)', new ShareError(409, 'Sharing needs cloudflared', { code: 'no-tunnel', install: 'brew install cloudflared' }), true],
+      ['a server that broke (500)', new ShareError(500, 'Internal Server Error'), false],
+      ['a request that never arrived', new ShareError(0, 'cannot reach the cezar server'), false],
+      ['anything that is not an answer', new Error('boom'), false],
+    ])('%s', async (_label, error, expected) => {
+      await startFailing(error)
+      expect(toast).toHaveBeenCalledWith((error as Error).message, { tone: 'danger', expected })
+    })
+
+    it('an Extend the server refused (404), as before', async () => {
+      seed(liveShare())
+      api.extendPreviewShare.mockRejectedValue(new ApiError(404, 'This task is not sharing'))
+      renderControl()
+      fireEvent.click(liveButton())
+      fireEvent.click(await screen.findByRole('button', { name: 'Extend 8 hours' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith('This task is not sharing', { tone: 'danger', expected: true }))
+    })
   })
 
   it('disables Create link when the tab leaves a local address with the popover open', async () => {

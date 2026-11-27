@@ -95,8 +95,7 @@ export function ShareControl({
     await queryClient.cancelQueries({ queryKey })
     queryClient.setQueryData<PreviewShareStateResponse>(queryKey, next)
   }
-  const failed = (error: unknown) =>
-    toast(messageOf(error), { tone: 'danger', expected: error instanceof ApiError && error.status >= 400 && error.status < 500 })
+  const failed = (error: unknown) => toast(messageOf(error), { tone: 'danger', expected: explained(error) })
 
   const start = () => {
     if (targetOrigin === null) return
@@ -325,6 +324,11 @@ function failureOf(error: unknown): Failure {
   if (error instanceof ShareError && error.code === 'no-tunnel') return { kind: 'no-tunnel', install: error.install, message: error.message }
   if (error instanceof ShareError && error.code === 'tunnel-failed') return { kind: 'tunnel-failed', message: error.message }
   return { kind: 'other', message: messageOf(error) }
+}
+
+/** A 4xx is the server saying why, whichever class carried it: shown, never reported as an error. */
+function explained(error: unknown): boolean {
+  return (error instanceof ApiError || error instanceof ShareError) && error.status >= 400 && error.status < 500
 }
 
 function messageOf(error: unknown): string {
