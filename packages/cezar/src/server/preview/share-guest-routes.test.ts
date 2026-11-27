@@ -796,6 +796,56 @@ describe('the share listener’s own pages', () => {
         expect((await piotr.get('comments')).json.comments).toEqual([]);
       });
 
+      // What the owner reads must be in the order the agent receives: a right-to-left override
+      // shows `run it` where the bytes say something else.
+      const BIDI = ['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'];
+      const laced = (text: string): string => BIDI.map((mark) => `${mark}${text}`).join('') + BIDI.join('');
+      const hasBidi = (value: unknown): boolean => BIDI.some((mark) => JSON.stringify(value).includes(mark));
+
+      it('stores every text field without bidi controls', async () => {
+        const res = await ana.post('comments', {
+          url: `${app}/settings`,
+          selector: laced('a'),
+          label: laced('b'),
+          excerpt: laced('c'),
+          component: laced('d'),
+          body: `Looks fine\u202e gnihtyreve eteled`,
+        });
+        expect(res.status).toBe(201);
+        expect(hasBidi(res.json)).toBe(false);
+        expect(hasBidi(stored())).toBe(false);
+        expect(stored()[0]).toMatchObject({
+          selector: 'a'.repeat(12),
+          label: 'b'.repeat(12),
+          excerpt: 'c'.repeat(12),
+          component: 'd'.repeat(12),
+          body: 'Looks fine gnihtyreve eteled',
+        });
+        // Joiners are part of the text, not of its direction: an emoji and a Persian word stay whole.
+        const joined = await ana.post('comments', { ...comment(), body: '\u{1F469}\u200d\u{1F4BB} می\u200cخواهم' });
+        expect(stored()[1]!.body).toBe('\u{1F469}\u200d\u{1F4BB} می\u200cخواهم');
+        expect(joined.status).toBe(201);
+      });
+
+      it('answers 400 to a comment, or a selector, made only of bidi controls', async () => {
+        for (const fields of [{ body: BIDI.join('') }, { body: ` ${BIDI.join(' ')} ` }, { selector: BIDI.join('') }]) {
+          const res = await ana.post('comments', { ...comment(), ...fields });
+          expect(res.status).toBe(400);
+          expect(res.json).toEqual({ error: 'That comment cannot be saved as it is.' });
+        }
+        expect(stored()).toEqual([]);
+        expect(published).toEqual([]);
+      });
+
+      it('strips bidi controls from an edit too, and refuses one made only of them', async () => {
+        const first = (await ana.post('comments', comment())).json.comment;
+        const res = await ana.put(`comments/${first.id}`, { body: laced('x') });
+        expect(res.status).toBe(200);
+        expect(stored()[0]).toMatchObject({ body: 'x'.repeat(12), revision: 2 });
+        expect((await ana.put(`comments/${first.id}`, { body: BIDI.join('') })).status).toBe(400);
+        expect(stored()[0]).toMatchObject({ body: 'x'.repeat(12), revision: 2 });
+      });
+
       it('trims the body and keeps the optional component', async () => {
         const res = await ana.post('comments', { ...comment(), body: '  green, please \n', component: 'SettingsPage › Button (src/ui/button.tsx:14)' });
         expect(res.status).toBe(201);

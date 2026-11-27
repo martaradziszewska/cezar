@@ -3,7 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { deleteGuestComment, getRunDrafts, markGuestCommentsSent, putRunDraft } from '@/api/client'
 import { queryKeys, useGuestComments, useRunDrafts } from '@/api/queries'
-import { DRAFT_TEXT_MAX, type GuestComment, type GuestCommentsResponse, type RunDraftsResponse } from '@open-mercato/cezar-api-client'
+import {
+  DRAFT_TEXT_MAX,
+  withoutBidiControls,
+  type GuestComment,
+  type GuestCommentsResponse,
+  type RunDraftsResponse,
+} from '@open-mercato/cezar-api-client'
 import { COMMENT_MAX, describeLines, type DiffLineComment, type DiffLineEnd, type DiffNewLineComment } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 
@@ -226,12 +232,31 @@ function guestWhere(comment: GuestComment): string {
   return `\`${guestLine(comment.url, '?')}\` (app preview) element \`${guestLine(comment.selector, '?')}\`${label ? ` — "${label}"` : ''} — from ${author}`
 }
 
-function formatGuestComment(comment: GuestReviewComment): string {
+/**
+ * A guest's comment with no bidi control in any field, so the owner reads the order the agent
+ * receives. The server strips them when it stores one; this is the cockpit's own pass.
+ */
+export function readableGuestComment<C extends GuestComment>(comment: C): C {
+  return {
+    ...comment,
+    author: withoutBidiControls(comment.author),
+    url: withoutBidiControls(comment.url),
+    selector: withoutBidiControls(comment.selector),
+    label: withoutBidiControls(comment.label),
+    excerpt: withoutBidiControls(comment.excerpt),
+    body: withoutBidiControls(comment.body),
+    ...(comment.component !== undefined ? { component: withoutBidiControls(comment.component) } : {}),
+  }
+}
+
+function formatGuestComment(stored: GuestReviewComment): string {
+  const comment = readableGuestComment(stored)
   const component = comment.component ? guestLine(comment.component, '') : ''
   const parts = [
     `- ${guestWhere(comment)}:`,
     ...(component ? [indent(`component: ${component}`)] : []),
-    indent(fence(comment.excerpt, 'html')),
+    // Like the body: a `\r` or U+2028 in the markup must not start a line outside the item.
+    indent(fence(guestLines(comment.excerpt), 'html')),
     indent(guestLines(comment.body)),
   ]
   return parts.join('\n\n')

@@ -8,6 +8,7 @@ import {
   isAssetComment,
   isGuestComment,
   linesLabel,
+  readableGuestComment,
   sortReviewComments,
   type AssetComment,
   type DiffComment,
@@ -183,7 +184,7 @@ function AssetCommentChip({
  *  No edit: they are someone else's words (spec 2026-11-26-preview-share-link, C6). */
 function GuestCommentChip({
   runId,
-  comment,
+  comment: stored,
   onRemove,
   onOpenInPreview,
 }: {
@@ -192,6 +193,8 @@ function GuestCommentChip({
   onRemove: (id: string) => void
   onOpenInPreview?: (url: string) => void
 }) {
+  // Shown as it will be sent: a bidi control would put another order on screen than in the message.
+  const comment = readableGuestComment(stored)
   // Stranger-typed text: folded to one line, and only ever rendered as text nodes.
   const author = oneLine(comment.author)
   const label = oneLine(comment.label)

@@ -257,6 +257,30 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     expect(tooltip.querySelector('[data-slot="guest-comment-excerpt"]')?.tagName).toBe('PRE')
   })
 
+  it('shows no bidi control on the chip or in its tooltip: the owner reads the order the agent gets', async () => {
+    const BIDI = [0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069].map((code) => String.fromCodePoint(code))
+    const laced = (text: string) => BIDI.map((mark) => `${mark}${text}`).join('') + BIDI.join('')
+    const tooltip = await tooltipText({
+      ...MARKED,
+      author: laced('A'),
+      url: `http://localhost:5173/${laced('u')}`,
+      selector: `main > ${laced('s')}`,
+      label: laced('l'),
+      component: laced('c'),
+      excerpt: laced('e'),
+      body: laced('b'),
+    })
+    const chip = document.querySelector('[data-slot="diff-comment-chip"]')!
+    for (const mark of BIDI) {
+      expect(tooltip.textContent).not.toContain(mark)
+      expect(chip.textContent).not.toContain(mark)
+      expect(chip.innerHTML).not.toContain(mark)
+    }
+    expect(tooltip.textContent).toContain('b'.repeat(12))
+    expect(tooltip.textContent).toContain('e'.repeat(12))
+    expect(chip.textContent).toContain(`${'A'.repeat(12)} · ${'s'.repeat(12)} “${'l'.repeat(12)}”`)
+  })
+
   it('every field the formatter sends is on the tooltip and on the card, and no other', async () => {
     const sentFields = marked(formatDiffComments([MARKED]))
     expect(sentFields).toEqual(['author', 'body', 'component', 'excerpt', 'label', 'selector', 'url'])

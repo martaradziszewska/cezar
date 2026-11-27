@@ -53,6 +53,14 @@ function costOf(text: string, costly: RegExp): number {
   return text.replace(costly, '').length + matches * GUEST_COMMENT_LINE_COST;
 }
 
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/** Bidi controls show the owner one order and hand the agent another, so guest text never keeps
+ *  them. The joiners (U+200C, U+200D) are letters' own and stay. */
+export function withoutBidiControls(text: string): string {
+  return text.replace(BIDI_CONTROLS, '');
+}
+
 /** What a guest posts. Every string is capped: it comes from a page the cockpit does not control. */
 export const guestCommentInputSchema = z.object({
   url: z.string().min(1).max(GUEST_URL_MAX),

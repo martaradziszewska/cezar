@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { GUEST_NAME_MAX, GUEST_URL_MAX, guestCommentInputSchema } from '@open-mercato/cezar-contract';
+import { GUEST_NAME_MAX, GUEST_URL_MAX, guestCommentInputSchema, withoutBidiControls, type GuestCommentInput } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
 
 import { addGuestComment, deleteGuestComment, readGuestComments, toGuestComment, updateGuestComment } from '../../runs/guest-comments.ts';
@@ -79,6 +79,19 @@ function pageAddress(sent: string, upstreamOrigin: string): string | null {
   if (url.protocol !== 'http:' || url.username !== '' || url.password !== '' || url.origin !== upstreamOrigin) return null;
   // Spelled out it can be longer than what was sent, and one entry over the cap unreads the whole list.
   return url.href.length <= GUEST_URL_MAX ? url.href : null;
+}
+
+/** Every text field of a comment without bidi controls (spec 2026-11-26-preview-share-link § Exposure):
+ *  the owner must read the order the agent will receive. */
+function readable(input: GuestCommentInput): GuestCommentInput {
+  return {
+    url: input.url,
+    selector: withoutBidiControls(input.selector),
+    label: withoutBidiControls(input.label),
+    excerpt: withoutBidiControls(input.excerpt),
+    body: withoutBidiControls(input.body),
+    ...(input.component !== undefined ? { component: withoutBidiControls(input.component) } : {}),
+  };
 }
 
 interface BodyLimits {
@@ -200,11 +213,13 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
       // Unknown keys are dropped: author, guest, id and revision are the server's to set.
       const parsed = guestCommentInputSchema.safeParse(value);
       const url = parsed.success ? pageAddress(parsed.data.url, ctx.upstreamOrigin) : null;
-      if (!parsed.success || url === null) {
+      // Stripped once, here, so every reader gets the stored order; what is left must still be a comment.
+      const text = parsed.success ? guestCommentInputSchema.safeParse(readable(parsed.data)) : parsed;
+      if (!text.success || url === null) {
         json(res, 400, { error: INVALID });
         return;
       }
-      const saved = addGuestComment(dir, ctx.runId, { ...parsed.data, url, author, guestId: guest.id }, () => new Date(now()));
+      const saved = addGuestComment(dir, ctx.runId, { ...text.data, url, author, guestId: guest.id }, () => new Date(now()));
       if (saved.ok) {
         announce(ctx);
         json(res, 201, { comment: toGuestComment(saved.comment) });
@@ -219,7 +234,8 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
 
   function edit(ctx: GuestRequest, guest: Guest, id: string, dir: string, req: IncomingMessage, res: ServerResponse): void {
     withBody(req, res, { max: BODY_MAX, timeoutMs }, (value) => {
-      const parsed = editSchema.safeParse(value);
+      const sent = editSchema.safeParse(value);
+      const parsed = sent.success ? editSchema.safeParse({ body: withoutBidiControls(sent.data.body) }) : sent;
       if (!parsed.success) {
         json(res, 400, { error: INVALID });
         return;
