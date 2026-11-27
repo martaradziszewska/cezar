@@ -2,6 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   ApiError,
+  ShareError,
+  decidePreviewShareGuest,
+  deleteGuestComment,
+  getGuestComments,
+  getLiveShares,
+  getPreviewShare,
+  markGuestCommentsSent,
+  removePreviewShareGuest,
+  startPreviewShare,
+  stopPreviewShare,
   archiveFinished,
   archiveRun,
   cancelRun,
@@ -890,6 +900,69 @@ describe('whether cezar still answers plain requests', () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Load failed'))
     await expect(getHealth()).rejects.toBeInstanceOf(ApiError)
     expect(connectionStatus.answering()).toBe(false)
+  })
+})
+
+describe('startPreviewShare (spec 2026-11-26-preview-share-link)', () => {
+  const input = { target: 'http://127.0.0.1:5173', parentOrigin: 'http://127.0.0.1:4321' }
+
+  it('posts the target and returns the share', async () => {
+    const share = { runId: 'r 1', target: input.target, url: 'https://t.example/s/x', startedAt: 'a', expiresAt: 'b', guests: [] }
+    reply({ share })
+    await expect(startPreviewShare('r 1', input)).resolves.toEqual({ share })
+    expect(lastCall().path).toContain('/runs/r%201/preview-share')
+    expect(lastCall().method).toBe('POST')
+    expect(lastCall().body).toEqual(input)
+  })
+
+  it('throws a ShareError carrying status, code and install from the 409 body', async () => {
+    reply({ error: 'cloudflared is not installed', code: 'no-tunnel', install: 'brew install cloudflared' }, { status: 409 })
+    const failure = await startPreviewShare('r1', input).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ShareError)
+    expect(failure).toMatchObject({
+      message: 'cloudflared is not installed',
+      status: 409,
+      code: 'no-tunnel',
+      install: 'brew install cloudflared',
+    })
+  })
+
+  it('falls back to the usual text when the body is not JSON', async () => {
+    fetchMock.mockResolvedValue(new Response('<html>bad gateway</html>', { status: 502, statusText: 'Bad Gateway' }))
+    const failure = await startPreviewShare('r1', input).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ShareError)
+    expect(failure).toMatchObject({ message: '502 Bad Gateway', status: 502 })
+    expect((failure as ShareError).code).toBeUndefined()
+  })
+})
+
+describe('preview share calls', () => {
+  it('reach the nine routes with the right verbs and paths', async () => {
+    const reply = (body: unknown): void => {
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
+    }
+    reply({ share: null })
+    await getPreviewShare('r1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['GET', '/runs/r1/preview-share'])
+    await stopPreviewShare('r1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/preview-share'])
+    await decidePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa', 'allow')
+    expect([lastCall().method, lastCall().body]).toEqual(['POST', { decision: 'allow' }])
+    expect(lastCall().path).toContain('/runs/r1/preview-share/guests/aaaaaaaaaaaaaaaa')
+    await removePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa')
+    expect(lastCall().method).toBe('DELETE')
+    reply({ comments: [] })
+    await getGuestComments('r1')
+    expect(lastCall().path).toContain('/runs/r1/guest-comments')
+    await deleteGuestComment('r1', 'c1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/guest-comments/c1'])
+    reply({ removed: ['c1'] })
+    await markGuestCommentsSent('r1', [{ id: 'c1', revision: 2 }])
+    expect(lastCall().body).toEqual({ comments: [{ id: 'c1', revision: 2 }] })
+    expect(lastCall().path).toContain('/runs/r1/guest-comments/sent')
+    reply({ shares: [] })
+    await getLiveShares()
+    expect(lastCall().path).toContain('/api/v1/workspace/preview-shares')
   })
 })
 

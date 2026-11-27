@@ -62,6 +62,9 @@ import {
   getRunDiff,
   getRunDrafts,
   getRunArtifacts,
+  getPreviewShare,
+  getGuestComments,
+  getLiveShares,
   getImpactForSubject,
   getProjectAssets,
   impactSubjectKey,
@@ -229,6 +232,9 @@ export const queryKeys = {
     file: (id: string, path: string) => [queryScope(), 'runs', 'files', id, path] as const,
     /** Under `runs`, so the reconnect reconcile (`runs.all`) refetches it too. */
     artifacts: (id: string) => [queryScope(), 'runs', 'artifacts', id] as const,
+    /** Preview Share state; the link token lives in its DATA, never in the key. */
+    previewShare: (id: string) => [queryScope(), 'runs', 'preview-share', id] as const,
+    guestComments: (id: string) => [queryScope(), 'runs', 'guest-comments', id] as const,
     /** The newest impact run per subject (`pr:<n>` / `spec:<path>`), under `runs` for the same
      *  reconnect reconcile; the `artifacts` SSE frame patches it in place. */
     impactSubject: (subjectKey: string) => [queryScope(), 'runs', 'impact-subject', subjectKey] as const,
@@ -465,6 +471,8 @@ export function useTrackerItem(association: TrackerAssociation | null | undefine
  * scope changes → key changes → data gone → provider unmounts).
  */
 export const workspaceQueryKeys = {
+  /** Live Preview shares across projects (spec 2026-11-26-preview-share-link). */
+  liveShares: ['workspace', 'live-shares'] as const,
   dashboard: ['workspace', 'dashboard'] as const,
   models: (runner: string) => ['workspace', 'models', runner] as const,
   providerStatus: ['workspace', 'providers', 'status'] as const,
@@ -1556,6 +1564,45 @@ export function useRunArtifacts(id: string | undefined) {
     queryKey: queryKeys.runs.artifacts(id ?? ''),
     queryFn: ({ signal }) => getRunArtifacts(id as string, { signal }),
     enabled: Boolean(id),
+    retry: false,
+  })
+}
+
+/** The task's Preview share. The `preview-share` frame replaces it; the refetch on reconnect and
+ *  on a returning tab is what answers `{ share: null }` after a server restart. */
+export function usePreviewShare(runId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.runs.previewShare(runId ?? ''),
+    queryFn: ({ signal }) => getPreviewShare(runId as string, { signal }),
+    enabled: Boolean(runId),
+    staleTime: Infinity,
+    refetchOnReconnect: 'always',
+    refetchOnWindowFocus: 'always',
+    retry: false,
+  })
+}
+
+/** Comments guests left on the shared Preview; same live rules as `usePreviewShare`. */
+export function useGuestComments(runId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.runs.guestComments(runId ?? ''),
+    queryFn: ({ signal }) => getGuestComments(runId as string, { signal }),
+    enabled: Boolean(runId),
+    staleTime: Infinity,
+    refetchOnReconnect: 'always',
+    refetchOnWindowFocus: 'always',
+    retry: false,
+  })
+}
+
+/** Live shares across every project; frames invalidate it, so no polling. */
+export function useLiveShares() {
+  return useQuery({
+    queryKey: workspaceQueryKeys.liveShares,
+    queryFn: ({ signal }) => getLiveShares({ signal }),
+    staleTime: Infinity,
+    refetchOnReconnect: 'always',
+    refetchOnWindowFocus: 'always',
     retry: false,
   })
 }

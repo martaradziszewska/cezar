@@ -2,15 +2,20 @@ import { worktreeLifecycleInvalidationSchema } from '@open-mercato/cezar-api-cli
 import { lifecycleQueryKeys } from './worktree-lifecycle'
 import { applyAccountReconnectedEvent, applyAgentLoginEvent } from './agent-login'
 import { applyManagerEvent, managerKeys, MANAGER_EVENT_NAMES, refreshManagerApprovalLists, refreshManagerChats } from './managers'
+import { toast } from '@/components/ui/toaster'
 import { dashboardProjectTransition, dashboardTransition } from './dashboard-truth'
 import { dashboardWorkspaceUsageSchema } from '@open-mercato/cezar-api-client'
 import { dashboardLive } from './dashboard-live'
 import { connectionStatus, nativeConnectionStatus } from './connection-status'
 import { reconnectTopics } from './ws'
 import {
+  guestCommentsEventSchema,
+  previewShareEventSchema,
   runArtifactsEventSchema,
   trackerChangedEventSchema,
   type ArtifactsBySubjectResponse,
+  type GuestCommentsResponse,
+  type PreviewShareStateResponse,
   type RunArtifactsResponse,
 } from '@open-mercato/cezar-api-client'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -483,6 +488,8 @@ async function reconcile(queryClient: QueryClient): Promise<void> {
     queryKeys.worktrees,
     lifecycleQueryKeys.all(),
     workspaceQueryKeys.providerStatus,
+    // Shares started or ended while the stream was down (run-scoped keys ride `runs.all`).
+    workspaceQueryKeys.liveShares,
     // Host totals (spec 2026-09-20-host-resource-telemetry): a remote cockpit's only refresh is
     // this reconcile, so the Machine card must be in the list — the local cockpit ignores it
     // because its frames arrive over the `host` topic.
@@ -898,6 +905,41 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
         )
         // The project Assets page's rows carry run facts the frame does not, so it refetches.
         void queryClient.invalidateQueries({ queryKey: queryKeys.runs.projectAssets })
+      })
+
+      // Preview Share (spec 2026-11-26-preview-share-link): the frame is the WHOLE state, so it
+      // replaces the cache. The live-links indicator is workspace-wide, so another project's
+      // frame still refreshes it and still announces an end.
+      current.addEventListener('preview-share', (event) => {
+        if (disposed || source !== current) return
+        lastFrameAt = Date.now()
+        let payload: unknown
+        try { payload = JSON.parse((event as MessageEvent<string>).data) } catch { return }
+        const parsed = previewShareEventSchema.safeParse(payload)
+        if (!parsed.success) return
+        const { project, runId, share, ended } = parsed.data
+        void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.liveShares })
+        if (ended !== undefined) toast(`Sharing stopped: ${ended}`)
+        if (project !== undefined && project !== activeProject(queryClient)) {
+          inactiveProjectRefresher.onEvent(project)
+          return
+        }
+        queryClient.setQueryData<PreviewShareStateResponse>(queryKeys.runs.previewShare(runId), { share })
+      })
+
+      current.addEventListener('guest-comments', (event) => {
+        if (disposed || source !== current) return
+        lastFrameAt = Date.now()
+        let payload: unknown
+        try { payload = JSON.parse((event as MessageEvent<string>).data) } catch { return }
+        const parsed = guestCommentsEventSchema.safeParse(payload)
+        if (!parsed.success) return
+        const { project, runId, comments } = parsed.data
+        if (project !== undefined && project !== activeProject(queryClient)) {
+          inactiveProjectRefresher.onEvent(project)
+          return
+        }
+        queryClient.setQueryData<GuestCommentsResponse>(queryKeys.runs.guestComments(runId), { comments })
       })
 
       for (const name of WORKSPACE_EVENT_NAMES) {
