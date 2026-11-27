@@ -69,7 +69,7 @@ export function parseDesignTarget(raw: string): { ok: true; url: URL } | { ok: f
   return { ok: true, url: new URL(url.origin) };
 }
 
-function parseParentOrigin(raw: string): string | null {
+export function parseParentOrigin(raw: string): string | null {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
