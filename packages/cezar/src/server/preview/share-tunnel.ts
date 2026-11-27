@@ -23,7 +23,9 @@ export interface CloudflaredOptions {
   timeoutMs?: number;
 }
 
-const ADDRESS = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+// Never the `api` host (it appears in cloudflared's error lines) nor a longer host that starts with a match.
+const ADDRESS = /https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com(?![\w.-])/;
+const LINE_CHARS_MAX = 2_000;
 const START_TIMEOUT_MS = 30_000;
 const KILL_GRACE_MS = 2_000;
 const TAIL_LINES = 20;
@@ -45,17 +47,22 @@ function installExitHook(): void {
   if (exitHookInstalled) return;
   exitHookInstalled = true;
   process.on('exit', () => {
-    for (const kill of live) kill();
+    for (const killNow of live) killNow();
   });
 }
 
-function splitLines(stream: Readable | null, emit: (line: string) => void): void {
+export function splitLines(stream: Readable | null, emit: (line: string) => void): void {
   if (!stream) return;
   stream.setEncoding('utf8');
   let rest = '';
   const push = (line: string): void => emit(line.endsWith('\r') ? line.slice(0, -1) : line);
   stream.on('data', (chunk: string) => {
     rest += chunk;
+    // A long run with no newline is flushed, so it cannot grow without bound.
+    while (rest.length > LINE_CHARS_MAX && !rest.slice(0, LINE_CHARS_MAX + 1).includes('\n')) {
+      push(rest.slice(0, LINE_CHARS_MAX));
+      rest = rest.slice(LINE_CHARS_MAX);
+    }
     let at = rest.indexOf('\n');
     while (at >= 0) {
       push(rest.slice(0, at));
@@ -90,8 +97,12 @@ const spawnCloudflared = (bin: string, args: readonly string[]): TunnelChild => 
     }, KILL_GRACE_MS);
     escalate.unref();
   };
+  // Nothing can wait inside the process `exit` hook: SIGKILL, not SIGTERM.
+  const killNow = (): void => {
+    if (!gone()) child.kill('SIGKILL');
+  };
   installExitHook();
-  live.add(kill);
+  live.add(killNow);
   return {
     onLine: (listener) => { lineListeners.push(listener); },
     kill,
@@ -100,7 +111,7 @@ const spawnCloudflared = (bin: string, args: readonly string[]): TunnelChild => 
       const once = (error?: Error, reason?: string): void => {
         if (done) return;
         done = true;
-        live.delete(kill);
+        live.delete(killNow);
         if (escalate) clearTimeout(escalate);
         listener(error, reason);
       };
@@ -121,6 +132,11 @@ export function cloudflaredTunnel(options: CloudflaredOptions = {}): TunnelAdapt
   return {
     start(port, signal) {
       return new Promise<Tunnel>((resolveStart, rejectStart) => {
+        // Checked before the PATH lookup so a test gets the same answer whatever is installed.
+        if (!options.spawn && process.env.VITEST) {
+          rejectStart(new TunnelError('cloudflared is not started under test', 'tunnel-failed'));
+          return;
+        }
         if (signal?.aborted) {
           rejectStart(new TunnelError(STOPPED, 'tunnel-failed'));
           return;
@@ -144,6 +160,7 @@ export function cloudflaredTunnel(options: CloudflaredOptions = {}): TunnelAdapt
         const listeners: Array<(reason: string) => void> = [];
         let settled = false;
         let stopped = false;
+        let exitedWhy: string | undefined;
         let timer: NodeJS.Timeout | undefined;
 
         const lastLine = (): string => (tail.at(-1) ?? 'cloudflared did not start').slice(0, MESSAGE_CHARS);
@@ -176,7 +193,10 @@ export function cloudflaredTunnel(options: CloudflaredOptions = {}): TunnelAdapt
               stopped = true;
               child.kill();
             },
-            onExit: (listener) => { listeners.push(listener); },
+            onExit: (listener) => {
+              if (exitedWhy !== undefined) listener(exitedWhy);
+              else listeners.push(listener);
+            },
           });
         });
         child.onExit((error, reason) => {
@@ -185,7 +205,8 @@ export function cloudflaredTunnel(options: CloudflaredOptions = {}): TunnelAdapt
             return;
           }
           if (stopped) return;
-          const why = error ? error.message : (reason ?? 'exited');
+          const why = error ? 'exited with code unknown' : (reason ?? 'exited with code unknown');
+          exitedWhy = why;
           for (const listener of listeners.splice(0)) listener(why);
         });
 
