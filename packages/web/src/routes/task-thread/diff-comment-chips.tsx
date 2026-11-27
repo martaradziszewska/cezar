@@ -216,11 +216,22 @@ function GuestCommentChip({
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6} className="max-w-[320px] text-left">
-        <div data-slot="diff-comment-tooltip" className="flex flex-col gap-1">
+        {/* Everything the agent will read, uncut and scrolling: the owner can only gate what they
+            can see (spec 2026-11-26-preview-share-link, C1). */}
+        <div data-slot="diff-comment-tooltip" className="flex max-h-80 flex-col gap-1 overflow-auto">
           <span className="font-mono text-meta break-all text-contrast-foreground/80">
             {author} · {comment.url} · {comment.selector}
+            {label ? ` “${label}”` : null}
           </span>
-          <span className="line-clamp-6 break-words whitespace-pre-wrap">{comment.body}</span>
+          {comment.component ? (
+            <span className="font-mono text-meta break-all text-contrast-foreground/80">component: {comment.component}</span>
+          ) : null}
+          {comment.excerpt ? (
+            <pre data-slot="guest-comment-excerpt" className="font-mono text-meta break-all whitespace-pre-wrap text-contrast-foreground/80">
+              {comment.excerpt}
+            </pre>
+          ) : null}
+          <span className="break-words whitespace-pre-wrap">{comment.body}</span>
         </div>
       </TooltipContent>
     </Tooltip>
@@ -228,5 +239,5 @@ function GuestCommentChip({
 }
 
 function oneLine(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
+  return text.replace(/[\s\u0085]+/g, ' ').trim()
 }

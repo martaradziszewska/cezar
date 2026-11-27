@@ -100,7 +100,18 @@ function GuestLocation({ runId, item, guest }: { runId: string | undefined; item
         <span data-slot="review-comment-element" className="min-w-0 truncate text-muted-foreground">
           · element <span className="font-mono">{guest.selector}</span>
         </span>
+        {guest.label ? (
+          <span data-slot="review-comment-label" className="min-w-0 truncate text-muted-foreground">
+            “{guest.label}”
+          </span>
+        ) : null}
       </div>
+      {/* Not truncated: the agent read all of it, so the owner sees all of it (C1). */}
+      {guest.component ? (
+        <span data-slot="review-comment-component" className="font-mono break-all text-muted-foreground">
+          component: {guest.component}
+        </span>
+      ) : null}
     </div>
   )
 }

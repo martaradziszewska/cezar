@@ -3,7 +3,8 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffCommentChips } from './diff-comment-chips'
-import type { DiffComment, GuestReviewComment } from './diff-comments'
+import { formatDiffComments, parseReviewMessage, type DiffComment, type GuestReviewComment } from './diff-comments'
+import { ReviewCommentsBlock } from './review-comments-block'
 
 afterEach(cleanup)
 
@@ -117,6 +118,75 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove comment from Ana on element Save' }))
     expect(onRemove).toHaveBeenCalledWith('g1')
     expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
+  })
+
+  // F1: the owner can only gate what they can see — every field the agent reads must be on both
+  // owner surfaces (the chip's tooltip before sending, the card after).
+  const MARKED: GuestReviewComment = {
+    kind: 'guest',
+    id: 'MARKid',
+    revision: 7,
+    author: 'MARKauthor',
+    createdAt: 'MARKcreatedAt',
+    url: 'http://localhost:5173/MARKurl',
+    selector: 'main > button.MARKselector',
+    label: 'MARKlabel',
+    excerpt: '<b>MARKexcerpt</b>',
+    component: 'MARKcomponent',
+    body: [...Array.from({ length: 39 }, (_, i) => `line ${i + 1}`), 'MARKbody'].join('\n'),
+  }
+  const marked = (text: string) =>
+    Object.keys(MARKED)
+      .filter((key) => text.includes(`MARK${key}`))
+      .sort()
+
+  async function tooltipText(comment: GuestReviewComment): Promise<Element> {
+    // Radix positions the tooltip with floating-ui, which measures — jsdom has no observer.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    render(
+      <MemoryRouter>
+        <DiffCommentChips runId="r1" comments={[comment]} onRemove={vi.fn()} />
+      </MemoryRouter>,
+    )
+    fireEvent.focus(screen.getByRole('link'))
+    const tooltip = await waitFor(() => {
+      const found = document.querySelector('[data-slot="diff-comment-tooltip"]')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    vi.unstubAllGlobals()
+    return tooltip
+  }
+
+  it('shows in the tooltip everything the agent will read, the whole body unclamped', async () => {
+    const tooltip = await tooltipText(MARKED)
+    for (const text of ['MARKurl', 'MARKselector', 'MARKlabel', 'MARKcomponent', 'MARKexcerpt', 'MARKbody', 'MARKauthor']) {
+      expect(tooltip.textContent).toContain(text)
+    }
+    expect(tooltip.querySelector('[class*="line-clamp"]')).toBeNull()
+    expect(tooltip.querySelector('[data-slot="guest-comment-excerpt"]')?.tagName).toBe('PRE')
+  })
+
+  it('every field the formatter sends is on the tooltip and on the card, and no other', async () => {
+    const sentFields = marked(formatDiffComments([MARKED]))
+    expect(sentFields).toEqual(['author', 'body', 'component', 'excerpt', 'label', 'selector', 'url'])
+    const tooltip = await tooltipText(MARKED)
+    expect(marked(tooltip.textContent ?? '')).toEqual(sentFields)
+    cleanup()
+    render(
+      <MemoryRouter>
+        <ReviewCommentsBlock items={parseReviewMessage(formatDiffComments([MARKED]))!.items} />
+      </MemoryRouter>,
+    )
+    const card = document.querySelector('[data-slot="review-comment"]')!
+    expect(marked(card.textContent ?? '')).toEqual(sentFields)
   })
 
   it('drops the label part when there is none, and renders hostile text as text', () => {

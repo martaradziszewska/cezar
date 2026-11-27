@@ -89,6 +89,7 @@ describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-
           selector: 'main > button.btn-primary',
           label: 'Save',
           excerpt: '<button>Save</button>',
+          component: 'SettingsForm › Button',
           body: 'brand green',
         },
       ]),
@@ -101,6 +102,8 @@ describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-
     expect(link.textContent).toBe('http://localhost:5173/settings')
     expect(link.getAttribute('href')).toBe('/tasks/r1/preview')
     expect(card.querySelector('[data-slot="review-comment-element"]')?.textContent).toBe('· element main > button.btn-primary')
+    expect(card.querySelector('[data-slot="review-comment-label"]')?.textContent).toBe('“Save”')
+    expect(card.querySelector('[data-slot="review-comment-component"]')?.textContent).toBe('component: SettingsForm › Button')
     expect(card.querySelector('[data-slot="review-comment-code"]')?.textContent).toBe('<button>Save</button>')
     expect(card.querySelector('[data-slot="review-comment-body"]')?.textContent).toBe('brand green')
     // The diff card keeps exactly what it showed before.

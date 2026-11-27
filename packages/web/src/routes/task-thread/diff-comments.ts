@@ -196,7 +196,7 @@ const REVIEW_HEADINGS = [REVIEW_HEADING, REVIEW_ASSETS_HEADING, REVIEW_MIXED_HEA
 const ASSET_ITEM = /^\(HTML asset\) element `([^`]+)`(?: — "(.*)")?$/
 /** A guest item's header after the page address. Label and author never hold `"` (`guestWhere`),
  *  so where one ends and the other starts is unambiguous. */
-const GUEST_ITEM = /^\(app preview\) element `([^`]+)`(?: — "[^"]*")? — from ([^"]+)$/
+const GUEST_ITEM = /^\(app preview\) element `([^`]+)`(?: — "([^"]*)")? — from ([^"]+)$/
 
 function assetWhere(comment: AssetComment): string {
   const label = comment.label ? ` — "${comment.label.replace(/"/g, "'")}"` : ''
@@ -206,7 +206,12 @@ function assetWhere(comment: AssetComment): string {
 /** A guest's text on one line with no backticks, as `cleanAssetLabel` does: every guest field is a
  *  stranger's, and a newline or a backtick would let it out of its slot in the header. */
 function guestLine(text: string, fallback: string): string {
-  return text.replace(/[`\s]+/g, ' ').trim() || fallback
+  return text.replace(/[`\s\u0085]+/g, ' ').trim() || fallback
+}
+
+/** Every line break a reader might honour, not only `\n` — so each one gets indented under its item. */
+function guestLines(text: string): string {
+  return text.replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, '\n')
 }
 
 function guestWhere(comment: GuestComment): string {
@@ -221,7 +226,7 @@ function formatGuestComment(comment: GuestReviewComment): string {
     `- ${guestWhere(comment)}:`,
     ...(component ? [indent(`component: ${component}`)] : []),
     indent(fence(comment.excerpt, 'html')),
-    indent(comment.body.replace(/\r\n?/g, '\n')),
+    indent(guestLines(comment.body)),
   ]
   return parts.join('\n\n')
 }
@@ -271,8 +276,9 @@ export interface ReviewItem {
   body: string
   /** An asset element comment: `path` is the asset's name, `selector` the element. */
   asset?: { selector: string }
-  /** A guest's comment on the shared Preview: `path` is the page address. */
-  guest?: { selector: string; author: string }
+  /** A guest's comment on the shared Preview: `path` is the page address. Everything the agent
+   *  read is kept, so the card can show the owner all of it (C1). */
+  guest?: { selector: string; author: string; label: string; component?: string }
 }
 
 const ITEM_HEADER = /^- `([^`]+)` (.+):$/
@@ -328,7 +334,7 @@ function parseReviewAt(text: string, heading: string, at: number): { lead: strin
 
 function readItem(headerPath: string, label: string, content: string[]): ReviewItem {
   const guest = GUEST_ITEM.exec(label)
-  if (guest) return readGuestItem(headerPath, label, guest[1]!, guest[2]!, content)
+  if (guest) return readGuestItem(headerPath, label, { selector: guest[1]!, author: guest[3]!, label: guest[2] ?? '' }, content)
   // A renamed file's removed line is headed by its OLD path; the diff lists the file by the new one.
   const renamed = /renamed to `([^`]+)`/.exec(label)?.[1]
   const first = ASSET_ITEM.test(label) ? null : /lines? (\d+)/.exec(label)
@@ -364,13 +370,22 @@ function readItem(headerPath: string, label: string, content: string[]): ReviewI
 }
 
 /** `formatGuestComment` read back: an optional `component:` line, the ```html excerpt, the note. */
-function readGuestItem(url: string, label: string, selector: string, author: string, content: string[]): ReviewItem {
+function readGuestItem(
+  url: string,
+  label: string,
+  head: { selector: string; author: string; label: string },
+  content: string[],
+): ReviewItem {
   const skipBlank = (lines: string[]) => {
     while (lines[0]?.trim() === '') lines = lines.slice(1)
     return lines
   }
   let rest = skipBlank(content)
-  if (rest[0]?.startsWith('component: ')) rest = skipBlank(rest.slice(1))
+  let component = ''
+  if (rest[0]?.startsWith('component: ')) {
+    component = rest[0].slice('component: '.length)
+    rest = skipBlank(rest.slice(1))
+  }
   let excerpt = ''
   const open = /^(`{3,})html\s*$/.exec(rest[0] ?? '')
   if (open) {
@@ -378,7 +393,14 @@ function readGuestItem(url: string, label: string, selector: string, author: str
     excerpt = rest.slice(1, close === -1 ? undefined : close).join('\n')
     rest = close === -1 ? [] : rest.slice(close + 1)
   }
-  return { path: url, label, guest: { selector, author }, side: 'new', excerpt, body: rest.join('\n').trim() }
+  return {
+    path: url,
+    label,
+    guest: { ...head, ...(component ? { component } : {}) },
+    side: 'new',
+    excerpt,
+    body: rest.join('\n').trim(),
+  }
 }
 
 /**
