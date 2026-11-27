@@ -30,6 +30,7 @@ import type { AgentUsageStatus } from '../core/agent-runner.ts';
 import { sweepOrphanTaskFiles } from './task-files.ts';
 import { deleteRunDrafts } from './drafts.ts';
 import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
+import { deleteRunGuestComments } from './guest-comments.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
@@ -41,7 +42,7 @@ import { askClosedEvent } from '../core/ui-events.ts';
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import type { RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-contract';
+import type { GuestComment, RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-contract';
 import { dispatchSchema, runParkedSchema, runSubjectSchema, trackerAssociationSchema, trackerAutomationEventSchema, webhookAttentionRequestSchema, webhookCompletionReasonSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { foldReportedModel, foldRunModels } from './reported-model.ts';
@@ -2541,6 +2542,12 @@ export class RunStore extends EventEmitter {
     this.emit('artifacts', { runId, ...listing });
   }
 
+  /** Fan the run's whole guest-comment list out to the SSE streams (spec 2026-11-26-preview-share-link). */
+  publishGuestComments(runId: string, comments: GuestComment[]): void {
+    if (!this.runs.has(runId)) return;
+    this.emit('guest-comments', { runId, comments });
+  }
+
   private touch(run: RunRecord): void {
     // Every status and archive write passes here, so no settle path can forget to end a question.
     this.endTaskAsks(run);
@@ -2626,6 +2633,7 @@ export class RunStore extends EventEmitter {
       // unreachable by definition, and it may be holding megabytes of pasted screenshots.
       deleteRunDrafts(this.dataDir, id);
       deleteRunLayouts(this.dataDir, id); // spec 2026-10-07-task-workspace §5.3
+      deleteRunGuestComments(this.dataDir, id); // spec 2026-11-26-preview-share-link
       // Mediated tracker state (server/tracker/task-access.ts paths): issue text and comment bodies.
       rmSync(join(this.dataDir, 'runs', `${id}.tracker-context.json`), { force: true });
       rmSync(join(this.dataDir, 'runs', `${id}.tracker-operations`), { recursive: true, force: true });

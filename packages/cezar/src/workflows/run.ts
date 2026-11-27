@@ -89,6 +89,7 @@ import { isLifecycleConfigTracked } from '../worktree-lifecycle/config.ts';
 import { generateCommitMessage } from './commit-message.ts';
 import { hasUnlanded, landInPlace, LANDING_PROMPT_LEAD, landingPromptPart, READ_ONLY_PROMPT, READ_ONLY_TOOLS, type LandResult } from './landing.ts';
 import { deleteRunLayouts } from '../runs/layouts.ts';
+import { deleteRunGuestComments } from '../runs/guest-comments.ts';
 import {
   autosaveCommit,
   branchFor,
@@ -1898,7 +1899,10 @@ export class RunManager {
       isActive: id => this.isActive(id),
       cancelAndWait: id => this.cancelAndWait(id),
       onWorktreeRemoved: () => this.sweepPrHeadRefs(),
-      onTaskDeleted: id => deleteRunLayouts(this.dataDir, id),
+      onTaskDeleted: id => {
+        deleteRunLayouts(this.dataDir, id);
+        deleteRunGuestComments(this.dataDir, id);
+      },
       cancelPending: id => {
         const queued = this.queue.indexOf(id);
         if (queued >= 0) this.queue.splice(queued, 1);

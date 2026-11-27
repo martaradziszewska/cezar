@@ -77,6 +77,7 @@ import type { GithubLoginState, InitProjectGitResponse, PublishProjectGithubResp
 import { publishProjectGithubInputSchema } from '@open-mercato/cezar-contract';
 import { automationReportSchema, setAutomationReportInputSchema, automationsExportQuerySchema, automationImportPreviewInputSchema, automationImportInputSchema, configBundleExportQuerySchema, configBundlePreviewInputSchema, configBundleImportInputSchema, type SecretEntry } from '@open-mercato/cezar-contract';
 import { deleteRunLayouts, readRunLayouts, writeRunLayouts } from '../runs/layouts.ts';
+import { deleteRunGuestComments } from '../runs/guest-comments.ts';
 import { discoverCommands, installCommand } from './terminal/commands.ts';
 import { effectiveStartApp, readStartApp, writeStartApp } from '../start-app.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
@@ -6742,6 +6743,7 @@ export function createAppParts(deps: ServerDeps) {
           stopTaskProcesses(id);
           // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
           deleteRunLayouts(dataDir, id);
+          deleteRunGuestComments(dataDir, id);
           if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
           const deleted = store.deleteRun(id);
           // The run's `refs/cezar/pr/<n>` goes with the last run that needed it (Phase 3).
