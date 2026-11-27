@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { GUEST_NAME_MAX, guestCommentInputSchema } from '@open-mercato/cezar-contract';
+import { GUEST_NAME_MAX, GUEST_URL_MAX, guestCommentInputSchema } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
 
 import { addGuestComment, deleteGuestComment, readGuestComments, toGuestComment, updateGuestComment } from '../../runs/guest-comments.ts';
@@ -18,9 +18,14 @@ export interface GuestRoutesDeps {
   onComments(projectId: string, runId: string): void;
   guestScript(config: { upstreamOrigin: string; name: string }): string;
   now?(): number;
+  /** How long a body may take to arrive. Tests shorten it. */
+  bodyTimeoutMs?: number;
 }
 
 const BODY_MAX = 64 * 1024;
+/** A 60-character name needs no more. */
+const ASK_BODY_MAX = 1024;
+const BODY_TIMEOUT_MS = 15_000;
 const WRITES_PER_MINUTE = 30;
 const WRITE_WINDOW_MS = 60_000;
 // Bounds what allowed guests can make this process remember (spec § Exposure, Flooding).
@@ -31,6 +36,7 @@ const COMMENT_PATH = /^comments\/([A-Za-z0-9_-]{1,64})$/;
 const GONE = 'This link is no longer active.';
 const INBOX_FULL = "The reviewer's inbox is full.";
 const INVALID = 'That comment cannot be saved as it is.';
+const NOT_SAVED = 'The comment could not be saved.';
 /** One answer for a comment that is missing and for another guest's: which it was is not told. */
 const NO_COMMENT = 'That comment is no longer there.';
 
@@ -38,11 +44,14 @@ const askSchema = z.object({ name: z.string() });
 const editSchema = guestCommentInputSchema.pick({ body: true });
 
 type Guest = NonNullable<GuestRequest['guest']>;
-type Read = { ok: true; value: unknown } | { ok: false; status: 400 | 413 };
+type Read = { ok: true; value: unknown } | { ok: false; status: 400 | 408 | 413 };
+
+/** On every answer another page could try to load: no other origin may embed or read it. */
+const OWN = { 'x-content-type-options': 'nosniff', 'cross-origin-resource-policy': 'same-origin' } as const;
 
 // No cache header here or below: the listener's own no-store default must be the one that stands.
 function json(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'x-content-type-options': 'nosniff', ...headers }).end(JSON.stringify(body));
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...OWN, ...headers }).end(JSON.stringify(body));
 }
 
 function gone(res: ServerResponse): void {
@@ -60,46 +69,75 @@ function ownJson(ctx: GuestRequest, req: IncomingMessage): boolean {
   return req.headers.origin === ctx.tunnelOrigin && type === 'application/json';
 }
 
+/**
+ * The app's own page in the one spelling that is stored, or `null`. The text a guest sent is never
+ * kept: it can read as another host to a parser that is not this one (spec § Mechanism 9).
+ */
+function pageAddress(sent: string, upstreamOrigin: string): string | null {
+  if (!URL.canParse(sent)) return null;
+  const url = new URL(sent);
+  if (url.protocol !== 'http:' || url.username !== '' || url.password !== '' || url.origin !== upstreamOrigin) return null;
+  // Spelled out it can be longer than what was sent, and one entry over the cap unreads the whole list.
+  return url.href.length <= GUEST_URL_MAX ? url.href : null;
+}
+
+interface BodyLimits {
+  max: number;
+  timeoutMs: number;
+}
+
 /** `null` when the connection went away first: nobody is left to answer, so nothing is saved. */
-function readJson(req: IncomingMessage): Promise<Read | null> {
+function readJson(req: IncomingMessage, limits: BodyLimits): Promise<Read | null> {
   return new Promise((resolve) => {
-    if (Number(req.headers['content-length']) > BODY_MAX) {
+    if (Number(req.headers['content-length']) > limits.max) {
       resolve({ ok: false, status: 413 });
       return;
     }
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
+    const settle = (read: Read | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(read);
+    };
+    const timer = setTimeout(() => settle({ ok: false, status: 408 }), limits.timeoutMs);
+    // Never the reason a process stays alive.
+    timer.unref();
     req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       size += chunk.length;
-      if (size > BODY_MAX) resolve({ ok: false, status: 413 });
+      if (size > limits.max) settle({ ok: false, status: 413 });
       else chunks.push(chunk);
     });
     req.on('end', () => {
       try {
-        resolve({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown });
+        settle({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown });
       } catch {
-        resolve({ ok: false, status: 400 });
+        settle({ ok: false, status: 400 });
       }
     });
-    req.on('error', () => resolve(null));
-    req.on('close', () => resolve(null));
+    req.on('error', () => settle(null));
+    req.on('close', () => settle(null));
   });
 }
 
-function withBody(req: IncomingMessage, res: ServerResponse, use: (value: unknown) => void): void {
-  readJson(req)
+function withBody(req: IncomingMessage, res: ServerResponse, limits: BodyLimits, use: (value: unknown) => void): void {
+  readJson(req, limits)
     .then((read) => {
       if (read === null || res.destroyed) return;
-      // `connection: close` ends the socket once this is sent, so a body that never ends is not read on.
-      if (!read.ok && read.status === 413) json(res, 413, { error: 'That is too large.' }, { connection: 'close' });
-      else if (!read.ok) json(res, 400, { error: INVALID });
-      else use(read.value);
+      if (read.ok) use(read.value);
+      else if (read.status === 400) json(res, 400, { error: INVALID });
+      // `connection: close` ends the socket once this is sent, so the rest of the body is not waited for.
+      else json(res, read.status, { error: read.status === 413 ? 'That is too large.' : 'That took too long.' }, { connection: 'close' });
     })
     .catch(() => fail(res));
 }
 
 export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
   const now = deps.now ?? Date.now;
+  const timeoutMs = deps.bodyTimeoutMs ?? BODY_TIMEOUT_MS;
   const writers = new Map<string, number[]>();
   let sweptAt = 0;
 
@@ -145,7 +183,7 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
   }
 
   function ask(ctx: GuestRequest, req: IncomingMessage, res: ServerResponse): void {
-    withBody(req, res, (value) => {
+    withBody(req, res, { max: ASK_BODY_MAX, timeoutMs }, (value) => {
       const parsed = askSchema.safeParse(value);
       if (!parsed.success) {
         json(res, 400, { error: 'Enter your name.' });
@@ -158,28 +196,29 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
   }
 
   function add(ctx: GuestRequest, guest: Guest, author: string, dir: string, req: IncomingMessage, res: ServerResponse): void {
-    withBody(req, res, (value) => {
+    withBody(req, res, { max: BODY_MAX, timeoutMs }, (value) => {
       // Unknown keys are dropped: author, guest, id and revision are the server's to set.
       const parsed = guestCommentInputSchema.safeParse(value);
-      if (!parsed.success || !URL.canParse(parsed.data.url) || new URL(parsed.data.url).origin !== ctx.upstreamOrigin) {
+      const url = parsed.success ? pageAddress(parsed.data.url, ctx.upstreamOrigin) : null;
+      if (!parsed.success || url === null) {
         json(res, 400, { error: INVALID });
         return;
       }
-      const saved = addGuestComment(dir, ctx.runId, { ...parsed.data, author, guestId: guest.id }, () => new Date(now()));
+      const saved = addGuestComment(dir, ctx.runId, { ...parsed.data, url, author, guestId: guest.id }, () => new Date(now()));
       if (saved.ok) {
         announce(ctx);
         json(res, 201, { comment: toGuestComment(saved.comment) });
-      } else if (saved.reason === 'not-found') {
-        // An add has nothing to find: this is the write itself failing.
-        json(res, 500, { error: 'The comment could not be saved.' });
-      } else {
+      } else if (saved.reason === 'full' || saved.reason === 'budget') {
         json(res, 409, { error: INBOX_FULL });
+      } else {
+        // An add has nothing to find, so `not-found` is the write itself failing. So is anything new.
+        json(res, 500, { error: NOT_SAVED });
       }
     });
   }
 
   function edit(ctx: GuestRequest, guest: Guest, id: string, dir: string, req: IncomingMessage, res: ServerResponse): void {
-    withBody(req, res, (value) => {
+    withBody(req, res, { max: BODY_MAX, timeoutMs }, (value) => {
       const parsed = editSchema.safeParse(value);
       if (!parsed.success) {
         json(res, 400, { error: INVALID });
@@ -191,8 +230,10 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
         json(res, 200, { comment: toGuestComment(saved.comment) });
       } else if (saved.reason === 'not-found') {
         json(res, 404, { error: NO_COMMENT });
-      } else {
+      } else if (saved.reason === 'full' || saved.reason === 'budget') {
         json(res, 409, { error: INBOX_FULL });
+      } else {
+        json(res, 500, { error: NOT_SAVED });
       }
     });
   }
@@ -234,7 +275,7 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
     }
     if (method === 'GET' && name === 'guest.js') {
       const script = deps.guestScript({ upstreamOrigin: ctx.upstreamOrigin, name: author });
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(script);
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', ...OWN }).end(script);
       return;
     }
     const id = COMMENT_PATH.exec(name)?.[1];

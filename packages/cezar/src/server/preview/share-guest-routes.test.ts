@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { connect, type AddressInfo } from 'node:net';
+import { connect, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, type GuestComment } from '@open-mercato/cezar-contract';
+import { GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, GUEST_URL_MAX, type GuestComment } from '@open-mercato/cezar-contract';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { addGuestComment, guestCommentsRoot, readGuestComments } from '../../runs/guest-comments.ts';
@@ -23,6 +24,7 @@ const COCKPIT = 'http://localhost:4321';
 const GONE = 'This link is no longer active.';
 const INBOX_FULL = "The reviewer's inbox is full.";
 const BODY_MAX = 64 * 1024;
+const ASK_MAX = 1024;
 const MINUTE = 60_000;
 const NOT_ALLOWED = ['new', 'waiting', 'denied', 'expired'] as const;
 const EVERY_STATE = ['new', 'waiting', 'allowed', 'denied', 'expired'] as const;
@@ -91,6 +93,27 @@ function unfinished(site: Site, lines: string[], body = ''): Promise<{ status: n
   });
 }
 
+/** A request whose body the test finishes, or abandons, when it chooses. `answered` is false when the socket closed first. */
+function stalled(site: Site, lines: string[], firstPart: string): { socket: Socket; settled: Promise<{ answered: boolean; text: string }> } {
+  const socket = connect(site.port, '127.0.0.1');
+  let text = '';
+  const settled = new Promise<{ answered: boolean; text: string }>((resolve) => {
+    socket.on('data', (chunk) => {
+      text += chunk.toString('utf8');
+      if (text.includes('\r\n\r\n')) resolve({ answered: true, text });
+    });
+    socket.on('error', () => {});
+    socket.on('close', () => resolve({ answered: false, text }));
+  });
+  socket.on('connect', () => socket.write(`${lines.join('\r\n')}\r\n\r\n${firstPart}`));
+  return { socket, settled };
+}
+
+async function until(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 2000 && !done(); i += 1) await new Promise((resolve) => setImmediate(resolve));
+  if (!done()) throw new Error('it never happened');
+}
+
 class LoopbackTunnel implements TunnelAdapter {
   started: number[] = [];
   async start(port: number): Promise<Tunnel> {
@@ -115,12 +138,17 @@ describe('the share listener’s own pages', () => {
   let onComments: (projectId: string, runId: string) => void;
   let main: Site;
   let addresses: number;
+  /** Every request the listener handed to the routes, in order. */
+  let handed: string[];
+  let others: PreviewShares[];
 
   beforeEach(async () => {
     appRequests = [];
     published = [];
     scripted = [];
     addresses = 0;
+    handed = [];
+    others = [];
     clock = Date.now();
     onComments = (projectId, runId) => published.push([projectId, runId]);
     dir = mkdtempSync(joinPath(tmpdir(), 'cez-share-guest-'));
@@ -130,7 +158,14 @@ describe('the share listener’s own pages', () => {
     });
     await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     app = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
-    routes = createGuestRoutes({
+    routes = buildRoutes();
+    tunnels = new LoopbackTunnel();
+    shares = buildShares(routes);
+    main = await open('r1', 'p1');
+  });
+
+  function buildRoutes(bodyTimeoutMs?: number): GuestRoutes {
+    return createGuestRoutes({
       dataDirOf: (projectId) => (projectId === 'p1' ? dir : null),
       onComments: (projectId, runId) => onComments(projectId, runId),
       guestScript: (config) => {
@@ -138,21 +173,36 @@ describe('the share listener’s own pages', () => {
         return `/* guest script for ${config.name} at ${config.upstreamOrigin} */`;
       },
       now: () => clock,
+      ...(bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs }),
     });
-    tunnels = new LoopbackTunnel();
-    shares = new PreviewShares({ tunnel: tunnels, guestRoutes: routes, isCezar: async () => false, onChange: () => {}, now: () => clock });
-    main = await open('r1', 'p1');
-  });
+  }
+
+  function buildShares(guestRoutes: GuestRoutes): PreviewShares {
+    const built = new PreviewShares({
+      tunnel: tunnels,
+      guestRoutes: {
+        handle(ctx, req, res) {
+          handed.push(`${req.method} ${ctx.path}`);
+          return guestRoutes.handle(ctx, req, res);
+        },
+      },
+      isCezar: async () => false,
+      onChange: () => {},
+      now: () => clock,
+    });
+    others.push(built);
+    return built;
+  }
 
   afterEach(async () => {
-    shares.closeAll();
+    for (const built of others) built.closeAll();
     upstream.closeAllConnections();
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function open(runId: string, projectId: string): Promise<Site> {
-    const started = await shares.start({ runId, projectId, target: `${app}/settings?tab=1`, parentOrigin: COCKPIT, forbidden: [] });
+  async function open(runId: string, projectId: string, on: PreviewShares = shares): Promise<Site> {
+    const started = await on.start({ runId, projectId, target: `${app}/settings?tab=1`, parentOrigin: COCKPIT, forbidden: [] });
     if (!started.ok) throw new Error(started.error);
     const url = new URL(started.share.url);
     return { runId, port: tunnels.started.at(-1)!, host: url.host, origin: url.origin, joinPath: url.pathname + url.search };
@@ -191,12 +241,12 @@ describe('the share listener’s own pages', () => {
   }
 
   /** A browser brought to `state` the way a real one gets there. `expired` moves the clock for everyone. */
-  async function guestIn(state: State, name = 'Ana', site: Site = main): Promise<Browser> {
+  async function guestIn(state: State, name = 'Ana', site: Site = main, on: PreviewShares = shares): Promise<Browser> {
     const guest = await join(site);
     if (state === 'new') return guest;
     expect((await guest.post('ask', { name })).status).toBe(200);
-    if (state === 'allowed') expect(shares.decide(site.runId, guest.id, 'allow')).toBe(true);
-    if (state === 'denied') expect(shares.decide(site.runId, guest.id, 'deny')).toBe(true);
+    if (state === 'allowed') expect(on.decide(site.runId, guest.id, 'allow')).toBe(true);
+    if (state === 'denied') expect(on.decide(site.runId, guest.id, 'deny')).toBe(true);
     if (state === 'expired') clock += 10 * MINUTE;
     expect((await guest.get('status')).json.state).toBe(state);
     return guest;
@@ -220,6 +270,7 @@ describe('the share listener’s own pages', () => {
   function expectJson(res: Answer): void {
     expect(res.headers['content-type']).toBe('application/json; charset=utf-8');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
   }
 
   function expectGone(res: Answer): void {
@@ -642,12 +693,34 @@ describe('the share listener’s own pages', () => {
       ['no body', '', 400],
       ['a name that is not text', '{"name":42}', 400],
       ['a list', '["Ana"]', 400],
-      ['a body over 64 KiB', JSON.stringify({ name: 'a'.repeat(BODY_MAX) }), 413],
+      ['a body over 1 KiB', `${JSON.stringify({ name: 'Ana' })}${' '.repeat(ASK_MAX)}`.slice(0, ASK_MAX + 1), 413],
     ])('answers %s without creating a request', async (_name, body, status) => {
       const guest = await join();
       const res = await guest.post('ask', body);
       expect(res.status).toBe(status);
       expectJson(res);
+      expect(shares.get('r1')!.guests).toEqual([]);
+    });
+  });
+
+  describe('the body of POST ask', () => {
+    it('is read up to exactly 1 KiB', async () => {
+      const guest = await join();
+      const res = await guest.post('ask', `${JSON.stringify({ name: 'Ana' })}${' '.repeat(ASK_MAX)}`.slice(0, ASK_MAX));
+      expect(res.status).toBe(200);
+    });
+
+    it('that announces more than 1 KiB is refused unread, and the socket is closed', async () => {
+      const guest = await join();
+      const res = await unfinished(main, [
+        `POST ${SHARE}/ask HTTP/1.1`,
+        `Host: ${main.host}`,
+        `Cookie: __cezar_share=${guest.cookie}`,
+        `Origin: ${main.origin}`,
+        'Content-Type: application/json',
+        `Content-Length: ${ASK_MAX + 1}`,
+      ]);
+      expect(res.status).toBe(413);
       expect(shares.get('r1')!.guests).toEqual([]);
     });
   });
@@ -658,6 +731,7 @@ describe('the share listener’s own pages', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toBe('text/javascript; charset=utf-8');
       expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
       expectUncacheable(res);
       expect(res.body).toBe(`/* guest script for Ana at ${app} */`);
       expect(scripted).toEqual([{ upstreamOrigin: app, name: 'Ana' }]);
@@ -735,18 +809,49 @@ describe('the share listener’s own pages', () => {
       it.each([
         ['an address on a host that only starts like the app’s', () => `${app}.evil.example/settings`],
         ['the app’s address used as a login', () => `${app}@evil.example/settings`],
+        ['the app’s address with a user and a password', () => `${app.replace('http://', 'http://user:pw@')}/x`],
+        ['the app’s address with a user alone', () => `${app.replace('http://', 'http://user@')}/x`],
+        ['the app’s address with a password alone', () => `${app.replace('http://', 'http://:pw@')}/x`],
+        ['a blob address whose origin is the app’s', () => `blob:${app}/abc`],
         ['another local port', () => 'http://127.0.0.1:1/settings'],
         ['the tunnel’s own address', () => `${main.origin}/settings`],
         ['the app under another scheme', () => `${app.replace('http:', 'https:')}/settings`],
+        ['the app under a WebSocket scheme', () => `${app.replace('http:', 'ws:')}/settings`],
         ['a script address', () => 'javascript:alert(1)'],
         ['a relative path', () => '/settings'],
         ['something that is not an address', () => 'not a url'],
+        ['an address that is over 2,000 characters once spelled out', () => `${app}/${' '.repeat(700)}x`],
       ])('answers 400 to %s as the comment’s page', async (_name, url) => {
         const res = await ana.post('comments', { ...comment(), url: url() });
         expect(res.status).toBe(400);
         expectJson(res);
         expect(stored()).toEqual([]);
         expect(published).toEqual([]);
+        // A refused address must not have damaged the list: the next comment is saved and read back.
+        expect((await ana.post('comments', comment())).status).toBe(201);
+        expect((await ana.get('comments')).json.comments).toHaveLength(1);
+      });
+
+      it.each([
+        ['the app’s page as a browser spells it', (a: string) => `${a}/settings?tab=1#top`, (a: string) => `${a}/settings?tab=1#top`],
+        ['no path', (a: string) => a, (a: string) => `${a}/`],
+        ['an upper-case scheme', (a: string) => `${a.replace('http://', 'HTTP://')}/Settings`, (a: string) => `${a}/Settings`],
+        ['another spelling of the same host', (a: string) => `${a.replace('127.0.0.1', '0x7f.1')}/x`, (a: string) => `${a}/x`],
+        ['a backslash before an at sign', (a: string) => `${a}\\@evil.example/`, (a: string) => `${a}/@evil.example/`],
+        ['dot segments', (a: string) => `${a}/a/../b?q=1#h`, (a: string) => `${a}/b?q=1#h`],
+        [
+          'spaces around it, line breaks, a tab and backticks inside',
+          (a: string) => ` ${a}/a\n\n## x \`y\`\tz `,
+          (a: string) => `${a}/a##%20x%20%60y%60z`,
+        ],
+        ['a space and a backtick in its query', (a: string) => `${a}/?q=\`x\`&r=a b`, (a: string) => `${a}/?q=\`x\`&r=a%20b`],
+      ])('stores the one spelling it checked for %s, never the text that was sent', async (_name, sent, kept) => {
+        const res = await ana.post('comments', { ...comment(), url: sent(app) });
+        expect(res.status).toBe(201);
+        expect(res.json.comment.url).toBe(kept(app));
+        expect(stored().map((saved) => saved.url)).toEqual([kept(app)]);
+        expect(stored()[0]!.url).not.toMatch(/[\s\\]/);
+        expect(stored()[0]!.url.length).toBeLessThanOrEqual(GUEST_URL_MAX);
       });
 
       it.each([
@@ -1095,6 +1200,73 @@ describe('the share listener’s own pages', () => {
       });
     });
 
+    describe('a write still on its way', () => {
+      const head = (guest: Browser, length: number): string[] => [
+        `POST ${SHARE}/comments HTTP/1.1`,
+        `Host: ${guest.site.host}`,
+        `Cookie: __cezar_share=${guest.cookie}`,
+        `Origin: ${guest.site.origin}`,
+        'Content-Type: application/json',
+        `Content-Length: ${length}`,
+      ];
+      const arrived = (): number => handed.filter((line) => line === `POST ${SHARE}/comments`).length;
+
+      it('is cut when the owner removes the guest: finishing the body saves nothing and announces nothing', async () => {
+        const text = JSON.stringify(comment());
+        const pending = stalled(main, head(ana, text.length), text.slice(0, 20));
+        await until(() => arrived() === 1);
+        expect(shares.removeGuest('r1', ana.id)).toBe(true);
+        pending.socket.write(text.slice(20));
+        expect((await pending.settled).answered).toBe(false);
+        expect(stored()).toEqual([]);
+        expect(published).toEqual([]);
+        // Another guest's requests are not touched.
+        expect((await piotr.post('comments', comment())).status).toBe(201);
+      });
+
+      it('that the browser abandons mid-body saves nothing, answers nothing and breaks nothing', async () => {
+        // A whole comment, but less than was announced: only the end of the body may save it.
+        const text = JSON.stringify(comment());
+        const pending = stalled(main, head(ana, text.length + 10), text);
+        await until(() => arrived() === 1);
+        pending.socket.destroy();
+        expect(await pending.settled).toEqual({ answered: false, text: '' });
+        expect((await ana.post('comments', { ...comment(), body: 'the next one' })).status).toBe(201);
+        expect(stored().map((saved) => saved.body)).toEqual(['the next one']);
+        expect(published).toHaveLength(1);
+      });
+
+      it('that stalls is answered 408 after the deadline, and the socket is closed', async () => {
+        const quick = buildShares(buildRoutes(40));
+        const site = await open('r5', 'p1', quick);
+        const guest = await guestIn('allowed', 'Ana', site, quick);
+        const text = JSON.stringify(comment());
+        const res = await unfinished(site, head(guest, text.length), text.slice(0, 20));
+        expect(res.status).toBe(408);
+        expect(stored('r5')).toEqual([]);
+        expect(published).toEqual([]);
+
+        const asking = await join(site);
+        const ask = await unfinished(
+          site,
+          [`POST ${SHARE}/ask HTTP/1.1`, `Host: ${site.host}`, `Cookie: __cezar_share=${asking.cookie}`, `Origin: ${site.origin}`, 'Content-Type: application/json', 'Content-Length: 14'],
+          '{"name":',
+        );
+        expect(ask.status).toBe(408);
+        expect((await asking.get('status')).json).toEqual({ state: 'new' });
+      });
+
+      it('that arrives in time is not touched by the deadline', async () => {
+        const quick = buildShares(buildRoutes(40));
+        const site = await open('r5', 'p1', quick);
+        const guest = await guestIn('allowed', 'Ana', site, quick);
+        expect((await guest.post('comments', comment())).status).toBe(201);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(stored('r5')).toHaveLength(1);
+        expect((await guest.get('comments')).status).toBe(200);
+      });
+    });
+
     describe('the write limit', () => {
       it('answers 429 to the 31st write in a minute from one guest, and to nobody else', async () => {
         for (let i = 0; i < 30; i += 1) expect((await ana.post('comments', { ...comment(), body: `c${i}` })).status).toBe(201);
@@ -1256,6 +1428,69 @@ describe('the share listener’s own pages', () => {
         },
       });
       expect(direct(broken, { id: 'a'.repeat(16), state: 'allowed', name: 'Ana' }, 'GET', `${SHARE}/guest.js`)).toMatchObject({ returned: true, status: 500 });
+    });
+
+    /** A `POST comments` whose body the test feeds by hand, and an answer that only counts what was written. */
+    function fed() {
+      const req = Object.assign(new EventEmitter(), {
+        method: 'POST',
+        url: `${SHARE}/comments`,
+        headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      });
+      const res = {
+        headersSent: false,
+        destroyed: false,
+        answers: [] as number[],
+        writeHead(status: number) {
+          this.answers.push(status);
+          this.headersSent = true;
+          return this;
+        },
+        end() {
+          return this;
+        },
+        destroy() {},
+      };
+      const ctx: GuestRequest = {
+        runId: 'r1',
+        projectId: 'p1',
+        path: `${SHARE}/comments`,
+        tunnelOrigin: ORIGIN,
+        upstreamOrigin: 'http://localhost:5173',
+        guest: { id: 'a'.repeat(16), state: 'allowed', name: 'Ana', code: '1234' },
+        ask: () => ({ error: 'no' }),
+      };
+      expect(routes.handle(ctx, req as unknown as IncomingMessage, res as unknown as ServerResponse)).toBe(true);
+      const whole = Buffer.from(JSON.stringify({ ...comment(), url: 'http://localhost:5173/settings' }));
+      const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+      return { req, res, whole, turn };
+    }
+
+    it('saves a comment only when its body ended on a connection that is still there', async () => {
+      const closed = fed();
+      closed.req.emit('data', closed.whole);
+      closed.req.emit('close');
+      await closed.turn();
+      expect(closed.res.answers).toEqual([]);
+
+      const cut = fed();
+      cut.req.emit('data', cut.whole);
+      cut.res.destroyed = true;
+      cut.req.emit('end');
+      await cut.turn();
+      expect(cut.res.answers).toEqual([]);
+
+      expect(stored()).toEqual([]);
+      expect(published).toEqual([]);
+
+      const whole = fed();
+      whole.req.emit('data', whole.whole);
+      whole.req.emit('end');
+      whole.req.emit('close');
+      await whole.turn();
+      expect(whole.res.answers).toEqual([201]);
+      expect(stored()).toHaveLength(1);
+      expect(published).toEqual([['p1', 'r1']]);
     });
 
     it('remembers at most 1,000 writing guests, and forgets them a minute after their last write', () => {

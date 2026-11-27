@@ -519,6 +519,9 @@ export class PreviewShares {
     if (path === SHARE_PREFIX || path.startsWith(`${SHARE_PREFIX}/`)) {
       let handled = false;
       if (guest !== null) {
+        // Remove cuts this too: a comment still uploading must not land after its guest is out.
+        guest.live.add(res);
+        res.on('close', () => guest.live.delete(res));
         try {
           handled = this.guestRoutes.handle(this.context(entry, guest, path), req, res);
         } catch {

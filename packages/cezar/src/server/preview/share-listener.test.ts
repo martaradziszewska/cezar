@@ -187,6 +187,11 @@ describe('the share listener', () => {
         res.write('half an answer');
         throw new Error('boom');
       }
+      if (ctx.path === '/__cezar_share__/pending') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.write('first');
+        return true;
+      }
       if (ctx.path === '/__cezar_share__/ask') {
         const name = new URL(req.url ?? '/', 'http://guest').searchParams.get('name') ?? '';
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ctx.ask(name)));
@@ -1194,6 +1199,29 @@ describe('the share listener', () => {
         req.end();
       });
       expect(await cut).toBe('cut');
+    });
+  });
+
+  describe('a removed guest’s request to the listener’s own pages', () => {
+    beforeEach(async () => {
+      await open();
+    });
+
+    it('is cut like one to the app, so a write still on its way cannot land', async () => {
+      const cookie = await allowedGuest();
+      const other = await allowedGuest('Piotr');
+      let othersFirstByte = (): void => {};
+      const othersStarted = new Promise<void>((resolve) => {
+        othersFirstByte = resolve;
+      });
+      const others = outcome(port, host, '/__cezar_share__/pending', other, othersFirstByte);
+      await othersStarted;
+      expect(await outcome(port, host, '/__cezar_share__/pending', cookie, () => shares.removeGuest('r1', idOf(cookie)))).toBe('cut');
+      expect(upstreamRequests).toHaveLength(0);
+      // Only the removed guest's: another guest's pending request lasts until the share ends.
+      expect(await Promise.race([others, new Promise((resolve) => setTimeout(() => resolve('open'), 50))])).toBe('open');
+      shares.stop('r1');
+      expect(await others).toBe('cut');
     });
   });
 
