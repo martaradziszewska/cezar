@@ -97,6 +97,9 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedBody<'/api/v1/runs/:id/queued-messages/:msgId', '$patch'>>,
     Assert<HasTypedBody<'/api/v1/runs/:id/drafts/:surface', '$put'>>,
     Assert<HasTypedBody<'/api/v1/runs/:id/drafts/:surface/images', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/runs/:id/preview-share', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/runs/:id/preview-share/guests/:guestId', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/runs/:id/guest-comments/sent', '$post'>>,
     Assert<HasTypedBody<'/api/v1/ui-state', '$put'>>,
     Assert<HasTypedBody<'/api/v1/workspace/config', '$put'>>,
     Assert<HasTypedBody<'/api/v1/workspace/ui-state', '$put'>>,
@@ -148,6 +151,10 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedInput<'/api/v1/runs/:id/drafts/:surface/images', '$post', 'param'>>,
     Assert<HasTypedInput<'/api/v1/runs/:id/drafts/:surface/images/:imageId', '$get', 'param'>>,
     Assert<HasTypedInput<'/api/v1/runs/:id/drafts/:surface/images/:imageId', '$delete', 'param'>>,
+    // A guest id and a comment id are looked up, the second on disk: checked before the handler.
+    Assert<HasTypedInput<'/api/v1/runs/:id/preview-share/guests/:guestId', '$post', 'param'>>,
+    Assert<HasTypedInput<'/api/v1/runs/:id/preview-share/guests/:guestId', '$delete', 'param'>>,
+    Assert<HasTypedInput<'/api/v1/runs/:id/guest-comments/:commentId', '$delete', 'param'>>,
   ];
 
   it('is enforced by tsc, not at runtime', () => {

@@ -256,6 +256,11 @@ import { SelfUpdateBusyError, SelfUpdateService } from '../self-update/service.t
 import { BUILD_HEADER, readWebBuildId } from './build-identity.ts';
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
+import { createGuestRoutes } from './preview/share-guest-routes.ts';
+import { guestScript } from './preview/share-guest-script.ts';
+import { PreviewShares, type PreviewSharesOptions } from './preview/share-listener.ts';
+import { shareTunnel } from './preview/share-tunnel.ts';
+import { TASK_REMOVED, liveShareRoutes, onPreviewShareFrames, previewShareRoutes, publishGuestCommentList } from './preview-share-routes.ts';
 import { getTeamSkillsCached, isSafeRef, refreshTeamSkills, safeRemoteFor, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -621,6 +626,9 @@ export interface ServerDeps {
   /** The Design Mode proxies behind `POST /api/v1/preview/design-proxy` (src/server/preview/).
    *  Injected by tests that need to close the listeners they opened. */
   designProxies?: DesignProxies;
+  /** Builds the app's one `PreviewShares` from the server's own wiring (spec
+   *  2026-11-26-preview-share-link). Tests pass a fake tunnel; the default looks for `cloudflared`. */
+  previewShares?: (wiring: Pick<PreviewSharesOptions, 'guestRoutes' | 'onChange'>) => PreviewShares;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
@@ -3577,7 +3585,7 @@ export function createAppParts(deps: ServerDeps) {
       // closed (index flushed), manager's timers and usage subscription dropped.
       trackerWatches.invalidateProject(entry.root);
       // Its terminals live in the app-level registry, which no project route reaches once it is gone.
-      for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskProcesses(run.id);
+      for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskAndShare(run.id);
       stopTaskProcesses(projectTerminalOwner(entry.root));
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
@@ -4007,6 +4015,49 @@ export function createAppParts(deps: ServerDeps) {
     const opened = await designProxies.open({ ...c.req.valid('json'), forbidden: host ? [`http://${host}`] : [] });
     if (!opened.ok) return c.json({ error: opened.reason }, 400);
     return c.json({ origin: opened.origin });
+  });
+
+  // ---- Preview Share (spec `.ai/specs/2026-11-26-preview-share-link.md`) ----
+  // Nothing listens and nothing is spawned before the first POST. The boot context is not in the
+  // lazy map, so a share started on it is found again by the registry id it was started under.
+  const bootShareIds = new Set<string>();
+  const shareProject = (projectId: string): ProjectContext | undefined =>
+    bootShareIds.has(projectId) ? bootContext : contexts.peek(projectId);
+  const shareWiring: Pick<PreviewSharesOptions, 'guestRoutes' | 'onChange'> = {
+    guestRoutes: createGuestRoutes({
+      dataDirOf: (projectId) => shareProject(projectId)?.dataDir ?? null,
+      onComments: (projectId, runId) => {
+        const project = shareProject(projectId);
+        if (project) publishGuestCommentList(project, runId);
+      },
+      guestScript,
+    }),
+    // A project whose context is gone has no stream left to tell.
+    onChange: (projectId, runId, share, ended) => shareProject(projectId)?.store.publishPreviewShare(runId, share, ended),
+  };
+  const previewShares = deps.previewShares?.(shareWiring) ?? new PreviewShares({ ...shareWiring, tunnel: shareTunnel(process.env) });
+  deps.onDispose?.(() => previewShares.closeAll());
+  /** Archive, delete and worktree removal: the task's shells stop and its share link ends with it. */
+  const stopTaskAndShare = (runId: string) => {
+    stopTaskProcesses(runId);
+    previewShares.stop(runId, TASK_REMOVED);
+  };
+  const previewShareFamily = previewShareRoutes({
+    shares: previewShares,
+    enabled: () => capabilities().previewShare,
+    projectId: async (project) => {
+      if (project !== bootContext) return project.id;
+      const id = await resolveBootProject();
+      bootShareIds.add(id);
+      return id;
+    },
+  });
+  const liveShareFamily = liveShareRoutes({
+    shares: previewShares,
+    title: (projectId, runId) => {
+      const run = shareProject(projectId)?.store.getRun(runId);
+      return run ? (run.titleSummary ?? run.title) : '';
+    },
   });
 
   const selfUpdateRoutes = new Hono()
@@ -5523,7 +5574,7 @@ export function createAppParts(deps: ServerDeps) {
         isLive: (id) => manager.isActive(id), dryRun: body.dryRun === true, lifecycle: manager.lifecycle,
         activity: storeActivity(store),
         // The rest of what `DELETE /runs/:id` does: terminals stop, a PR head's ref goes with it.
-        onDeleted: (run) => stopTaskProcesses(run.id),
+        onDeleted: (run) => stopTaskAndShare(run.id),
       });
       if (body.dryRun !== true && result.deleted.length > 0) await manager.sweepPrHeadRefs();
       return c.json({ ...result, days, dryRun: body.dryRun === true });
@@ -5537,7 +5588,7 @@ export function createAppParts(deps: ServerDeps) {
       // and its worktree (branch kept, Continue restores it).
       if (archived > 0) {
         const taken = open.filter((id) => store.getRun(id)?.archived);
-        for (const id of taken) stopTaskProcesses(id);
+        for (const id of taken) stopTaskAndShare(id);
         manager.reclaimWorktreesOf(taken);
       }
       // One event for the sweep, `value` = how many it archived (summed on the dashboard).
@@ -5561,7 +5612,7 @@ export function createAppParts(deps: ServerDeps) {
       const retiresQuestion = parsed.data.archived !== false && store.getRun(id)?.awaitingAnswerSince !== undefined;
       const run = store.setArchived(id, parsed.data.archived !== false);
       if (run && parsed.data.archived !== false) {
-        stopTaskProcesses(id);
+        stopTaskAndShare(id);
         manager.reclaimWorktreesOf([id]);
       }
       if (run && retiresQuestion) manager.notifyQuestionRetired?.(id);
@@ -6720,7 +6771,7 @@ export function createAppParts(deps: ServerDeps) {
       try {
         return await legacyWorktreeMutation(c.get('project'), id, async () => {
           // A shell must not outlive the directory it is standing in (spec §6).
-          stopTaskProcesses(id);
+          stopTaskAndShare(id);
           if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
           store.updateRun(id, { worktreePath: undefined, branch: undefined });
           if (run.prHead) await manager.sweepPrHeadRefs();
@@ -6740,7 +6791,7 @@ export function createAppParts(deps: ServerDeps) {
       // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so do its terminals.
       try {
         return await legacyWorktreeMutation(c.get('project'), id, async () => {
-          stopTaskProcesses(id);
+          stopTaskAndShare(id);
           // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
           deleteRunLayouts(dataDir, id);
           deleteRunGuestComments(dataDir, id);
@@ -6984,7 +7035,7 @@ export function createAppParts(deps: ServerDeps) {
         let removed = false;
         let cleanupError: string | undefined;
         // A shell must not outlive the directory it is standing in (spec §6).
-        stopTaskProcesses(loser.id);
+        stopTaskAndShare(loser.id);
         try {
           const operation = manager.lifecycle ? await manager.lifecycle.discardVariant(loser.id) : null;
           if (!operation) {
@@ -7391,10 +7442,12 @@ export function createAppParts(deps: ServerDeps) {
           void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing)) });
         const offRun = onRunFrames(store, (_run, frames) => void stream.writeSSE({ event: 'run', data: frames.record() }));
         store.on('artifacts', onArtifacts);
+        const offShare = onPreviewShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }));
         const offDeleted = onRunDeleted(store, onDeleted);
         stream.onAbort(() => {
           offRun();
           store.off('artifacts', onArtifacts);
+          offShare();
           offDeleted();
           offTodos();
           offUsage();
@@ -7447,12 +7500,14 @@ export function createAppParts(deps: ServerDeps) {
           const onArtifacts = (listing: ArtifactsBusPayload) =>
             void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing, project)) });
           store.on('artifacts', onArtifacts);
+          const offShare = onPreviewShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }), project);
           const offDeleted = onRunDeleted(store, onDeleted);
           attached.set(project, {
             store,
             detach: () => {
               offRun();
               store.off('artifacts', onArtifacts);
+              offShare();
               offDeleted();
               offTodos();
               offLifecycle?.();
@@ -8982,7 +9037,8 @@ export function createAppParts(deps: ServerDeps) {
     .route('/', groupsRoutes)
     .route('/', openTargetsRoutes)
     .route('/', worktreesRoutes)
-    .route('/', worktreeLifecycleRoutes({ stopTaskProcesses }))
+    .route('/', previewShareFamily)
+    .route('/', worktreeLifecycleRoutes({ stopTaskProcesses: stopTaskAndShare }))
     .route('/', todosRoutes)
     .route('/', sseRoutes)
     .route('/', githubRoutes)
@@ -9944,6 +10000,7 @@ export function createAppParts(deps: ServerDeps) {
     .route('/', selfUpdateRoutes)
     .route('/', starCountRoutes)
     .route('/', previewRoutes)
+    .route('/', liveShareFamily)
     .route('/', workspaceConfigRoutes)
     .route('/', workspaceSecretsRoutes)
     .route('/', transferRoutes)
