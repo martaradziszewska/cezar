@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 
-import { getRunDrafts, putRunDraft } from '@/api/client'
-import { queryKeys, useRunDrafts } from '@/api/queries'
-import { DRAFT_TEXT_MAX, type RunDraftsResponse } from '@open-mercato/cezar-api-client'
+import { deleteGuestComment, getRunDrafts, markGuestCommentsSent, putRunDraft } from '@/api/client'
+import { queryKeys, useGuestComments, useRunDrafts } from '@/api/queries'
+import { DRAFT_TEXT_MAX, type GuestComment, type GuestCommentsResponse, type RunDraftsResponse } from '@open-mercato/cezar-api-client'
 import { COMMENT_MAX, describeLines, type DiffLineComment, type DiffLineEnd, type DiffNewLineComment } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 
@@ -18,7 +18,8 @@ import { toast } from '@/components/ui/toaster'
  * in-memory list per run (merged with the server's on every save) rather than in `useDraft`.
  *
  * The same list also holds comments pinned to elements of an HTML asset (`AssetComment`, left on
- * the Assets tab), so both kinds ride one review message.
+ * the Assets tab), so both kinds ride one review message. Guest comments from a shared Preview
+ * join them in the review, but are read live from their own server list, never stored here.
  */
 
 export const DIFF_COMMENTS_SURFACE = 'diff-comments'
@@ -49,11 +50,25 @@ export interface AssetComment {
 
 export type NewAssetComment = Omit<AssetComment, 'id' | 'kind'>
 
-/** Everything the review carries: a diff line comment or an asset element comment. */
-export type ReviewComment = DiffComment | AssetComment
+/** A comment a guest left on the shared Preview. Server-owned (spec 2026-11-26-preview-share-link
+ *  § Storage): read from its own query, never stored in the `diff-comments` draft. */
+export interface GuestReviewComment extends GuestComment {
+  kind: 'guest'
+}
+
+/** Everything the review carries: a diff line comment, an asset element comment or a guest's. */
+export type ReviewComment = DiffComment | AssetComment | GuestReviewComment
 
 export function isAssetComment(comment: ReviewComment): comment is AssetComment {
   return (comment as { kind?: unknown }).kind === 'asset'
+}
+
+export function isGuestComment(comment: ReviewComment): comment is GuestReviewComment {
+  return (comment as { kind?: unknown }).kind === 'guest'
+}
+
+function isLineComment(comment: ReviewComment): comment is DiffComment {
+  return !isAssetComment(comment) && !isGuestComment(comment)
 }
 
 /** How much of an element's markup an asset comment keeps — see `EXCERPT_MAX` for why bounded. */
@@ -155,26 +170,60 @@ export function sortDiffComments(comments: readonly DiffComment[]): DiffComment[
 }
 
 /** Line comments in reading order, then asset comments by asset — each asset's in the order they
- *  were left, which is also the number its marker wears in the page. */
+ *  were left, which is also the number its marker wears in the page — then guest comments, oldest
+ *  first. */
 export function sortReviewComments(comments: readonly ReviewComment[]): ReviewComment[] {
-  const lines = sortDiffComments(comments.filter((c): c is DiffComment => !isAssetComment(c)))
+  const lines = sortDiffComments(comments.filter(isLineComment))
   const assets = comments.filter(isAssetComment)
   const order = [...new Set(assets.map((c) => c.asset))].sort((a, b) => a.localeCompare(b))
-  return [...lines, ...order.flatMap((name) => assets.filter((c) => c.asset === name))]
+  const guests = sortGuestComments(comments.filter(isGuestComment))
+  return [...lines, ...order.flatMap((name) => assets.filter((c) => c.asset === name)), ...guests]
+}
+
+function sortGuestComments<C extends { createdAt: string }>(comments: readonly C[]): C[] {
+  return [...comments].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
 }
 
 /** The line that opens the review block — what `parseReviewMessage` finds it by. */
 export const REVIEW_HEADING = 'Review comments on the diff:'
 export const REVIEW_ASSETS_HEADING = 'Review comments on assets:'
 export const REVIEW_MIXED_HEADING = 'Review comments on the diff and assets:'
+/** Any review a guest comment rides in (spec 2026-11-26-preview-share-link). */
+export const REVIEW_GENERAL_HEADING = 'Review comments:'
 const REVIEW_HEADINGS = [REVIEW_HEADING, REVIEW_ASSETS_HEADING, REVIEW_MIXED_HEADING]
 
 /** What an asset comment's item header says after the file name — `parseReviewMessage` reads it back. */
 const ASSET_ITEM = /^\(HTML asset\) element `([^`]+)`(?: — "(.*)")?$/
+/** A guest item's header after the page address. Label and author never hold `"` (`guestWhere`),
+ *  so where one ends and the other starts is unambiguous. */
+const GUEST_ITEM = /^\(app preview\) element `([^`]+)`(?: — "[^"]*")? — from ([^"]+)$/
 
 function assetWhere(comment: AssetComment): string {
   const label = comment.label ? ` — "${comment.label.replace(/"/g, "'")}"` : ''
   return `\`${comment.asset}\` (HTML asset) element \`${comment.selector}\`${label}`
+}
+
+/** A guest's text on one line with no backticks, as `cleanAssetLabel` does: every guest field is a
+ *  stranger's, and a newline or a backtick would let it out of its slot in the header. */
+function guestLine(text: string, fallback: string): string {
+  return text.replace(/[`\s]+/g, ' ').trim() || fallback
+}
+
+function guestWhere(comment: GuestComment): string {
+  const label = guestLine(comment.label, '').replace(/"/g, "'")
+  const author = guestLine(comment.author, 'a guest').replace(/"/g, "'")
+  return `\`${guestLine(comment.url, '?')}\` (app preview) element \`${guestLine(comment.selector, '?')}\`${label ? ` — "${label}"` : ''} — from ${author}`
+}
+
+function formatGuestComment(comment: GuestReviewComment): string {
+  const component = comment.component ? guestLine(comment.component, '') : ''
+  const parts = [
+    `- ${guestWhere(comment)}:`,
+    ...(component ? [indent(`component: ${component}`)] : []),
+    indent(fence(comment.excerpt, 'html')),
+    indent(comment.body.replace(/\r\n?/g, '\n')),
+  ]
+  return parts.join('\n\n')
 }
 
 /**
@@ -186,8 +235,13 @@ function assetWhere(comment: AssetComment): string {
 export function formatDiffComments(comments: readonly ReviewComment[]): string {
   if (comments.length === 0) return ''
   const assets = comments.filter(isAssetComment).length
-  const heading = assets === 0 ? REVIEW_HEADING : assets === comments.length ? REVIEW_ASSETS_HEADING : REVIEW_MIXED_HEADING
+  const heading =
+    comments.some(isGuestComment) ? REVIEW_GENERAL_HEADING
+    : assets === 0 ? REVIEW_HEADING
+    : assets === comments.length ? REVIEW_ASSETS_HEADING
+    : REVIEW_MIXED_HEADING
   const blocks = sortReviewComments(comments).map((comment) => {
+    if (isGuestComment(comment)) return formatGuestComment(comment)
     if (isAssetComment(comment)) {
       // The asset's file name and the element's selector: what the agent needs to find it again.
       return `- ${assetWhere(comment)}:\n\n${indent(fence(comment.excerpt))}\n\n${indent(comment.body)}`
@@ -217,6 +271,8 @@ export interface ReviewItem {
   body: string
   /** An asset element comment: `path` is the asset's name, `selector` the element. */
   asset?: { selector: string }
+  /** A guest's comment on the shared Preview: `path` is the page address. */
+  guest?: { selector: string; author: string }
 }
 
 const ITEM_HEADER = /^- `([^`]+)` (.+):$/
@@ -231,8 +287,18 @@ export function parseReviewMessage(text: string): { lead: string; items: ReviewI
   const found = REVIEW_HEADINGS.map((heading) => ({ heading, at: text.indexOf(`${heading}\n\n`) }))
     .filter(({ at }) => at !== -1)
     .sort((a, b) => a.at - b.at)[0]
+  // The general heading only when it reads as a review AND comes first; otherwise exactly the
+  // older headings' rule, so every review sent before it reads as it always did.
+  const general = text.indexOf(`${REVIEW_GENERAL_HEADING}\n\n`)
+  if (general !== -1 && (!found || general < found.at)) {
+    const review = parseReviewAt(text, REVIEW_GENERAL_HEADING, general)
+    if (review) return review
+  }
   if (!found) return undefined
-  const { heading, at } = found
+  return parseReviewAt(text, found.heading, found.at)
+}
+
+function parseReviewAt(text: string, heading: string, at: number): { lead: string; items: ReviewItem[] } | undefined {
   // At the start of a line: after the typed message (blank line), or straight under a Send back's
   // `Review feedback:` line when no notes were typed.
   if (at > 0 && text[at - 1] !== '\n') return undefined
@@ -261,6 +327,8 @@ export function parseReviewMessage(text: string): { lead: string; items: ReviewI
 }
 
 function readItem(headerPath: string, label: string, content: string[]): ReviewItem {
+  const guest = GUEST_ITEM.exec(label)
+  if (guest) return readGuestItem(headerPath, label, guest[1]!, guest[2]!, content)
   // A renamed file's removed line is headed by its OLD path; the diff lists the file by the new one.
   const renamed = /renamed to `([^`]+)`/.exec(label)?.[1]
   const first = ASSET_ITEM.test(label) ? null : /lines? (\d+)/.exec(label)
@@ -293,6 +361,24 @@ function readItem(headerPath: string, label: string, content: string[]): ReviewI
     excerpt,
     body: rest.join('\n').trim(),
   }
+}
+
+/** `formatGuestComment` read back: an optional `component:` line, the ```html excerpt, the note. */
+function readGuestItem(url: string, label: string, selector: string, author: string, content: string[]): ReviewItem {
+  const skipBlank = (lines: string[]) => {
+    while (lines[0]?.trim() === '') lines = lines.slice(1)
+    return lines
+  }
+  let rest = skipBlank(content)
+  if (rest[0]?.startsWith('component: ')) rest = skipBlank(rest.slice(1))
+  let excerpt = ''
+  const open = /^(`{3,})html\s*$/.exec(rest[0] ?? '')
+  if (open) {
+    const close = rest.findIndex((line, i) => i > 0 && line.trim() === open[1])
+    excerpt = rest.slice(1, close === -1 ? undefined : close).join('\n')
+    rest = close === -1 ? [] : rest.slice(close + 1)
+  }
+  return { path: url, label, guest: { selector, author }, side: 'new', excerpt, body: rest.join('\n').trim() }
 }
 
 /**
@@ -334,14 +420,14 @@ function rangeWhere(comment: DiffComment): string {
 
 /** The excerpt as a fenced code block — a range quotes all the code it covers. The fence is
  *  longer than any backtick run inside, so code that contains ``` cannot close it early. */
-function fence(excerpt: string): string {
+function fence(excerpt: string, lang = ''): string {
   const longest = Math.max(0, ...(excerpt.match(/`+/g) ?? []).map((run) => run.length))
   const ticks = '`'.repeat(Math.max(3, longest + 1))
   const code = trimBlankEdges(excerpt)
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')
-  return `${ticks}\n${code}\n${ticks}`
+  return `${ticks}${lang}\n${code}\n${ticks}`
 }
 
 function indent(body: string): string {
@@ -381,7 +467,7 @@ export const MESSAGE_TEXT_MAX = 100_000
 export function messageWithReview(text: string, comments: readonly ReviewComment[]): string {
   const message = withDiffComments(text, comments)
   if (message.length > MESSAGE_TEXT_MAX) {
-    const noun = comments.every((c) => !isAssetComment(c)) ? 'diff comment' : 'comment'
+    const noun = comments.every(isLineComment) ? 'diff comment' : 'comment'
     throw new Error(
       `Too long with the ${comments.length === 1 ? noun : `${comments.length} ${noun}s`} attached — shorten the message or remove some comments.`,
     )
@@ -403,14 +489,18 @@ export interface DiffComments {
   comments: DiffComment[]
   /** The comments pinned to elements of HTML assets — what the Assets tab draws. */
   assetComments: AssetComment[]
-  /** Both kinds, as stored — what the composer shows as chips and a send carries. */
+  /** Guests' comments on the shared Preview, oldest first — server-owned, read live. */
+  guestComments: GuestReviewComment[]
+  /** The stored kinds, then the guests' — what the composer shows as chips and a send carries. */
   all: ReviewComment[]
   /** `false` when the comment could not be kept (the list would outgrow the draft cap). */
   add: (comment: DiffNewLineComment) => boolean
   /** The new comment's id, or `undefined` when it could not be kept. */
   addAsset: (comment: NewAssetComment) => string | undefined
+  /** `false` for a guest's comment: the owner may delete it, never edit it (C6). */
   update: (id: string, body: string) => boolean
   remove: (id: string) => void
+  /** The owner's own comments only; guest comments stay. */
   clear: () => void
   /** Hand the comments to a send. Once it lands, exactly the comments it carried are dropped —
    *  one added, or edited, while it was in flight stays a draft. A failed send keeps them all. */
@@ -462,11 +552,21 @@ function storeFor(client: object): CommentsStore {
 }
 
 const NO_COMMENTS: ReviewComment[] = []
+const NO_GUEST_COMMENTS: GuestReviewComment[] = []
+
+function asGuestComments(listing: GuestCommentsResponse | undefined): GuestReviewComment[] {
+  const comments = listing?.comments ?? []
+  return comments.length === 0 ? NO_GUEST_COMMENTS : sortGuestComments(comments.map((c) => ({ ...c, kind: 'guest' as const })))
+}
 
 export function useDiffComments(runId: string): DiffComments {
   const queryClient = useQueryClient()
   const store = storeFor(queryClient)
   const drafts = useRunDrafts(runId === '' ? undefined : runId)
+  // Derived from the query on every render, never copied into the store: an emptied list (the
+  // server restarted) must take the chips with it (spec 2026-11-26-preview-share-link § Storage).
+  const guestListing = useGuestComments(runId === '' ? undefined : runId).data
+  const guestComments = useMemo(() => asGuestComments(guestListing), [guestListing])
   const storedText = drafts.data?.surfaces?.[DIFF_COMMENTS_SURFACE]?.text
   const serverComments = useMemo(
     () => parseDiffComments(typeof storedText === 'string' ? storedText : ''),
@@ -522,14 +622,21 @@ export function useDiffComments(runId: string): DiffComments {
     }
   }, [queryClient, runId])
 
-  const all = live ?? (drafts.isSuccess ? serverComments : NO_COMMENTS)
-  const comments = useMemo(() => all.filter((c): c is DiffComment => !isAssetComment(c)), [all])
-  const assetComments = useMemo(() => all.filter(isAssetComment), [all])
+  const stored = live ?? (drafts.isSuccess ? serverComments : NO_COMMENTS)
+  const all = useMemo(() => (guestComments.length === 0 ? stored : [...stored, ...guestComments]), [stored, guestComments])
+  const comments = useMemo(() => stored.filter(isLineComment), [stored])
+  const assetComments = useMemo(() => stored.filter(isAssetComment), [stored])
 
   /** The list as it stands NOW — never a render's snapshot, which a send outlives. */
   const current = useCallback(
     (): ReviewComment[] => store.lists.get(runId) ?? serverComments,
     [runId, serverComments, store],
+  )
+  /** The guests' list as it stands NOW, for the same reason. */
+  const currentGuests = useCallback(
+    (): GuestReviewComment[] =>
+      asGuestComments(queryClient.getQueryData<GuestCommentsResponse>(queryKeys.runs.guestComments(runId))),
+    [queryClient, runId],
   )
 
   /** Put `next` in the store, tell every host, and mirror it into the cached listing (so a later
@@ -630,14 +737,30 @@ export function useDiffComments(runId: string): DiffComments {
     },
     [current, write],
   )
+  /** A guest's comment, by id — never one of the owner's own, which always win a clash. */
+  const guestById = useCallback(
+    (id: string) => (current().some((c) => c.id === id) ? undefined : currentGuests().find((c) => c.id === id)),
+    [current, currentGuests],
+  )
   const update = useCallback(
-    (id: string, body: string) =>
-      write(current().map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c))),
-    [current, write],
+    (id: string, body: string) => {
+      if (guestById(id)) return false
+      return write(current().map((c) => (c.id === id ? { ...c, body: body.slice(0, COMMENT_MAX) } : c)))
+    },
+    [current, guestById, write],
   )
   const remove = useCallback(
-    (id: string) => void write(current().filter((c) => c.id !== id), [id]),
-    [current, write],
+    (id: string) => {
+      if (guestById(id)) {
+        // Server-owned: its answer is the new list, so the chip goes before the frame arrives.
+        deleteGuestComment(runId, id)
+          .then((listing) => queryClient.setQueryData(queryKeys.runs.guestComments(runId), listing))
+          .catch(() => toast('Could not remove the comment — try again.', { tone: 'danger' }))
+        return
+      }
+      write(current().filter((c) => c.id !== id), [id])
+    },
+    [current, guestById, queryClient, runId, write],
   )
   const clear = useCallback(
     () => void write([], current().map((c) => c.id)),
@@ -649,7 +772,21 @@ export function useDiffComments(runId: string): DiffComments {
   const submit = useCallback(
     async <T>(action: (held: ReviewComment[]) => Promise<T>): Promise<T> => {
       const held = current()
-      const result = await action(held)
+      // Captured WITH their revisions: one a guest edits mid-send stays, unsent (spec § Mechanism 10).
+      const guests = currentGuests()
+      const result = await action(guests.length === 0 ? held : [...held, ...guests])
+      if (guests.length > 0) {
+        // The review is already sent: a failed mark is not the user's error, and must not resend.
+        // The chips then wait for the server's next listing, which is the authority.
+        markGuestCommentsSent(runId, guests.map(({ id, revision }) => ({ id, revision })))
+          .then(({ removed }) => {
+            if (removed.length === 0) return
+            queryClient.setQueryData<GuestCommentsResponse>(queryKeys.runs.guestComments(runId), (listing) =>
+              listing ? { comments: listing.comments.filter((c) => !removed.includes(c.id)) } : listing,
+            )
+          })
+          .catch(() => {})
+      }
       if (held.length > 0) {
         // Drop what was SENT, as it was sent: a comment added meanwhile, or edited after it was
         // captured, is not what the agent read — it stays a draft for the next message.
@@ -662,7 +799,7 @@ export function useDiffComments(runId: string): DiffComments {
       }
       return result
     },
-    [current, write],
+    [current, currentGuests, queryClient, runId, write],
   )
 
   // Ready once the list has loaded ONCE: a later background refetch that fails (every send
@@ -672,6 +809,7 @@ export function useDiffComments(runId: string): DiffComments {
     ready: live !== undefined || drafts.isSuccess,
     comments,
     assetComments,
+    guestComments,
     all,
     add,
     addAsset,
@@ -682,8 +820,10 @@ export function useDiffComments(runId: string): DiffComments {
   }
 }
 
+/** Guest comments are server-owned and never enter the draft surface (spec § Storage). */
 function serialize(comments: readonly ReviewComment[]): string {
-  return comments.length === 0 ? '' : JSON.stringify(comments)
+  const own = comments.some(isGuestComment) ? comments.filter((c) => !isGuestComment(c)) : comments
+  return own.length === 0 ? '' : JSON.stringify(own)
 }
 
 /**

@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffCommentChips } from './diff-comment-chips'
-import type { DiffComment } from './diff-comments'
+import type { DiffComment, GuestReviewComment } from './diff-comments'
 
 afterEach(cleanup)
 
@@ -85,5 +85,51 @@ describe('asset comment chips', () => {
     expect(screen.getByRole('button', { name: 'Remove comment on recipe.html element Ingredients' })).not.toBeNull()
     // Line comments still come first.
     expect(screen.getAllByRole('link').map((l) => l.textContent)).toEqual(['page.tsx +11', 'recipe.html · h2.title'])
+  })
+})
+
+describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
+  const guest: GuestReviewComment = {
+    kind: 'guest',
+    id: 'g1',
+    revision: 1,
+    author: 'Ana',
+    createdAt: '2026-11-26T10:00:00.000Z',
+    url: 'http://localhost:5173/settings',
+    selector: 'main > form > button.btn-primary',
+    label: 'Save',
+    excerpt: '',
+    body: 'brand green',
+  }
+
+  it('names the guest and the element, opens the Preview, removes on ✕, and offers no edit', () => {
+    const onRemove = vi.fn()
+    render(
+      <MemoryRouter>
+        <DiffCommentChips runId="r1" comments={[guest, base]} onRemove={onRemove} />
+      </MemoryRouter>,
+    )
+    const link = screen.getByText('Ana · button.btn-primary “Save”')
+    expect(link.getAttribute('href')).toBe('/tasks/r1/preview')
+    expect(link.closest('[data-slot="diff-comment-chip"]')?.getAttribute('data-kind')).toBe('guest')
+    // After the owner's own comments.
+    expect(screen.getAllByRole('link').map((l) => l.textContent)).toEqual(['page.tsx +11', 'Ana · button.btn-primary “Save”'])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove comment from Ana on element Save' }))
+    expect(onRemove).toHaveBeenCalledWith('g1')
+    expect(screen.queryByRole('button', { name: /edit/i })).toBeNull()
+  })
+
+  it('drops the label part when there is none, and renders hostile text as text', () => {
+    render(
+      <MemoryRouter>
+        <DiffCommentChips
+          runId="r1"
+          comments={[{ ...guest, label: '', author: '<img src=x onerror=alert(1)>' }]}
+          onRemove={vi.fn()}
+        />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('<img src=x onerror=alert(1)> · button.btn-primary')).not.toBeNull()
+    expect(document.querySelector('img')).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { FileIcon, MousePointerClickIcon } from 'lucide-react'
+import { FileIcon, MessageSquareIcon, MousePointerClickIcon } from 'lucide-react'
 import { useParams } from 'react-router'
 
 import { IconTooltip } from '@/components/ui/icon-tooltip'
@@ -27,32 +27,36 @@ export function ReviewCommentsBlock({ items }: { items: readonly ReviewItem[] })
           data-slot="review-comment"
           className="overflow-hidden rounded-lg border border-border bg-background/60"
         >
-          <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5 text-label">
-            {item.asset ? (
-              <MousePointerClickIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : (
-              <FileIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-            )}
-            {id ? (
-              <IconTooltip label={`Open ${item.path} on the ${item.asset ? 'Assets' : 'Changes'} tab`}>
-                <Link
-                  to={item.asset ? assetCommentTarget(id, item.path) : reviewTarget(id, item)}
-                  className="min-w-0 truncate font-mono font-medium text-foreground underline-offset-2 hover:underline"
-                >
-                  {item.path}
-                </Link>
-              </IconTooltip>
-            ) : (
-              <span className="min-w-0 truncate font-mono font-medium">{item.path}</span>
-            )}
-            {item.asset ? (
-              <span data-slot="review-comment-element" className="min-w-0 truncate text-muted-foreground">
-                · element <span className="font-mono">{item.asset.selector}</span>
-              </span>
-            ) : (
-              <span className="shrink-0 text-muted-foreground">· {item.label}</span>
-            )}
-          </div>
+          {item.guest ? (
+            <GuestLocation runId={id} item={item} guest={item.guest} />
+          ) : (
+            <div className="flex min-w-0 items-center gap-1.5 border-b border-border/60 px-2.5 py-1.5 text-label">
+              {item.asset ? (
+                <MousePointerClickIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <FileIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+              )}
+              {id ? (
+                <IconTooltip label={`Open ${item.path} on the ${item.asset ? 'Assets' : 'Changes'} tab`}>
+                  <Link
+                    to={item.asset ? assetCommentTarget(id, item.path) : reviewTarget(id, item)}
+                    className="min-w-0 truncate font-mono font-medium text-foreground underline-offset-2 hover:underline"
+                  >
+                    {item.path}
+                  </Link>
+                </IconTooltip>
+              ) : (
+                <span className="min-w-0 truncate font-mono font-medium">{item.path}</span>
+              )}
+              {item.asset ? (
+                <span data-slot="review-comment-element" className="min-w-0 truncate text-muted-foreground">
+                  · element <span className="font-mono">{item.asset.selector}</span>
+                </span>
+              ) : (
+                <span className="shrink-0 text-muted-foreground">· {item.label}</span>
+              )}
+            </div>
+          )}
           {item.excerpt !== '' ? (
             <pre
               data-slot="review-comment-code"
@@ -70,7 +74,40 @@ export function ReviewCommentsBlock({ items }: { items: readonly ReviewItem[] })
   )
 }
 
+/** A guest item's head: who left it, then the page and element the way the other kinds show theirs. */
+function GuestLocation({ runId, item, guest }: { runId: string | undefined; item: ReviewItem; guest: NonNullable<ReviewItem['guest']> }) {
+  return (
+    <div className="flex flex-col gap-0.5 border-b border-border/60 px-2.5 py-1.5 text-label">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <MessageSquareIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+        <span data-slot="review-comment-author" className="min-w-0 truncate font-medium text-foreground">
+          From {guest.author}
+        </span>
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {runId ? (
+          <IconTooltip label="Open the Preview">
+            <Link
+              to={previewTarget(runId)}
+              className="min-w-0 truncate font-mono font-medium text-foreground underline-offset-2 hover:underline"
+            >
+              {item.path}
+            </Link>
+          </IconTooltip>
+        ) : (
+          <span className="min-w-0 truncate font-mono font-medium">{item.path}</span>
+        )}
+        <span data-slot="review-comment-element" className="min-w-0 truncate text-muted-foreground">
+          · element <span className="font-mono">{guest.selector}</span>
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function whereLabel(items: readonly ReviewItem[]): string {
+  const guests = items.filter((item) => item.guest).length
+  if (guests > 0) return guests === items.length ? 'on the app preview' : 'in the review'
   const assets = items.filter((item) => item.asset).length
   if (assets === 0) return 'on the diff'
   return assets === items.length ? (assets === 1 ? 'on an asset' : 'on assets') : 'on the diff and assets'
@@ -79,6 +116,11 @@ function whereLabel(items: readonly ReviewItem[]): string {
 /** The Assets tab, opened on the asset a comment is pinned to. */
 export function assetCommentTarget(runId: string, asset: string): string {
   return `/tasks/${runId}/assets/${encodeURIComponent(asset)}`
+}
+
+/** The task's Preview tab. It has no address parameter, so a guest comment opens it as it was left. */
+export function previewTarget(runId: string): string {
+  return `/tasks/${runId}/preview`
 }
 
 /** The Changes tab, asked to reveal this comment (or line) — it reads these params on arrival. */

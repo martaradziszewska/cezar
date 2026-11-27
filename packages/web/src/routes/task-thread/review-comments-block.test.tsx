@@ -73,3 +73,37 @@ describe('a sent asset comment in the transcript', () => {
     expect(cards[1]!.querySelector('[data-slot="review-comment-element"]')?.textContent).toBe('· element main > h2')
   })
 })
+
+describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-link)', () => {
+  it('heads the card with the guest, then the page and element, the markup and the note', () => {
+    renderBubble(
+      formatDiffComments([
+        COMMENT,
+        {
+          kind: 'guest',
+          id: 'g1',
+          revision: 1,
+          author: 'Ana',
+          createdAt: '2026-11-26T10:00:00.000Z',
+          url: 'http://localhost:5173/settings',
+          selector: 'main > button.btn-primary',
+          label: 'Save',
+          excerpt: '<button>Save</button>',
+          body: 'brand green',
+        },
+      ]),
+    )
+    const cards = document.querySelectorAll('[data-slot="review-comment"]')
+    expect(cards).toHaveLength(2)
+    const card = cards[1]!
+    expect(card.querySelector('[data-slot="review-comment-author"]')?.textContent).toBe('From Ana')
+    const link = card.querySelector('a')!
+    expect(link.textContent).toBe('http://localhost:5173/settings')
+    expect(link.getAttribute('href')).toBe('/tasks/r1/preview')
+    expect(card.querySelector('[data-slot="review-comment-element"]')?.textContent).toBe('· element main > button.btn-primary')
+    expect(card.querySelector('[data-slot="review-comment-code"]')?.textContent).toBe('<button>Save</button>')
+    expect(card.querySelector('[data-slot="review-comment-body"]')?.textContent).toBe('brand green')
+    // The diff card keeps exactly what it showed before.
+    expect(cards[0]!.querySelector('[data-slot="review-comment-author"]')).toBeNull()
+  })
+})

@@ -1,10 +1,19 @@
-import { FileIcon, MousePointerClickIcon, XIcon } from 'lucide-react'
+import { FileIcon, MessageSquareIcon, MousePointerClickIcon, XIcon } from 'lucide-react'
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Link } from '@/lib/project-router'
 
-import { isAssetComment, linesLabel, sortReviewComments, type AssetComment, type DiffComment, type ReviewComment } from './diff-comments'
-import { assetCommentTarget, reviewTarget } from './review-comments-block'
+import {
+  isAssetComment,
+  isGuestComment,
+  linesLabel,
+  sortReviewComments,
+  type AssetComment,
+  type DiffComment,
+  type GuestReviewComment,
+  type ReviewComment,
+} from './diff-comments'
+import { assetCommentTarget, previewTarget, reviewTarget } from './review-comments-block'
 
 /**
  * The diff comments as draft items in the thread composer — one chip per comment, `file +line`,
@@ -32,6 +41,7 @@ export function DiffCommentChips({
     <TooltipProvider delayDuration={300}>
       {sortReviewComments(comments).map((comment) => {
         if (isAssetComment(comment)) return <AssetCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
+        if (isGuestComment(comment)) return <GuestCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
         const name = comment.path.split('/').at(-1) ?? comment.path
         const sign = (side: 'old' | 'new') => (side === 'old' ? '−' : '+')
         const span =
@@ -158,4 +168,65 @@ function AssetCommentChip({
       </TooltipContent>
     </Tooltip>
   )
+}
+
+/** A guest's comment on the shared Preview: `Ana · button.primary “Save”`, opening the Preview.
+ *  No edit: they are someone else's words (spec 2026-11-26-preview-share-link, C6). */
+function GuestCommentChip({
+  runId,
+  comment,
+  onRemove,
+}: {
+  runId: string
+  comment: GuestReviewComment
+  onRemove: (id: string) => void
+}) {
+  // Stranger-typed text: folded to one line, and only ever rendered as text nodes.
+  const author = oneLine(comment.author)
+  const label = oneLine(comment.label)
+  const tail = selectorTail(oneLine(comment.selector))
+  const element = label || tail
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-slot="diff-comment-chip"
+          data-kind="guest"
+          className="flex h-8 max-w-[260px] items-center overflow-hidden rounded-md border border-border bg-muted/40 text-xs text-foreground"
+        >
+          <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
+            <MessageSquareIcon className="size-3.5" />
+          </span>
+          <Link
+            to={previewTarget(runId)}
+            className="min-w-0 truncate px-2 font-medium hover:underline"
+            aria-label={`Comment from ${author} on ${comment.url} element ${element}`}
+          >
+            {author} · {tail}
+            {label ? ` “${label}”` : null}
+          </Link>
+          <button
+            type="button"
+            aria-label={`Remove comment from ${author} on element ${element}`}
+            onClick={() => onRemove(comment.id)}
+            className="flex h-full items-center px-1.5 text-soft-foreground hover:bg-muted hover:text-foreground"
+          >
+            <XIcon aria-hidden="true" className="size-3.5" />
+          </button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="max-w-[320px] text-left">
+        <div data-slot="diff-comment-tooltip" className="flex flex-col gap-1">
+          <span className="font-mono text-meta break-all text-contrast-foreground/80">
+            {author} · {comment.url} · {comment.selector}
+          </span>
+          <span className="line-clamp-6 break-words whitespace-pre-wrap">{comment.body}</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }

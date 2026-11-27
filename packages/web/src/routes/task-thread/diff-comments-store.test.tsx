@@ -3,9 +3,11 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
+import type { GuestComment } from '@open-mercato/cezar-api-client'
 
-import { useDiffComments, type DiffComment } from './diff-comments'
+import { useDiffComments, type DiffComment, type ReviewComment } from './diff-comments'
 
 afterEach(() => {
   cleanup()
@@ -272,6 +274,215 @@ describe('diff comments across windows', () => {
       b.view.result.current.add({ ...NEW, line: 5, body: 'new in B' })
     })
     await waitFor(() => expect(server.stored().map((c) => c.body)).toEqual(['edited in A', 'new in B']))
+  })
+})
+
+const GUEST: GuestComment = {
+  id: 'g1',
+  revision: 2,
+  author: 'Ana',
+  createdAt: '2026-11-26T10:00:00.000Z',
+  url: 'http://localhost:5173/settings',
+  selector: 'main > button.btn-primary',
+  label: 'Save',
+  excerpt: '<button>Save</button>',
+  body: 'brand green',
+}
+
+/** The drafts store (like `statefulServer`) plus the run's server-owned guest list. */
+function guestServer(initialDrafts: DiffComment[], initialGuests: GuestComment[], opts: { failSent?: boolean } = {}) {
+  let stored = JSON.stringify(initialDrafts)
+  let guests = [...initialGuests]
+  const puts: string[] = []
+  const sent: unknown[] = []
+  const deleted: string[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const path = String(input)
+      const method = init.method ?? 'GET'
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/runs/r1/guest-comments/sent') && method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { comments: { id: string; revision: number }[] }
+        sent.push(body)
+        if (opts.failSent) return json({ error: 'gone' }, 500)
+        const removed = body.comments
+          .filter((c) => guests.some((g) => g.id === c.id && g.revision === c.revision))
+          .map((c) => c.id)
+        guests = guests.filter((g) => !removed.includes(g.id))
+        return json({ removed })
+      }
+      const one = /\/runs\/r1\/guest-comments\/([^/]+)$/.exec(path)
+      if (one && method === 'DELETE') {
+        deleted.push(decodeURIComponent(one[1]!))
+        guests = guests.filter((g) => g.id !== decodeURIComponent(one[1]!))
+        return json({ comments: guests })
+      }
+      if (path.endsWith('/runs/r1/guest-comments')) return json({ comments: guests })
+      if (method === 'PUT') {
+        stored = (JSON.parse(String(init.body)) as { text: string }).text
+        puts.push(stored)
+        return json({ text: stored, images: [], updatedAt: '2026-10-05T00:00:00.000Z' })
+      }
+      if (path.endsWith('/runs/r1/drafts')) {
+        return json({
+          surfaces: stored === '' ? {} : { 'diff-comments': { text: stored, images: [], updatedAt: '2026-10-05T00:00:00.000Z' } },
+        })
+      }
+      return json({})
+    }),
+  )
+  return {
+    puts,
+    sent,
+    deleted,
+    setGuests: (next: GuestComment[]) => (guests = next),
+  }
+}
+
+describe('guest comments in the shared store (spec 2026-11-26-preview-share-link)', () => {
+  it('lists guest comments after the stored ones, oldest first, apart from the line and asset lists', async () => {
+    const older: GuestComment = { ...GUEST, id: 'g0', author: 'Piotr', createdAt: '2026-11-26T09:00:00.000Z' }
+    guestServer([C1], [GUEST, older])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.all).toHaveLength(3))
+    expect(changes.result.current.all.map((c) => c.id)).toEqual(['c1', 'g0', 'g1'])
+    expect(changes.result.current.guestComments.map((c) => c.kind)).toEqual(['guest', 'guest'])
+    expect(changes.result.current.comments).toEqual([C1])
+    expect(changes.result.current.assetComments).toEqual([])
+  })
+
+  it('never writes a guest comment into the diff-comments draft', async () => {
+    const server = guestServer([C1], [GUEST])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+
+    act(() => {
+      changes.result.current.add({ path: 'src/b.ts', side: 'new', line: 1, excerpt: '', body: 'mine' })
+    })
+    await waitFor(() => expect(server.puts).toHaveLength(1))
+    act(() => changes.result.current.update('c1', 'one, edited'))
+    await waitFor(() => expect(server.puts).toHaveLength(2))
+    act(() => changes.result.current.clear())
+    await waitFor(() => expect(server.puts).toHaveLength(3))
+    for (const text of server.puts) expect(text).not.toContain('g1')
+    expect(server.puts.at(-1)).toBe('')
+    // `clear()` is the owner's own list: the guest's comment is still there.
+    expect(changes.result.current.all.map((c) => c.id)).toEqual(['g1'])
+  })
+
+  it('does not edit a guest comment', async () => {
+    const server = guestServer([], [GUEST])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+    let edited: boolean | undefined
+    act(() => {
+      edited = changes.result.current.update('g1', 'mine now')
+    })
+    expect(edited).toBe(false)
+    expect(changes.result.current.guestComments[0]?.body).toBe('brand green')
+    expect(server.puts).toEqual([])
+  })
+
+  it('removes a guest comment on the server and drops its chip from the answer', async () => {
+    const server = guestServer([], [GUEST])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+    act(() => changes.result.current.remove('g1'))
+    await waitFor(() => expect(changes.result.current.all).toEqual([]))
+    expect(server.deleted).toEqual(['g1'])
+    expect(server.puts).toEqual([])
+  })
+
+  it('marks carried guest comments sent at the captured revision', async () => {
+    const server = guestServer([C1], [GUEST])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.all).toHaveLength(2))
+
+    let held: ReviewComment[] = []
+    await act(async () => {
+      await changes.result.current.submit(async (comments) => {
+        held = comments
+        return 'delivered'
+      })
+    })
+    expect(held.map((c) => c.id)).toEqual(['c1', 'g1'])
+    await waitFor(() => expect(server.sent).toEqual([{ comments: [{ id: 'g1', revision: 2 }] }]))
+    await waitFor(() => expect(changes.result.current.all).toEqual([]))
+  })
+
+  it('marks nothing when the send fails', async () => {
+    const server = guestServer([], [GUEST])
+    const { changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+    await act(async () => {
+      await changes.result.current.submit(() => Promise.reject(new Error('no'))).catch(() => {})
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(server.sent).toEqual([])
+    expect(changes.result.current.guestComments).toHaveLength(1)
+  })
+
+  it('a failed mark still counts as sent: no error, no resend, the chip waits for the next listing', async () => {
+    const server = guestServer([], [GUEST], { failSent: true })
+    const { client, changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+    let result: string | undefined
+    await act(async () => {
+      result = await changes.result.current.submit(async () => 'delivered')
+    })
+    expect(result).toBe('delivered')
+    await waitFor(() => expect(server.sent).toHaveLength(1))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(server.sent).toHaveLength(1)
+    expect(changes.result.current.guestComments).toHaveLength(1)
+    // The server is the authority: its next listing decides.
+    act(() => {
+      client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [] })
+    })
+    await waitFor(() => expect(changes.result.current.guestComments).toEqual([]))
+  })
+
+  it('keeps a guest comment edited while the send was in flight', async () => {
+    const server = guestServer([], [GUEST])
+    const { client, changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.guestComments).toHaveLength(1))
+
+    let land: (value: string) => void = () => {}
+    let sending!: Promise<string>
+    act(() => {
+      sending = changes.result.current.submit(() => new Promise<string>((resolve) => (land = resolve)))
+    })
+    // The guest edits it: the server bumps the revision and a frame carries it in.
+    const edited = { ...GUEST, revision: 3, body: 'brand green, darker' }
+    server.setGuests([edited])
+    act(() => {
+      client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [edited] })
+    })
+    await act(async () => {
+      land('delivered')
+      await sending
+    })
+    await waitFor(() => expect(server.sent).toEqual([{ comments: [{ id: 'g1', revision: 2 }] }]))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(changes.result.current.guestComments.map((c) => c.body)).toEqual(['brand green, darker'])
+  })
+
+  it('shows no chip once the server restarts and the list is empty', async () => {
+    guestServer([], [GUEST])
+    const { client, changes } = mountChangesHost()
+    await waitFor(() => expect(changes.result.current.all).toHaveLength(1))
+    act(() => {
+      client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [] })
+    })
+    await waitFor(() => expect(changes.result.current.all).toEqual([]))
   })
 })
 
