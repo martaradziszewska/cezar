@@ -1487,10 +1487,11 @@ export async function getPreviewShare(runId: string, opts?: ReadOptions): Promis
   )
 }
 
-export async function stopPreviewShare(runId: string): Promise<PreviewShareStateResponse> {
+/** `projectId` pins it from outside the run's scope (the workspace live-links indicator). */
+export async function stopPreviewShare(runId: string, projectId: string = queryScope()): Promise<PreviewShareStateResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].$delete({
-      param: { projectId: queryScope(), id: encodeURIComponent(runId) },
+      param: { projectId, id: encodeURIComponent(runId) },
     }),
     runPath(runId, '/preview-share'),
   )

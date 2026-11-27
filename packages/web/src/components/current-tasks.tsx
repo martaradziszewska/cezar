@@ -5,6 +5,7 @@ import { useArchiveRun, useHealth, usePinRun, useProjectRepoBase, useReferencePr
 import type { RunRecord } from '@open-mercato/cezar-api-client'
 import { ArchiveToggle } from '@/components/archive-toggle'
 import { useSidebarNavigate } from '@/components/app-shell'
+import { TaskShareBadge } from '@/components/live-shares-indicator'
 import { PinToggle } from '@/components/pin-toggle'
 import { TaskReferenceChip } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
@@ -39,12 +40,15 @@ export function CurrentTasks({
   now = Date.now(),
   onTogglePin,
   onToggleArchive,
+  badge,
 }: {
   runs: RunRecord[]
   currentRunId?: string | null
   now?: number
   onTogglePin?: (run: RunRecord, pinned: boolean) => void
   onToggleArchive?: (run: RunRecord, archived: boolean) => void
+  /** A per-row chip beside the PR chip; a slot so the list itself stays query-free. */
+  badge?: (runId: string) => React.ReactNode
 }) {
   const rows = currentTasks(runs)
   // Over the whole list, never the capped rows: `#2` is where the engine picks the run up.
@@ -65,6 +69,7 @@ export function CurrentTasks({
             now={now}
             onTogglePin={onTogglePin}
             onToggleArchive={onToggleArchive}
+            badge={badge}
           />
         ))
       )}
@@ -87,6 +92,7 @@ const CurrentTaskRow = React.memo(function CurrentTaskRow({
   now,
   onTogglePin,
   onToggleArchive,
+  badge,
 }: {
   run: RunRecord
   current: boolean
@@ -95,6 +101,7 @@ const CurrentTaskRow = React.memo(function CurrentTaskRow({
   now: number
   onTogglePin?: (run: RunRecord, pinned: boolean) => void
   onToggleArchive?: (run: RunRecord, archived: boolean) => void
+  badge?: (runId: string) => React.ReactNode
 }) {
   const onNavigate = useSidebarNavigate()
   const canArchive = Boolean(onToggleArchive) && (Boolean(run.archived) || !isRunActive(run.status))
@@ -129,6 +136,7 @@ const CurrentTaskRow = React.memo(function CurrentTaskRow({
       {reference ? (
         <TaskReferenceChip run={run} reference={reference} compact className="h-auto shrink-0 gap-[2px] px-1.5 py-px text-micro" />
       ) : null}
+      {badge?.(run.id)}
       <Link
         to={`/tasks/${run.id}`}
         title={title}
@@ -198,6 +206,10 @@ export function CurrentTasksContainer() {
       archiveMutation.mutate({ id: run.id, archived }, { onError: (error: Error) => toast(error.message, { tone: 'danger' }) }),
     [archiveMutation.mutate],
   )
+  // The project these rows belong to, as `useRunsForProject` picks it, for the share badge (C7).
+  const bootProject = health.data?.bootProject ?? null
+  const rowsProject = activeProjectId === null || activeProjectId === 'default' ? bootProject : activeProjectId
+  const shareBadge = React.useCallback((runId: string) => <TaskShareBadge runId={runId} projectId={rowsProject} />, [rowsProject])
   const projectId = useReferenceProjectId()
   const repoBase = useProjectRepoBase()
   const rows = React.useMemo(() => (shown ? currentTasks(shown) : []), [shown])
@@ -221,6 +233,7 @@ export function CurrentTasksContainer() {
           now={now}
           onTogglePin={onTogglePin}
           onToggleArchive={onToggleArchive}
+          badge={shareBadge}
         />
       </RepoBaseContext.Provider>
     </ReferenceStatusProvider>

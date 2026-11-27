@@ -947,6 +947,9 @@ describe('preview share calls', () => {
     expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['GET', '/runs/r1/preview-share'])
     await stopPreviewShare('r1')
     expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/preview-share'])
+    // The workspace indicator stops a share of another project than the one on screen.
+    await stopPreviewShare('r1', 'other')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/p/other/runs/r1/preview-share'])
     await extendPreviewShare('r 1')
     expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['POST', '/runs/r%201/preview-share/extend'])
     await decidePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa', 'allow')

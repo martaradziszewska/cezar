@@ -20,6 +20,7 @@ import { ToolsMenuItems, toolsTone, toolsTooltip } from '@/components/tools-menu
 import { ManagerHeads } from '@/components/manager-heads'
 import { ConnectPhoneLink, PhonesLink } from '@/components/connect-phone-link'
 import { RelayAccountNotice } from '@/components/relay-account-notice'
+import { LiveSharesIndicator } from '@/components/live-shares-indicator'
 import { ManagerRail, ManagerSidebar, ProjectQuestionsLink } from '@/routes/manager/manager-sidebar'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { pathnameProjectId, stripProjectPrefix, useActiveProjectId } from '@/lib/project-router'
@@ -220,7 +221,7 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
           },
     [globalSettings, navProjectId, projectId, navProject?.name, projectName, registry?.projects],
   )
-  const banner = useMemo(() => <><ConnectionBanner /><BuildSkewBanner /><ProviderBannerContainer /><RelayAccountNotice /></>, [])
+  const banner = useMemo(() => <><ConnectionBanner /><BuildSkewBanner /><ProviderBannerContainer /><RelayAccountNotice /><LiveSharesIndicator /></>, [])
   // The opt-in ask (docs/telemetry.md): renders nothing once this machine has answered.
   const footerBanner = useMemo(() => <TelemetryConsentBanner />, [])
   const currentTasks = useMemo(() => <CurrentTasksContainer />, [])

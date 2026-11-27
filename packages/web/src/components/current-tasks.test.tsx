@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -141,7 +141,9 @@ describe('CurrentTasksContainer', () => {
       const path = String(input)
       const body = path === '/api/v1/health'
         ? { version: '1.0.0', bootProject: 'cezar', checks: [], capabilities: { automations: true } }
-        : path.endsWith('/automations') ? { automations: [scheduled] } : [run({ id: 'live', title: 'A real run', status: 'running' })]
+        : path.endsWith('/automations') ? { automations: [scheduled] }
+        : path.endsWith('/workspace/preview-shares') ? { shares: [{ projectId: 'cezar', runId: 'live', title: 'A real run', target: 'http://localhost:5173', expiresAt: '2099-01-01T00:00:00Z', waiting: 0 }] }
+        : [run({ id: 'live', title: 'A real run', status: 'running' })]
       return new Response(JSON.stringify(body), { status: 200 })
     })
     render(
@@ -153,5 +155,7 @@ describe('CurrentTasksContainer', () => {
     )
     const region = await screen.findByRole('region', { name: 'Scheduled tasks' })
     expect(within(region).getByRole('link', { name: /Later/ })).toBeTruthy()
+    // The live share's run wears the badge beside its chips (spec 2026-11-26-preview-share-link C7).
+    await waitFor(() => expect(document.querySelector('[data-run-id="live"] [data-slot="task-share-badge"]')?.textContent).toBe('Sharing'))
   })
 })
