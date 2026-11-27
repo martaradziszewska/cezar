@@ -63,6 +63,8 @@ export function ShareControl({
   // Synchronous guard: a second click can land before the disabled state renders.
   const inFlight = useRef(new Set<string>())
   const panelRef = useRef<HTMLDivElement>(null)
+  // Stop was asked for: an Extend or a guest decision that answers "live" after it is older news.
+  const stopAsked = useRef(false)
 
   // A share that starts or ends (Stop, expiry, a server restart's `{ share: null }`) closes
   // whatever was open for the other state.
@@ -74,6 +76,7 @@ export function ShareControl({
     setFailure(null)
     // A decision the ended share never answered must not hold the next share's buttons.
     decisions.reset()
+    if (live) stopAsked.current = false
   }
 
   if (!enabled && share === null) return null
@@ -90,10 +93,14 @@ export function ShareControl({
     }
   }
   // A focus refetch that began before the request must not land after it with the old state.
-  const settle = async (next: PreviewShareStateResponse) => {
+  // `false` when the answer was dropped: a share its owner stopped never reads as live again.
+  const settle = async (next: PreviewShareStateResponse): Promise<boolean> => {
+    if (stopAsked.current && next.share !== null) return false
     const queryKey = queryKeys.runs.previewShare(runId)
     await queryClient.cancelQueries({ queryKey })
+    if (stopAsked.current && next.share !== null) return false
     queryClient.setQueryData<PreviewShareStateResponse>(queryKey, next)
+    return true
   }
   const failed = (error: unknown) => toast(messageOf(error), { tone: 'danger', expected: explained(error) })
 
@@ -101,6 +108,7 @@ export function ShareControl({
     if (targetOrigin === null) return
     void busy('start', async () => {
       setFailure(null)
+      stopAsked.current = false
       try {
         const answer = await startPreviewShare(runId, { target: targetOrigin + path, parentOrigin: window.location.origin })
         await settle(answer)
@@ -180,11 +188,17 @@ export function ShareControl({
     void busy('extend', async () => {
       try {
         const answer = await extendPreviewShare(runId)
-        await settle(answer)
-        if (answer.share) toast(`Sharing until ${clock(answer.share.expiresAt)}`)
+        if ((await settle(answer)) && answer.share) toast(`Sharing until ${clock(answer.share.expiresAt)}`)
       } catch (error) {
-        failed(error)
+        // Stopped meanwhile: "not sharing" is what the owner asked for, not a failure.
+        if (!stopAsked.current) failed(error)
       }
+    })
+  const stop = () =>
+    void busy('stop', async () => {
+      stopAsked.current = true
+      // A stop that failed stopped nothing: later answers count again.
+      if (!(await request(() => stopPreviewShare(runId))())) stopAsked.current = false
     })
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -211,7 +225,7 @@ export function ShareControl({
           </Button>
           {/* The server refuses it while sharing is off (C5). */}
           {enabled ? (
-            <Button type="button" variant="ghost" size="sm" disabled={pending.has('extend')} onClick={extend}>
+            <Button type="button" variant="ghost" size="sm" disabled={pending.has('extend') || pending.has('stop')} onClick={extend}>
               <ClockPlusIcon aria-hidden="true" className="size-3.5" />
               Extend 8 hours
             </Button>
@@ -220,8 +234,9 @@ export function ShareControl({
             type="button"
             variant="ghost"
             size="sm"
+            // Never off for a pending Extend: a live link is always stoppable (spec § States).
             disabled={pending.has('stop')}
-            onClick={() => void busy('stop', async () => void (await request(() => stopPreviewShare(runId))()))}
+            onClick={stop}
           >
             <SquareIcon aria-hidden="true" className="size-3.5" />
             Stop sharing

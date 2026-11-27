@@ -302,6 +302,91 @@ describe('ShareControl', () => {
     expect(liveButton().textContent).toContain(`until ${until(later)}`)
   })
 
+  describe('Stop against an answer that is still on its way', () => {
+    const later = '2026-11-28T02:41:00.000Z'
+    const opened = async (share: PreviewShare) => {
+      seed(share)
+      renderControl()
+      fireEvent.click(liveButton())
+      return {
+        extend: (await screen.findByRole('button', { name: 'Extend 8 hours' })) as HTMLButtonElement,
+        stop: screen.getByRole('button', { name: 'Stop sharing' }) as HTMLButtonElement,
+      }
+    }
+
+    it('turns Extend off while Stop is in flight', async () => {
+      api.stopPreviewShare.mockReturnValue(new Promise(() => {}))
+      const { extend, stop } = await opened(liveShare())
+      fireEvent.click(stop)
+      await waitFor(() => expect(extend.disabled).toBe(true))
+      fireEvent.click(extend)
+      expect(api.extendPreviewShare).not.toHaveBeenCalled()
+    })
+
+    it('shows Share, and no new end time, when an Extend answers after the stop', async () => {
+      let answerExtend: (value: unknown) => void = () => {}
+      api.extendPreviewShare.mockReturnValue(new Promise((resolve) => (answerExtend = resolve)))
+      api.stopPreviewShare.mockResolvedValue({ share: null })
+      const { extend, stop } = await opened(liveShare())
+      fireEvent.click(extend)
+      // A live link is always stoppable, a pending Extend included.
+      expect(stop.disabled).toBe(false)
+      fireEvent.click(stop)
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy()
+
+      await act(async () => answerExtend({ share: liveShare({ expiresAt: later }) }))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+      expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /Sharing/ })).toBeNull()
+      expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+      expect(toast.mock.calls.flat().filter((arg) => typeof arg === 'string' && arg.startsWith('Sharing until'))).toEqual([])
+    })
+
+    it('shows Share when a guest decision answers after the stop', async () => {
+      let answerAllow: (value: unknown) => void = () => {}
+      api.decidePreviewShareGuest.mockReturnValue(new Promise((resolve) => (answerAllow = resolve)))
+      api.stopPreviewShare.mockResolvedValue({ share: null })
+      const { stop } = await opened(liveShare({ guests: [guest()] }))
+      fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
+      fireEvent.click(stop)
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy()
+      await act(async () => answerAllow({ share: liveShare({ guests: [guest({ state: 'allowed' })] }) }))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+      expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
+      expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+    })
+
+    it('takes later answers again after a Stop that failed', async () => {
+      api.stopPreviewShare.mockRejectedValueOnce(new Error('cannot reach the cezar server'))
+      api.extendPreviewShare.mockResolvedValue({ share: liveShare({ expiresAt: later }) })
+      const { extend, stop } = await opened(liveShare())
+      fireEvent.click(stop)
+      await waitFor(() => expect(toast).toHaveBeenCalledWith('cannot reach the cezar server', expect.objectContaining({ tone: 'danger' })))
+      await waitFor(() => expect(extend.disabled).toBe(false))
+      fireEvent.click(extend)
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(`Sharing until ${until(later)}`))
+      expect(liveButton().textContent).toContain(`until ${until(later)}`)
+    })
+
+    it('takes the answers of the next share', async () => {
+      api.stopPreviewShare.mockResolvedValue({ share: null })
+      api.startPreviewShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2` }) })
+      api.extendPreviewShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2`, expiresAt: later }) })
+      const { stop } = await opened(liveShare())
+      fireEvent.click(stop)
+      fireEvent.click(await screen.findByRole('button', { name: 'Share' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
+      await waitFor(() => expect(liveButton()).toBeTruthy())
+      fireEvent.click(liveButton())
+      fireEvent.click(await screen.findByRole('button', { name: 'Extend 8 hours' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(`Sharing until ${until(later)}`))
+    })
+  })
+
   it('offers no Extend when the capability is off', async () => {
     seed(liveShare())
     capability.previewShare = false
