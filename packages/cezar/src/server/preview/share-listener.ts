@@ -177,10 +177,13 @@ export function safeNext(next: string | null): string | null {
   return /^\/(?![/\\])[^\u0000-\u001f\u007f]*$/.test(next) ? next : null;
 }
 
+/** Bidi controls and zero-width characters: a name must not reorder or hide the code shown beside it (C12). */
+const INVISIBLE = /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+
 /** The name goes into the owner's review message, so it stays on one line. */
 function cleanName(raw: unknown): string {
   if (typeof raw !== 'string') return '';
-  return raw.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, GUEST_NAME_MAX).trim();
+  return raw.replace(INVISIBLE, '').replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, GUEST_NAME_MAX).trim();
 }
 
 function clientAddress(req: IncomingMessage): string {

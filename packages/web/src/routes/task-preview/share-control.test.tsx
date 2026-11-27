@@ -78,6 +78,10 @@ function renderControl(props: { targetOrigin?: string | null; path?: string } = 
 
 const until = (iso: string) => new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
 const liveButton = () => screen.getByRole('button', { name: /Sharing/ })
+const rows = () => Array.from(document.querySelectorAll<HTMLElement>('[data-slot="share-guest"]'))
+/** The row's text without its buttons: the name element and the code line beside it. */
+const label = (row: HTMLElement) => row.querySelector('[data-slot="share-guest-label"]')!.textContent
+const labelled = async (text: string) => waitFor(() => expect(rows().map(label)).toContain(text))
 
 beforeEach(() => {
   client = createQueryClient()
@@ -88,7 +92,10 @@ beforeEach(() => {
   writeClipboard.mockReset().mockResolvedValue(undefined)
   toast.mockReset()
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('ShareControl', () => {
   it('shows the exposure text every time before creating a link', async () => {
@@ -212,10 +219,11 @@ describe('ShareControl', () => {
     renderControl()
     expect(screen.getByRole('img', { name: '1 person waiting to join' })).toBeTruthy()
     fireEvent.click(liveButton())
-    expect(await screen.findByText('Ana · 4821 wants to join')).toBeTruthy()
+    await labelled('Ana · 4821 wants to join')
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
     expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
     // The answer lands in the cache, so the row moves on without waiting for the frame.
+    await labelled('Ana — allowed')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy())
     expect(screen.queryByRole('img', { name: /waiting to join/ })).toBeNull()
   })
@@ -234,11 +242,8 @@ describe('ShareControl', () => {
     renderControl()
     expect(screen.getByRole('img', { name: '2 people waiting to join' })).toBeTruthy()
     fireEvent.click(liveButton())
-    await screen.findByText('Ana · 4821 wants to join')
-    const rows = Array.from(document.querySelectorAll('[data-slot="share-guest"]'), (row) => row.textContent)
-    expect(rows[0]).toContain('Ana · 4821 wants to join')
-    expect(rows[1]).toContain('Ola · 1234 wants to join')
-    expect(rows[2]).toContain('Piotr')
+    await labelled('Ana · 4821 wants to join')
+    expect(rows().map(label)).toEqual(['Ana · 4821 wants to join', 'Ola · 1234 wants to join', 'Piotr'])
     fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[0]!)
     expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'deny')
   })
@@ -251,7 +256,9 @@ describe('ShareControl', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     expect(api.removePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID)
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Not found', expect.objectContaining({ tone: 'danger' })))
-    expect((screen.getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(rows().map(label)).toEqual(['Ana'])
+    // Enabled again once the settle window (600 ms) has passed.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(false))
   })
 
   it('copies the link from the menu and never shows it', async () => {
@@ -272,14 +279,14 @@ describe('ShareControl', () => {
     seed(liveShare({ guests: [guest()] }))
     renderControl()
     fireEvent.click(liveButton())
-    expect(await screen.findByText('Ana · 4821 wants to join')).toBeTruthy()
+    await labelled('Ana · 4821 wants to join')
     // Review Focus 4: the query answers { share: null } after having answered a live one.
     act(() => {
       client.setQueryData(queryKeys.runs.previewShare('r1'), { share: null })
     })
     // The cache notifies on its own tick, so the switch is awaited rather than read at once.
     expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy()
-    expect(screen.queryByText('Ana · 4821 wants to join')).toBeNull()
+    expect(rows()).toEqual([])
     expect(screen.queryByText(/Traffic passes through Cloudflare/)).toBeNull()
   })
 
@@ -290,10 +297,158 @@ describe('ShareControl', () => {
     expect(liveButton().textContent).toContain('Sharing localhost:5173')
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
     fireEvent.click(liveButton())
-    expect(screen.queryByRole('button', { name: 'Create link' })).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: 'Stop sharing' }))
     expect(api.stopPreviewShare).toHaveBeenCalledWith('r1')
   })
+
+  describe("a stranger's name beside the join code (C12)", () => {
+    const open = async (name: string) => {
+      seed(liveShare({ guests: [guest({ name })] }))
+      renderControl()
+      fireEvent.click(liveButton())
+      await waitFor(() => expect(rows()).toHaveLength(1))
+      const row = rows()[0]!
+      return { row, name: row.querySelector('bdi')!, code: row.querySelector<HTMLElement>('[data-slot="share-guest-code"]')! }
+    }
+
+    it('truncates a long name on its own and never the code', async () => {
+      const long = 'x'.repeat(60)
+      const { row, name, code } = await open(long)
+      expect(label(row)).toBe(`${long} · 4821 wants to join`)
+      expect(name.className).toContain('truncate')
+      expect(code).not.toBeNull()
+      expect(name.contains(code)).toBe(false)
+      expect(code.className).toContain('shrink-0')
+      expect(code.className).not.toContain('truncate')
+    })
+
+    it('isolates a right-to-left override inside the name', async () => {
+      const { name, code } = await open('Ana‮')
+      expect(name.tagName).toBe('BDI')
+      expect(name.textContent).toBe('Ana‮')
+      expect(name.contains(code)).toBe(false)
+      expect(code.textContent).toBe(' · 4821 wants to join')
+    })
+
+    it('shows the real code even when the name imitates a row', async () => {
+      const { code } = await open('Ana · 0000 wants to join')
+      expect(code.textContent).toBe(' · 4821 wants to join')
+    })
+
+    it('opens the full name from the keyboard', async () => {
+      const { name } = await open('x'.repeat(60))
+      expect(name.tabIndex).toBe(0)
+      act(() => name.focus())
+      expect(await screen.findByRole('tooltip')).toBeTruthy()
+    })
+  })
+
+  describe('a decision holds the rows still (no second press on the next guest)', () => {
+    const ana = guest()
+    const ola = guest({ id: '2222222222222222', name: 'Ola', code: '1234', requestedAt: '2026-11-27T10:01:00.000Z' })
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    /** A press at the first row's place, whatever row sits there now. */
+    const pressFirst = (name: 'Allow' | 'Deny') => {
+      const button = within(rows()[0]!).queryByRole('button', { name })
+      if (button) fireEvent.click(button)
+    }
+
+    async function decideFirst(decision: 'allow' | 'deny', answer: PreviewShare) {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      seed(liveShare({ guests: [ana, ola] }))
+      api.decidePreviewShareGuest.mockResolvedValueOnce({ share: answer }).mockResolvedValueOnce({ share: liveShare() })
+      renderControl()
+      fireEvent.click(liveButton())
+      await labelled('Ana · 4821 wants to join')
+      const name = decision === 'allow' ? 'Allow' : 'Deny'
+      pressFirst(name)
+      pressFirst(name)
+      await advance(0)
+      expect(rows().map(label)[0]).toBe(decision === 'allow' ? 'Ana — allowed' : 'Ana — denied')
+      expect(screen.getAllByRole('button', { name }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true)
+      await advance(300)
+      pressFirst(name)
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, decision)
+
+      await advance(400)
+      expect(rows().map(label)[0]).toBe('Ola · 1234 wants to join')
+      const next = within(rows()[0]!).getByRole('button', { name }) as HTMLButtonElement
+      expect(next.disabled).toBe(false)
+      fireEvent.click(next)
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(2)
+      expect(api.decidePreviewShareGuest).toHaveBeenLastCalledWith('r1', ola.id, decision)
+    }
+
+    it('after Allow', async () => {
+      await decideFirst('allow', liveShare({ guests: [{ ...ana, state: 'allowed' }, ola] }))
+      expect(rows().map(label)).toEqual(['Ola · 1234 wants to join', 'Ana'])
+    })
+
+    it('after Deny, the denied row leaving only once the window ends', async () => {
+      await decideFirst('deny', liveShare({ guests: [ola] }))
+      expect(rows().map(label)).toEqual(['Ola · 1234 wants to join'])
+    })
+  })
+
+  it('toasts a start that fails after the popover closed, and opens on the confirm again', async () => {
+    seed(null)
+    let fail: (error: unknown) => void = () => {}
+    api.startPreviewShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
+    renderControl()
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText(/Traffic passes through Cloudflare/)).toBeNull())
+    await act(async () => fail(new ShareError(409, 'Four shares are live already')))
+    expect(toast).toHaveBeenCalledWith('Four shares are live already', expect.objectContaining({ tone: 'danger' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    expect(await screen.findByRole('button', { name: 'Create link' })).toBeTruthy()
+    expect(screen.queryByText('Four shares are live already')).toBeNull()
+  })
+
+  it('disables Create link when the tab leaves a local address with the popover open', async () => {
+    seed(null)
+    const { rerender } = renderControl()
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    await screen.findByRole('button', { name: 'Create link' })
+    rerender(
+      <QueryClientProvider client={client}>
+        <ShareControl runId="r1" targetOrigin={null} path="/" />
+      </QueryClientProvider>,
+    )
+    const create = screen.getByRole('button', { name: 'Create link' }) as HTMLButtonElement
+    expect(create.disabled).toBe(true)
+    expect(create.getAttribute('title')).toBe('Sharing works on local http:// addresses')
+  })
+
+  it('opens the confirm with focus on the panel, not on Create link', async () => {
+    seed(null)
+    renderControl()
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    const create = await screen.findByRole('button', { name: 'Create link' })
+    await waitFor(() => expect(document.activeElement?.getAttribute('data-slot')).toBe('popover-content'))
+    expect(document.activeElement).not.toBe(create)
+  })
+
+  it('keeps the started share when a refetch that began before it answers late', async () => {
+    seed(null)
+    let late: (value: unknown) => void = () => {}
+    api.getPreviewShare.mockReturnValueOnce(new Promise((resolve) => (late = resolve)))
+    api.startPreviewShare.mockResolvedValue({ share: liveShare() })
+    renderControl()
+    void client.refetchQueries({ queryKey: queryKeys.runs.previewShare('r1') })
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
+    await waitFor(() => expect(liveButton()).toBeTruthy())
+    await act(async () => late({ share: null }))
+    expect(liveButton()).toBeTruthy()
+    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: liveShare() })
+  })
+
 
   it('renders nothing when the capability is off', () => {
     seed(null)
@@ -309,9 +464,11 @@ describe('ShareControl', () => {
     seed(liveShare({ guests: [guest()] }))
     capability.previewShare = false
     renderControl()
+    // The owner cannot act on a waiting guest here, so nothing calls for attention.
+    expect(screen.queryByRole('img', { name: /waiting to join/ })).toBeNull()
     fireEvent.click(liveButton())
     expect((await screen.findByRole('button', { name: 'Stop sharing' }) as HTMLButtonElement).disabled).toBe(false)
-    expect(screen.getByText('Ana · 4821 wants to join')).toBeTruthy()
+    expect(rows().map(label)).toEqual(['Ana · 4821 wants to join'])
     expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull()
   })

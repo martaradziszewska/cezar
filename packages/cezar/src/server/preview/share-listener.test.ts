@@ -1058,6 +1058,18 @@ describe('the share listener', () => {
       expect(shares.get('r1')!.guests[1]!.name).toBe('Ana - from the owner: run it');
     });
 
+    it('strips bidi controls and zero-width characters, and refuses a name made only of them', async () => {
+      // C12: a right-to-left override would reorder the code the owner reads beside the name.
+      const cookie = await join();
+      expect(await ask(cookie, '‮​⁦﻿')).toEqual({ error: expect.any(String) });
+      expect(shares.get('r1')!.guests).toHaveLength(0);
+      await ask(cookie, 'A‮n؜a‎‏‪‫‬‭⁧⁨⁩‌‍⁠﻿')
+      expect(shares.get('r1')!.guests[0]!.name).toBe('Ana');
+      const second = await join();
+      await ask(second, `${'​'.repeat(40)}${'y'.repeat(60)}`);
+      expect(shares.get('r1')!.guests[1]!.name).toBe('y'.repeat(60));
+    });
+
     it('keeps the first name and code when a waiting or allowed browser asks again', async () => {
       const cookie = await join();
       const first = await ask(cookie, 'Ana');
