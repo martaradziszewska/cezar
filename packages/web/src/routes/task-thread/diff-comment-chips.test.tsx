@@ -160,6 +160,49 @@ describe('guest comment chips (spec 2026-11-26-preview-share-link)', () => {
     ])
   })
 
+  describe('the address a chip opens in the Preview', () => {
+    const chipFor = (url: string) => {
+      const onOpenInPreview = vi.fn()
+      render(
+        <MemoryRouter initialEntries={['/tasks/r1']}>
+          <DiffCommentChips runId="r1" comments={[{ ...guest, url }]} onRemove={vi.fn()} onOpenInPreview={onOpenInPreview} />
+        </MemoryRouter>,
+      )
+      return onOpenInPreview
+    }
+
+    it.each([
+      'http://localhost:5173/settings',
+      'http://127.0.0.1:3000/',
+      'http://127.8.9.10/x?y=1#z',
+      'http://[::1]:8080/',
+    ])('is %s: a local http address opens as it is', (url) => {
+      const onOpenInPreview = chipFor(url)
+      fireEvent.click(screen.getByRole('button', { name: /^Comment from Ana on / }))
+      expect(onOpenInPreview).toHaveBeenCalledWith(url)
+    })
+
+    it.each([
+      ['a script', 'javascript:alert(document.domain)'],
+      ['another site', 'https://evil.example/'],
+      ['another site over http', 'http://evil.example/'],
+      ['https on this machine', 'https://localhost:5173/'],
+      ['a name that only starts like this machine', 'http://localhost.evil.example/'],
+      ['an address that only starts like loopback', 'http://127.0.0.1.evil.example/'],
+      ['this machine as a user name', 'http://localhost:5173@evil.example/'],
+      ['a data page', 'data:text/html,<script>alert(1)</script>'],
+      ['not an address', 'settings'],
+    ])('is %s: the chip is the plain Preview link and the address goes nowhere', (_label, url) => {
+      const onOpenInPreview = chipFor(url)
+      expect(screen.queryByRole('button', { name: /^Comment from Ana on / })).toBeNull()
+      const link = screen.getByRole('link', { name: /^Comment from Ana on / })
+      expect(link.getAttribute('href')).toBe('/tasks/r1/preview')
+      fireEvent.click(link)
+      expect(onOpenInPreview).not.toHaveBeenCalled()
+      expect(document.body.innerHTML).not.toContain(`href="${url}"`)
+    })
+  })
+
   // F1: the owner can only gate what they can see — every field the agent reads must be on both
   // owner surfaces (the chip's tooltip before sending, the card after).
   const MARKED: GuestReviewComment = {

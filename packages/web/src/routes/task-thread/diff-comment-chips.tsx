@@ -213,6 +213,7 @@ function GuestCommentChip({
       </span>
     : null
   const described = comment.fresh ? heldId : undefined
+  const openInPreview = onOpenInPreview && isLocalHttpAddress(comment.url) ? onOpenInPreview : undefined
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -224,10 +225,10 @@ function GuestCommentChip({
           <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
             <MessageSquareIcon className="size-3.5" />
           </span>
-          {onOpenInPreview ? (
+          {openInPreview ? (
             <button
               type="button"
-              onClick={() => onOpenInPreview(comment.url)}
+              onClick={() => openInPreview(comment.url)}
               className="min-w-0 truncate px-2 font-medium hover:underline"
               aria-label={opens}
               aria-describedby={described}
@@ -279,6 +280,17 @@ function GuestCommentChip({
       </TooltipContent>
     </Tooltip>
   )
+}
+
+/** A guest-supplied address goes to the Preview frame only when it is a local http one: the
+ *  server's own check is a wire and a disk away (spec 2026-11-26-preview-share-link § Mechanism 9). */
+export function isLocalHttpAddress(address: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(address)
+    return protocol === 'http:' && (hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname))
+  } catch {
+    return false
+  }
 }
 
 function oneLine(text: string): string {
