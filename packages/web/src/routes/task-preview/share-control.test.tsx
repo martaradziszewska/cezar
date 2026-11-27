@@ -430,6 +430,140 @@ describe('ShareControl', () => {
     })
   })
 
+  describe('rows that move on their own hold every button still (anyone with the link can add a row)', () => {
+    const piotr = guest({ id: '1111111111111111', name: 'Piotr', state: 'allowed', requestedAt: '2026-11-27T09:00:00.000Z' })
+    const ana = guest()
+    const ola = guest({ id: '2222222222222222', name: 'Ola', code: '1234', requestedAt: '2026-11-27T10:01:00.000Z' })
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+    const arrive = async (guests: PreviewShareGuest[], overrides: Partial<PreviewShare> = {}) => {
+      act(() => {
+        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: liveShare({ guests, ...overrides }) })
+      })
+      // The cache notifies on its own tick.
+      await advance(0)
+    }
+    const buttons = () => within(screen.getByRole('list', { name: 'People on this link' })).queryAllByRole('button') as HTMLButtonElement[]
+    /** A press at the first row's place, on whatever buttons sit there now. */
+    const pressFirstRow = () => {
+      for (const button of within(rows()[0]!).queryAllByRole('button')) fireEvent.click(button)
+    }
+    const decided = () => api.decidePreviewShareGuest.mock.calls.length + api.removePreviewShareGuest.mock.calls.length
+
+    async function opened(guests: PreviewShareGuest[]) {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      seed(liveShare({ guests }))
+      api.decidePreviewShareGuest.mockResolvedValue({ share: liveShare() })
+      api.removePreviewShareGuest.mockResolvedValue({ share: liveShare() })
+      renderControl()
+      fireEvent.click(liveButton())
+      await waitFor(() => expect(rows()).toHaveLength(guests.length))
+      expect(buttons().every((button) => !button.disabled)).toBe(true)
+    }
+
+    it('when a visitor asks to join: Allow lands where Remove was, and a click there does nothing', async () => {
+      await opened([piotr])
+      expect(within(rows()[0]!).getByRole('button', { name: 'Remove' })).toBeTruthy()
+      await arrive([piotr, ana])
+      expect(rows().map(label)).toEqual(['Ana · 4821 wants to join', 'Piotr'])
+      expect(buttons().map((button) => button.disabled)).toEqual([true, true, true])
+      pressFirstRow()
+      await advance(300)
+      pressFirstRow()
+      expect(decided()).toBe(0)
+
+      await advance(400)
+      expect(buttons().map((button) => button.disabled)).toEqual([false, false, false])
+      fireEvent.click(within(rows()[0]!).getByRole('button', { name: 'Allow' }))
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
+    })
+
+    it('when a waiting request expires and the next one moves up', async () => {
+      await opened([ana, ola])
+      await arrive([ola])
+      expect(rows().map(label)).toEqual(['Ola · 1234 wants to join'])
+      pressFirstRow()
+      await advance(300)
+      pressFirstRow()
+      expect(decided()).toBe(0)
+      await advance(400)
+      expect(buttons().every((button) => !button.disabled)).toBe(true)
+    })
+
+    it('when another window lets a visitor in, and the row trades its buttons', async () => {
+      await opened([ana])
+      await arrive([{ ...ana, state: 'allowed' }])
+      expect(buttons().map((button) => [button.textContent, button.disabled])).toEqual([['Remove', true]])
+      pressFirstRow()
+      expect(decided()).toBe(0)
+      await advance(700)
+      expect(buttons().map((button) => button.disabled)).toEqual([false])
+    })
+
+    it('starts the wait again with every new row', async () => {
+      await opened([piotr])
+      await arrive([piotr, ana])
+      await advance(500)
+      await arrive([piotr, ana, ola])
+      await advance(300)
+      pressFirstRow()
+      expect(decided()).toBe(0)
+      await advance(400)
+      expect(buttons().every((button) => !button.disabled)).toBe(true)
+    })
+
+    it('not when only the end time changes', async () => {
+      await opened([piotr, ana])
+      await arrive([piotr, ana], { expiresAt: '2026-11-28T02:40:00.000Z' })
+      expect(buttons().every((button) => !button.disabled)).toBe(true)
+    })
+
+    it('when a visitor arrives while a decision holds the rows: the wait starts again as the rows are let go', async () => {
+      await opened([ana, ola])
+      api.decidePreviewShareGuest.mockResolvedValueOnce({ share: liveShare({ guests: [{ ...ana, state: 'allowed' }, ola] }) })
+      fireEvent.click(within(rows()[0]!).getByRole('button', { name: 'Allow' }))
+      await advance(0)
+      const zed = guest({ id: '3333333333333333', name: 'Zed', code: '9999', requestedAt: '2026-11-27T10:02:00.000Z' })
+      await arrive([{ ...ana, state: 'allowed' }, ola, zed])
+      // Held: the new row waits at the end until the decision's own window is over.
+      expect(rows().map(label)).toEqual(['Ana — allowed', 'Ola · 1234 wants to join', 'Zed · 9999 wants to join'])
+      await advance(650)
+      // Let go: Zed's Allow is now where Ola's was.
+      expect(rows().map(label)).toEqual(['Ola · 1234 wants to join', 'Zed · 9999 wants to join', 'Ana'])
+      expect(buttons().every((button) => button.disabled)).toBe(true)
+      for (const button of buttons()) fireEvent.click(button)
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
+      await advance(650)
+      expect(buttons().every((button) => !button.disabled)).toBe(true)
+    })
+
+    it('a share that ends with a decision still unanswered leaves the next share’s buttons working', async () => {
+      await opened([ana])
+      api.decidePreviewShareGuest.mockReturnValue(new Promise(() => {}))
+      fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
+      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
+      act(() => {
+        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: null })
+      })
+      await advance(0)
+      expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
+
+      act(() => {
+        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: liveShare({ url: `${SECRET_URL}2` }) })
+      })
+      await advance(0)
+      fireEvent.click(liveButton())
+      await arrive([ola], { url: `${SECRET_URL}2` })
+      await advance(700)
+      expect(rows().map(label)).toEqual(['Ola · 1234 wants to join'])
+      expect(buttons().map((button) => button.disabled)).toEqual([false, false])
+      fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
+      expect(api.decidePreviewShareGuest).toHaveBeenLastCalledWith('r1', ola.id, 'allow')
+    })
+  })
+
   it('toasts a start that fails after the popover closed, and opens on the confirm again', async () => {
     seed(null)
     let fail: (error: unknown) => void = () => {}

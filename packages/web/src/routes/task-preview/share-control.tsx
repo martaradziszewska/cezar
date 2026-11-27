@@ -52,7 +52,7 @@ export function ShareControl({
   const queryClient = useQueryClient()
   const share = usePreviewShare(runId).data?.share ?? null
   const commentCount = useGuestComments(runId).data?.comments.length ?? 0
-  const decisions = useGuestDecisions()
+  const decisions = useGuestDecisions(share?.guests)
 
   const [open, setOpen] = useState(false)
   // Read after an await: whether the failure has a popover to land in.
@@ -72,6 +72,8 @@ export function ShareControl({
     setShownLive(live)
     setOpen(false)
     setFailure(null)
+    // A decision the ended share never answered must not hold the next share's buttons.
+    decisions.reset()
   }
 
   if (!enabled && share === null) return null
