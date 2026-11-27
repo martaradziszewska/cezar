@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -192,6 +192,30 @@ describe('guest comments', () => {
     writeFileSync(join(guestCommentsRoot(dir), 'r1.json'), '{not json');
     expect(readGuestComments(dir, 'r1')).toEqual([]);
     expect(add('after corrupt').body).toBe('after corrupt');
+  });
+
+  it('keeps the good rows of a file with a bad one, through the next write too', () => {
+    const first = add('first');
+    const second = add('second');
+    const path = join(guestCommentsRoot(dir), 'r1.json');
+    const rows = JSON.parse(readFileSync(path, 'utf8')) as unknown[];
+    // One row over a cap, one of another shape, one that is not a row at all.
+    const bad = [{ ...first, id: 'long', label: 'x'.repeat(81) }, { id: 'bare' }, null, 'junk'];
+    writeFileSync(path, JSON.stringify([rows[0], ...bad.slice(0, 2), rows[1], ...bad.slice(2)]));
+
+    expect(readGuestComments(dir, 'r1').map((c) => c.id)).toEqual([first.id, second.id]);
+    const third = add('third');
+    expect(readGuestComments(dir, 'r1').map((c) => c.body)).toEqual(['first', 'second', 'third']);
+    expect(updateGuestComment(dir, 'r1', first.id, 'g1', 'first, edited').ok).toBe(true);
+    expect(removeSentGuestComments(dir, 'r1', [{ id: second.id, revision: 1 }])).toEqual([second.id]);
+    expect(deleteGuestComment(dir, 'r1', third.id)).toBe(true);
+    expect(readGuestComments(dir, 'r1').map((c) => c.body)).toEqual(['first, edited']);
+  });
+
+  it('reads a file that is not a list as empty', () => {
+    mkdirSync(guestCommentsRoot(dir), { recursive: true });
+    writeFileSync(join(guestCommentsRoot(dir), 'r1.json'), JSON.stringify({ comments: [] }));
+    expect(readGuestComments(dir, 'r1')).toEqual([]);
   });
 
   it('deletes a run’s list', () => {

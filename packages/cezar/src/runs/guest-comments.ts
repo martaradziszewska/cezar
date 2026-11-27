@@ -36,8 +36,13 @@ export function readGuestComments(dataDir: string, runId: string): StoredGuestCo
   const path = listPath(dataDir, runId);
   if (path === null) return [];
   try {
-    const parsed = z.array(storedSchema).safeParse(JSON.parse(readFileSync(path, 'utf8')));
-    return parsed.success ? parsed.data : [];
+    const rows: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!Array.isArray(rows)) return [];
+    // Row by row: one bad entry must not take every other guest's comment with it.
+    return rows.flatMap((row) => {
+      const parsed = storedSchema.safeParse(row);
+      return parsed.success ? [parsed.data] : [];
+    });
   } catch {
     return [];
   }

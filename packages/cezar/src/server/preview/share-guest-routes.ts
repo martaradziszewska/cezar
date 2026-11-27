@@ -77,7 +77,7 @@ function pageAddress(sent: string, upstreamOrigin: string): string | null {
   if (!URL.canParse(sent)) return null;
   const url = new URL(sent);
   if (url.protocol !== 'http:' || url.username !== '' || url.password !== '' || url.origin !== upstreamOrigin) return null;
-  // Spelled out it can be longer than what was sent, and one entry over the cap unreads the whole list.
+  // Spelled out it can be longer than what was sent, and an entry over the cap is not read back.
   return url.href.length <= GUEST_URL_MAX ? url.href : null;
 }
 
