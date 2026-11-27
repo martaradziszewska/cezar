@@ -42,7 +42,10 @@ export function stripCookies(header: string | undefined, names: readonly string[
   const pairs = header.split(';');
   const kept = pairs.filter((pair) => !names.includes(pair.split('=')[0]!.trim()));
   if (kept.length === pairs.length) return header;
-  const joined = kept.map((pair) => pair.trim()).join('; ');
+  const joined = kept
+    .map((pair) => pair.trim())
+    .filter((pair) => pair !== '')
+    .join('; ');
   return joined === '' ? undefined : joined;
 }
 
@@ -100,8 +103,10 @@ export function forwardRequest(req: IncomingMessage, res: ServerResponse, option
         answer['set-cookie'] = stripSetCookieDomain(answer['set-cookie']);
       }
       // A redirect to the app's own origin stays inside the proxy; one that leaves it, leaves.
+      // The origin must END there: `…:3000` is a prefix of `…:30001`, which is another server.
       if (typeof answer.location === 'string' && answer.location.startsWith(upstream.origin)) {
-        answer.location = own + answer.location.slice(upstream.origin.length);
+        const rest = answer.location.slice(upstream.origin.length);
+        if (rest === '' || /^[/?#]/.test(rest)) answer.location = own + rest;
       }
       const status = incoming.statusCode ?? 502;
       const type = String(incoming.headers['content-type'] ?? '');

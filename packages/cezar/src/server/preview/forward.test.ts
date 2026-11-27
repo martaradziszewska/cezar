@@ -20,6 +20,11 @@ describe('stripCookies', () => {
     expect(stripCookies('__cezar_share_x=1;a=2', ['__cezar_share'])).toBe('__cezar_share_x=1;a=2');
     expect(stripCookies(undefined, ['__cezar_share'])).toBeUndefined();
   });
+
+  it('leaves no empty segment behind when the header ended in a separator', () => {
+    expect(stripCookies('a=1; __cezar_share=x;', ['__cezar_share'])).toBe('a=1');
+    expect(stripCookies('__cezar_share=x; ;a=1;;', ['__cezar_share'])).toBe('a=1');
+  });
 });
 
 describe('stripSetCookieDomain', () => {
@@ -49,6 +54,11 @@ describe('forwardRequest', () => {
 
   beforeEach(async () => {
     upstream = createServer((req, res) => {
+      const to = new URL(req.url ?? '/', 'http://app').searchParams.get('to');
+      if (to !== null) {
+        res.writeHead(302, { location: to }).end();
+        return;
+      }
       res.writeHead(200, {
         'content-type': 'application/json',
         'set-cookie': ['sid=1; Domain=localhost; Path=/; HttpOnly'],
@@ -76,9 +86,9 @@ describe('forwardRequest', () => {
     await new Promise((resolve) => upstream.close(resolve));
   });
 
-  function send(headers: Record<string, string>): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
+  function send(headers: Record<string, string>, path = '/echo'): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
     return new Promise((resolve, reject) => {
-      const req = request({ host: '127.0.0.1', port: listenerPort, path: '/echo', headers }, (res) => {
+      const req = request({ host: '127.0.0.1', port: listenerPort, path, headers }, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
@@ -109,12 +119,24 @@ describe('forwardRequest', () => {
     expect(res.headers['set-cookie']).toEqual(['sid=1; Domain=localhost; Path=/; HttpOnly']);
   });
 
+  it('keeps a redirect to the app on its own origin, and only when the origin really is the app', async () => {
+    const redirected = async (to: string): Promise<string | undefined> =>
+      (await send({ host: 'calm-river-12.trycloudflare.com' }, `/go?to=${encodeURIComponent(to)}`)).headers.location;
+    const app = upstreamUrl.origin;
+    expect(await redirected(`${app}/landed?x=1`)).toBe(`${OWN}/landed?x=1`);
+    expect(await redirected(app)).toBe(OWN);
+    expect(await redirected(`${app}?x=1`)).toBe(`${OWN}?x=1`);
+    expect(await redirected(`${app}#top`)).toBe(`${OWN}#top`);
+    // Another port that only STARTS like the app's: a prefix match turned it into `<own>1/x`.
+    expect(await redirected(`${app}1/x`)).toBe(`${app}1/x`);
+    expect(await redirected(`${app}.evil.example/x`)).toBe(`${app}.evil.example/x`);
+    expect(await redirected(`${app}@evil.example/x`)).toBe(`${app}@evil.example/x`);
+  });
+
   it('answers 502 with its own sentence when the app is not listening', async () => {
+    // The closed port itself: `afterEach` closing it again only reports an error to its callback.
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
-    // A fresh, unrelated listener only so `afterEach` has something to close.
-    upstream = createServer();
-    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     const res = await send({ host: 'calm-river-12.trycloudflare.com' });
     expect(res.status).toBe(502);
     expect(res.body).toBe('The app is not running right now.');
