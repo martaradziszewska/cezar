@@ -15,6 +15,7 @@ import { ShareControl } from './share-control'
 const api = vi.hoisted(() => ({
   startPreviewShare: vi.fn(),
   stopPreviewShare: vi.fn(),
+  extendPreviewShare: vi.fn(),
   decidePreviewShareGuest: vi.fn(),
   removePreviewShareGuest: vi.fn(),
   getPreviewShare: vi.fn(),
@@ -273,6 +274,41 @@ describe('ShareControl', () => {
     writeClipboard.mockRejectedValueOnce(new Error('denied'))
     fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Could not copy the link'))
+  })
+
+  it('extends the share from the menu and says until when', async () => {
+    seed(liveShare({ guests: [guest()] }))
+    const later = '2026-11-28T02:41:00.000Z'
+    let answer: (value: unknown) => void = () => {}
+    api.extendPreviewShare.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    const { baseElement } = renderControl()
+    fireEvent.click(liveButton())
+    const extend = await screen.findByRole('button', { name: 'Extend 8 hours' })
+    fireEvent.click(extend)
+    fireEvent.click(extend)
+    expect(api.extendPreviewShare).toHaveBeenCalledTimes(1)
+    expect(api.extendPreviewShare).toHaveBeenCalledWith('r1')
+    await waitFor(() => expect((extend as HTMLButtonElement).disabled).toBe(true))
+    await act(async () => answer({ share: liveShare({ guests: [guest()], expiresAt: later }) }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(`Sharing until ${until(later)}`))
+    expect(liveButton().textContent).toContain(`until ${until(later)}`)
+    expect((extend as HTMLButtonElement).disabled).toBe(false)
+    expect(baseElement.innerHTML).not.toContain('SECRET-TOKEN')
+    expect(toast.mock.calls.flat().join(' ')).not.toContain('SECRET-TOKEN')
+
+    api.extendPreviewShare.mockRejectedValue(new Error('This task is not sharing'))
+    fireEvent.click(extend)
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('This task is not sharing', expect.objectContaining({ tone: 'danger' })))
+    expect(liveButton().textContent).toContain(`until ${until(later)}`)
+  })
+
+  it('offers no Extend when the capability is off', async () => {
+    seed(liveShare())
+    capability.previewShare = false
+    renderControl()
+    fireEvent.click(liveButton())
+    await screen.findByRole('button', { name: 'Stop sharing' })
+    expect(screen.queryByRole('button', { name: 'Extend 8 hours' })).toBeNull()
   })
 
   it('returns to Share when the server no longer knows the share', async () => {

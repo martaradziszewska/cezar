@@ -1,11 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronDownIcon, CopyIcon, Share2Icon, SquareIcon } from 'lucide-react'
+import { ChevronDownIcon, ClockPlusIcon, CopyIcon, Share2Icon, SquareIcon } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import type { PreviewShareStateResponse } from '@open-mercato/cezar-api-client'
 import {
   ApiError,
   decidePreviewShareGuest,
+  extendPreviewShare,
   removePreviewShareGuest,
   ShareError,
   startPreviewShare,
@@ -174,6 +175,16 @@ export function ShareControl({
       () => toast('Could not copy the link'),
     )
   }
+  const extend = () =>
+    void busy('extend', async () => {
+      try {
+        const answer = await extendPreviewShare(runId)
+        await settle(answer)
+        if (answer.share) toast(`Sharing until ${clock(answer.share.expiresAt)}`)
+      } catch (error) {
+        failed(error)
+      }
+    })
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -192,11 +203,18 @@ export function ShareControl({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" data-slot="share-menu" className="flex w-80 flex-col gap-1 p-1.5 text-ui">
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <Button type="button" variant="ghost" size="sm" onClick={copyLink}>
             <CopyIcon aria-hidden="true" className="size-3.5" />
             Copy link
           </Button>
+          {/* The server refuses it while sharing is off (C5). */}
+          {enabled ? (
+            <Button type="button" variant="ghost" size="sm" disabled={pending.has('extend')} onClick={extend}>
+              <ClockPlusIcon aria-hidden="true" className="size-3.5" />
+              Extend 8 hours
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"

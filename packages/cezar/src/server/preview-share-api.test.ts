@@ -418,6 +418,56 @@ describe('the preview-share API', () => {
     });
   });
 
+  describe('POST /runs/:id/preview-share/extend', () => {
+    const extend = (id: string) => api(`/runs/${id}/preview-share/extend`, json('POST'));
+
+    it('extends a live share, 404s without one, and 409s when sharing is off', async () => {
+      expect((await extend('no-such-run')).status).toBe(404);
+      const missing = await extend(runId);
+      expect(missing.status).toBe(404);
+      expect(Object.keys(previewShareErrorSchema.parse(await missing.json()))).toEqual(['error']);
+
+      const share = await start();
+      const { cookie, origin } = await joinAs(share, 'Ana');
+      const guest = (await get(runId)).share!.guests[0]!;
+      await api(`/runs/${runId}/preview-share/guests/${guest.id}`, json('POST', { decision: 'allow' }));
+
+      for (const off of [
+        () => { process.env.CEZ_PREVIEW_SHARE = '0'; return extend(runId); },
+        () => { process.env.CEZ_REMOTE = '1'; return extend(runId); },
+        () => runInRelayScope({ deviceId: 'phone' }, () => extend(runId)),
+      ]) {
+        const refused = await off();
+        delete process.env.CEZ_PREVIEW_SHARE;
+        delete process.env.CEZ_REMOTE;
+        expect(refused.status).toBe(409);
+        expect(await refused.json()).toEqual(OFF);
+      }
+      expect((await get(runId)).share!.expiresAt).toBe(share.expiresAt);
+
+      const asked = Date.now();
+      const res = await extend(runId);
+      expect(res.status).toBe(200);
+      const extended = previewShareStateResponseSchema.strict().parse(await res.json()).share!;
+      expect(Date.parse(extended.expiresAt)).toBeGreaterThanOrEqual(asked + 8 * 60 * 60_000);
+      expect(extended).toMatchObject({ url: share.url, startedAt: share.startedAt, guests: [{ ...guest, state: 'allowed' }] });
+      expect((await get(runId)).share).toEqual(extended);
+      expect((await asGuest(`${origin}/settings`, { cookie })).body).toContain('app');
+      expect(tunnel.started).toHaveLength(1);
+
+      await del(runId);
+      expect((await extend(runId)).status).toBe(404);
+    });
+
+    it('answers the extend route under /api/v1/p/<boot>/ as well', async () => {
+      const share = await start();
+      const res = await api(`/p/${BOOT}/runs/${runId}/preview-share/extend`, json('POST'));
+      expect(res.status).toBe(200);
+      expect(previewShareStateResponseSchema.parse(await res.json()).share?.url).toBe(share.url);
+      expect((await api(`/p/${BOOT}/runs/no-such-run/preview-share/extend`, json('POST'))).status).toBe(404);
+    });
+  });
+
   describe('guest comments', () => {
     it('lists them without the guest id, and publishes the list a deletion leaves', async () => {
       const first = seed('one');

@@ -1291,6 +1291,95 @@ describe('the share listener', () => {
     });
   });
 
+  describe('Extend (C5)', () => {
+    it('extends a live share to a full lifetime from now and keeps the link and guests', async () => {
+      const t0 = Date.parse('2026-11-27T10:00:00Z');
+      clock = t0;
+      const share = await open();
+      const allowed = await allowedGuest('Ana');
+      clock = t0 + 8 * HOUR - 5 * 60_000;
+      const waiting = await waitingGuest('Piotr');
+      const denied = await waitingGuest('Ola');
+      shares.decide('r1', idOf(denied), 'deny');
+      const before = shares.get('r1')!;
+      const seen = changes.length;
+
+      clock = t0 + 8 * HOUR - 1;
+      const extended = shares.extend('r1')!;
+      expect(extended).toEqual({ ...before, expiresAt: new Date(clock + 8 * HOUR).toISOString() });
+      expect(extended.url).toBe(share.url);
+      expect(extended.startedAt).toBe(share.startedAt);
+      expect(changes.slice(seen)).toEqual([{ projectId: 'p1', runId: 'r1', share: extended, ended: undefined }]);
+
+      // Past the old end: the allowed guest still gets the app, the denied one is still refused.
+      clock = t0 + 8 * HOUR + 1;
+      expect((await visitor(allowed).get('/')).status).toBe(200);
+      expect(await stateOf(denied)).toBe('guest:/__cezar_share__/status:denied');
+      expect(await stateOf(waiting)).toBe('guest:/__cezar_share__/status:waiting');
+      // A waiting guest keeps its own 10 minutes.
+      clock = t0 + 8 * HOUR + 5 * 60_000;
+      expect(await stateOf(waiting)).toBe('guest:/__cezar_share__/status:expired');
+
+      clock = Date.parse(extended.expiresAt) - 1;
+      expect(shares.get('r1')).not.toBeNull();
+      clock += 1;
+      expect(shares.get('r1')).toBeNull();
+      expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: 'expired' });
+    });
+
+    it('keeps the join limit and arms only one lifetime timer', async () => {
+      const brief = build({ lifetimeMs: 1_000 });
+      const opened = Date.now();
+      await open({}, brief);
+      for (let i = 0; i < 10; i += 1) expect((await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).status).toBe(302);
+      await new Promise((resolve) => setTimeout(resolve, 500 - (Date.now() - opened)));
+      const extended = brief.extend('r1')!;
+      expect((await send(port, host, joinPath, { headers: { 'cf-connecting-ip': '203.0.113.9' } })).status).toBe(429);
+      // The first timer would have ended it here.
+      await new Promise((resolve) => setTimeout(resolve, 1_200 - (Date.now() - opened)));
+      expect(brief.get('r1')?.expiresAt).toBe(extended.expiresAt);
+      await vi.waitFor(() => expect(changes.at(-1)).toEqual({ projectId: 'p1', runId: 'r1', share: null, ended: 'expired' }), { timeout: 5_000 });
+      expect(tunnels.stopped).toBe(1);
+    });
+
+    it('never shortens a share and cannot revive an ended one', async () => {
+      const t0 = Date.parse('2026-11-27T10:00:00Z');
+      clock = t0 + HOUR;
+      await open();
+      const first = shares.extend('r1')!;
+      expect(first.expiresAt).toBe(new Date(t0 + 9 * HOUR).toISOString());
+      // A clock stepped back must not pull the end in.
+      clock = t0;
+      expect(shares.extend('r1')!.expiresAt).toBe(first.expiresAt);
+      clock = t0 + HOUR;
+      expect(shares.extend('r1')!.expiresAt).toBe(first.expiresAt);
+
+      shares.stop('r1');
+      const ended = changes.length;
+      expect(shares.extend('r1')).toBeNull();
+      expect(shares.get('r1')).toBeNull();
+      expect(changes).toHaveLength(ended);
+
+      await open();
+      clock = Date.parse(shares.get('r1')!.expiresAt);
+      expect(shares.extend('r1')).toBeNull();
+      expect(changes.at(-1)).toMatchObject({ share: null, ended: 'expired' });
+      expect(shares.extend('nope')).toBeNull();
+    });
+
+    it('does not extend a start that is still waiting for its tunnel', async () => {
+      let release!: () => void;
+      tunnels.gate = new Promise((resolve) => (release = resolve));
+      const starting = start();
+      await vi.waitFor(() => expect(tunnels.started).toHaveLength(1));
+      expect(shares.extend('r1')).toBeNull();
+      release();
+      tunnels.gate = null;
+      expect((await starting).ok).toBe(true);
+      expect(changes.filter((change) => change.share !== null)).toHaveLength(1);
+    });
+  });
+
   describe('every way a share ends', () => {
     /** A live share with an allowed browser holding a socket open. */
     async function live(on: PreviewShares = shares): Promise<{ cookie: string; socket: Upgraded }> {

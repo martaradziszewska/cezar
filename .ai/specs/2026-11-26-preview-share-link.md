@@ -67,7 +67,7 @@ Proposed by the author and not objected to; the owner may change any of them:
 | C2 | The reach is a **Cloudflare quick tunnel** (`cloudflared`), found on `PATH`. | Public HTTPS with no account, WebSockets work, one child process. Nothing else in cezar relays to a browser. |
 | C3 | The comment box is drawn **inside the shared page**, not by a guest shell on a second origin. | One origin means one listener and one tunnel. § Approaches has the trade-off. |
 | C4 | The click, behind a first-time confirm, is the opt-in. `CEZ_PREVIEW_SHARE=0` turns it off. | Same shape as Design Mode (2026-10-17) and the relay (2026-11-01). The opt-in version is requiring `CEZ_PREVIEW_SHARE=1`; it is one line in the capability. |
-| C5 | A share ends **8 hours** after it starts, whatever happens. No idle rule. | One clock the owner can read off the toolbar. An idle timeout would kill a link the teammate has not opened yet. |
+| C5 | A share ends **8 hours** after it starts or after its last **Extend**. No idle rule, and nothing extends on its own. | One clock the owner can read off the toolbar. An idle timeout would kill a link the teammate has not opened yet. Extend (added 2026-11-27 at the owner's request) keeps a long review on one link; each extension is a click. |
 | C6 | A guest sees and edits **their own** comments only; the owner can delete a guest comment but not edit it. | They are someone else's words. |
 | C7 | A live share is shown **outside the Preview too**: a badge on the task's row and one workspace-wide "N live links" indicator in the app shell, each with Stop. | The second anti-goal. The Preview toolbar disappears the moment the owner opens another task. |
 | C8 | The exposure text is shown **every time** a share starts, in the popover that holds **Create link**. Nothing is remembered. | Each project exposes different source, and a stored "seen it" would let a second repository go public with no warning. Sharing is rare enough for one extra click. |
@@ -247,7 +247,7 @@ read and its write would be lost.
 Recorded in AGENTS.md § Zero config as **pending owner ratification** in the implementing PR.
 
 What a share opens: one loopback listener and one `cloudflared` child, after a click and a
-confirm, for one dev server, for at most 8 hours. What the confirm must say:
+confirm, for one dev server, for 8 hours, longer only when the owner clicks **Extend**. What the confirm must say:
 
 > Anyone with this link can use this app and read whatever your dev server serves, including
 > source files. Traffic passes through Cloudflare.
@@ -259,7 +259,7 @@ between that and the internet: the token, and the owner's Allow (D3).
 
 | Risk | Answer |
 | --- | --- |
-| The dev server on the public internet | Click and confirm; a 256-bit token; then the owner's Allow per browser; every request and upgrade gated on an allowed guest id; ends at 8 hours, on Stop, and with the server. |
+| The dev server on the public internet | Click and confirm; a 256-bit token; then the owner's Allow per browser; every request and upgrade gated on an allowed guest id; ends 8 hours after the start or the last Extend, on Stop, and with the server. |
 | The link leaking (forwarded, posted in a channel, fetched by a link-preview bot) | The holder gets the waiting page and no byte of the app until the owner allows that browser (D3). The token is in the path, never forwarded to the app, dropped from `Referer`, and useless once the share ends. |
 | A stranger with the link typing a teammate's name | The 4-digit code on both sides (C12). The owner can also **Remove** an allowed guest at any time, which cuts their session at once. |
 | Join requests as a nuisance | 5 waiting at once, 10 minutes each, a rate limit per address on `join`; **Stop sharing** ends all of it. |
@@ -279,7 +279,7 @@ Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.
 ## States and their exits
 
 - **A share** (listener + tunnel child + token; one per run, four at once). Started by the route.
-  Ended by: **Stop sharing**; 8 hours; the tunnel child exiting; the task being archived or
+  Ended by: **Stop sharing**; 8 hours after it started or was last extended; the tunnel child exiting; the task being archived or
   deleted, or its worktree reclaimed; server shutdown. Nothing is persisted, so a restart ends
   every share — the quick tunnel's address would have changed anyway. Asking again for the same
   target while one is live answers the same link; a different target is refused (C9), and a
@@ -312,6 +312,8 @@ under both `/api/v1/…` and `/api/v1/p/:projectId/…`.
 - `GET /runs/:id/preview-share` → `{ share: Share | null }`. A share lists its guests: id, name,
   code, `waiting` or `allowed`, and when they asked.
 - `DELETE /runs/:id/preview-share`.
+- `POST /runs/:id/preview-share/extend` → `{ share }`: ends 8 hours from now, never earlier. 404 `{ error }`
+  without a live share, 409 `{ error }` when off (C5).
 - `POST /runs/:id/preview-share/guests/:guestId` `{ decision: 'allow' | 'deny' }`;
   `DELETE /runs/:id/preview-share/guests/:guestId` (Remove).
 - `GET /runs/:id/guest-comments` → `{ comments }`; `DELETE /runs/:id/guest-comments/:commentId`

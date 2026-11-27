@@ -1496,6 +1496,16 @@ export async function stopPreviewShare(runId: string): Promise<PreviewShareState
   )
 }
 
+/** Another 8 hours from now (spec 2026-11-26-preview-share-link C5). The answer carries the link token. */
+export async function extendPreviewShare(runId: string): Promise<PreviewShareStateResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].extend.$post({
+      param: { projectId: queryScope(), id: encodeURIComponent(runId) },
+    }),
+    runPath(runId, '/preview-share/extend'),
+  )
+}
+
 export async function decidePreviewShareGuest(
   runId: string,
   guestId: string,

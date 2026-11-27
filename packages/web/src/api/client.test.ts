@@ -4,6 +4,7 @@ import {
   ApiError,
   ShareError,
   decidePreviewShareGuest,
+  extendPreviewShare,
   deleteGuestComment,
   getGuestComments,
   getLiveShares,
@@ -937,7 +938,7 @@ describe('startPreviewShare (spec 2026-11-26-preview-share-link)', () => {
 })
 
 describe('preview share calls', () => {
-  it('reach the nine routes with the right verbs and paths', async () => {
+  it('reach the ten routes with the right verbs and paths', async () => {
     const reply = (body: unknown): void => {
       fetchMock.mockImplementation(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
     }
@@ -946,6 +947,8 @@ describe('preview share calls', () => {
     expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['GET', '/runs/r1/preview-share'])
     await stopPreviewShare('r1')
     expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/preview-share'])
+    await extendPreviewShare('r 1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['POST', '/runs/r%201/preview-share/extend'])
     await decidePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa', 'allow')
     expect([lastCall().method, lastCall().body]).toEqual(['POST', { decision: 'allow' }])
     expect(lastCall().path).toContain('/runs/r1/preview-share/guests/aaaaaaaaaaaaaaaa')

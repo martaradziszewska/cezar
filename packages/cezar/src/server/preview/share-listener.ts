@@ -269,6 +269,18 @@ export class PreviewShares {
     return entry !== undefined || starting;
   }
 
+  /** Extend (C5): a full lifetime from now, never shorter. The link, the guests and their clocks stay. */
+  extend(runId: string): PreviewShare | null {
+    const entry = this.entries.get(runId);
+    if (entry === undefined || !this.settle(entry)) return null;
+    entry.expiresAt = Math.max(entry.expiresAt, this.now() + this.lifetimeMs);
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => this.end(entry, 'expired'), entry.expiresAt - this.now());
+    entry.timer.unref();
+    this.notify(entry);
+    return this.snapshot(entry);
+  }
+
   decide(runId: string, guestId: string, decision: 'allow' | 'deny'): boolean {
     const entry = this.entries.get(runId);
     if (entry === undefined || !this.settle(entry)) return false;

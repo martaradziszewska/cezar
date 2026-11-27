@@ -4,6 +4,7 @@ import {
   previewShareDecisionSchema,
   previewShareGuestParamSchema,
   previewShareRequestSchema,
+  runIdParamSchema,
   type GuestComment,
   type GuestCommentsEvent,
   type PreviewShare,
@@ -157,6 +158,14 @@ export function previewShareRoutes(deps: PreviewShareRouteDeps) {
       const id = c.req.param('id');
       shares.stop(id);
       return c.json({ share: shares.get(id) });
+    })
+
+    // Gated: it prolongs the exposure (spec 2026-11-26-preview-share-link C5).
+    .post('/runs/:id/preview-share/extend', paramZodValidator(runIdParamSchema), (c) => {
+      if (!deps.enabled()) return c.json(OFF, 409);
+      const share = shares.extend(c.req.valid('param').id);
+      if (share === null) return c.json({ error: 'This task is not sharing' }, 404);
+      return c.json({ share }, 200);
     })
 
     .post('/runs/:id/preview-share/guests/:guestId', paramZodValidator(previewShareGuestParamSchema), jsonZodValidator(previewShareDecisionSchema), (c) => {
