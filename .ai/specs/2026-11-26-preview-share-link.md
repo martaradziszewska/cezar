@@ -281,7 +281,7 @@ between that and the internet: the token, and the owner's Allow (D3).
 | A comment arriving as the owner clicks Send | Held back for 5 seconds after it first appears; the owner is told. An edit counts as a new comment. The chip wears a `new` badge until then. |
 | Flooding | The caps in § Storage, plus a per-guest rate limit. |
 | The app's session | The guest starts logged out: cookies are per browser. `Set-Cookie` from the app passes through with any `Domain` attribute removed. |
-| A stray child process | `cloudflared` is killed on Stop, on expiry and on server shutdown (`onDispose`). |
+| A stray child process | `cloudflared` is killed on Stop, on expiry and on server shutdown (`onDispose`). A cezar that is killed hard cannot do that, and the public address would keep pointing at a port another local process may bind. So each child is recorded in `~/.cache/cez/share-tunnels.json` (pid, port, start, the cezar that spawned it) and removed when it exits. The next boot and the next share end every recorded tunnel whose cezar is gone, and only after `ps` shows cezar's own `cloudflared … --url http://127.0.0.1:<port>` on that pid; a tunnel still parented by its cezar is a live share and is left alone. On Windows nothing is killed. |
 | Hosted cockpits | Off. The capability is `localHandoff` and not `CEZ_PREVIEW_SHARE=0`. |
 
 Each row gets a test, as design-mode § 4 does in `design-proxy.test.ts`.

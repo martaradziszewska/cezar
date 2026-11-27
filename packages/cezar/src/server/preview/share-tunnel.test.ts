@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TunnelError } from './share-listener.ts';
 import { PassThrough } from 'node:stream';
 
+import { hasTunnelRecords } from './share-tunnel-record.ts';
 import { cloudflaredTunnel, installHint, loopbackTunnel, shareTunnel, splitLines, type TunnelChild } from './share-tunnel.ts';
 
 class FakeChild implements TunnelChild {
@@ -192,6 +196,94 @@ describe('cloudflaredTunnel', () => {
     tunnel.onExit((r) => reasons.push(r));
     child.exit(undefined, new Error('spawn secret path EPERM'));
     expect(reasons).toEqual(['exited with code unknown']);
+  });
+});
+
+describe('a cloudflared child that could outlive cezar (spec § Exposure, a stray child)', () => {
+  let dir: string;
+  let recordPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-share-tunnel-'));
+    recordPath = join(dir, 'share-tunnels.json');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  class PidChild extends FakeChild {
+    constructor(readonly pid: number) {
+      super();
+    }
+  }
+
+  it('is recorded with its port while it runs, and forgotten when it exits', async () => {
+    const child = new PidChild(31337);
+    const adapter = cloudflaredTunnel({ resolve: () => 'cloudflared', spawn: () => child, recordPath });
+    const starting = adapter.start(4321);
+    expect(JSON.parse(readFileSync(recordPath, 'utf8'))).toEqual([{ pid: 31337, port: 4321, startedAt: expect.any(String), owner: process.pid }]);
+    child.line('https://a-b.trycloudflare.com');
+    const tunnel = await starting;
+    expect(hasTunnelRecords(recordPath)).toBe(true);
+    tunnel.stop();
+    child.exit('killed by SIGTERM');
+    expect(hasTunnelRecords(recordPath)).toBe(false);
+  });
+
+  it('is forgotten when it exits before it gave an address', async () => {
+    const child = new PidChild(31338);
+    const starting = cloudflaredTunnel({ resolve: () => 'cloudflared', spawn: () => child, recordPath }).start(1);
+    expect(hasTunnelRecords(recordPath)).toBe(true);
+    child.exit();
+    await expect(starting).rejects.toBeInstanceOf(TunnelError);
+    expect(hasTunnelRecords(recordPath)).toBe(false);
+  });
+
+  it('is not recorded when the spawn gave no pid', async () => {
+    const { child, adapter } = setup();
+    const starting = cloudflaredTunnel({ resolve: () => 'cloudflared', spawn: () => child, recordPath }).start(1);
+    void adapter;
+    expect(existsSync(recordPath)).toBe(false);
+    child.exit();
+    await expect(starting).rejects.toBeInstanceOf(TunnelError);
+  });
+
+  it('reaps stale tunnels before it spawns, and starts even when the reap fails', async () => {
+    const order: string[] = [];
+    const child = new PidChild(31339);
+    const adapter = cloudflaredTunnel({
+      resolve: () => 'cloudflared',
+      spawn: () => {
+        order.push('spawn');
+        return child;
+      },
+      reap: async () => {
+        order.push('reap');
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push('reaped');
+        throw new Error('ps is missing');
+      },
+      recordPath,
+    });
+    const starting = adapter.start(1);
+    expect(order).toEqual(['reap']);
+    await vi.waitFor(() => expect(order).toEqual(['reap', 'reaped', 'spawn']));
+    child.line('https://a-b.trycloudflare.com');
+    expect((await starting).origin).toBe('https://a-b.trycloudflare.com');
+  });
+
+  it('does not spawn when the share was stopped while the reap ran', async () => {
+    let spawned = 0;
+    const abort = new AbortController();
+    const adapter = cloudflaredTunnel({
+      resolve: () => 'cloudflared',
+      spawn: () => {
+        spawned += 1;
+        return new PidChild(31340);
+      },
+      reap: async () => abort.abort(),
+      recordPath,
+    });
+    await expect(adapter.start(1, abort.signal)).rejects.toMatchObject({ code: 'tunnel-failed', message: 'Sharing was stopped' });
+    expect(spawned).toBe(0);
+    expect(existsSync(recordPath)).toBe(false);
   });
 });
 

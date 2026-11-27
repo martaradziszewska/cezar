@@ -260,6 +260,7 @@ import { createGuestRoutes } from './preview/share-guest-routes.ts';
 import { guestScript } from './preview/share-guest-script.ts';
 import { PreviewShares, type PreviewSharesOptions } from './preview/share-listener.ts';
 import { shareTunnel } from './preview/share-tunnel.ts';
+import { reapStaleTunnels } from './preview/share-tunnel-record.ts';
 import { TASK_REMOVED, liveShareRoutes, onPreviewShareFrames, onTaskRemoved, previewShareRoutes, publishGuestCommentList } from './preview-share-routes.ts';
 import { getTeamSkillsCached, isSafeRef, refreshTeamSkills, safeRemoteFor, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
@@ -10256,6 +10257,9 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     }
   });
   server.once('listening', () => {
+    // A cezar that was killed hard may have left a public tunnel up (spec 2026-11-26-preview-share-link
+    // § Exposure). Reads one file; `ps` runs only when it lists a live pid.
+    void reapStaleTunnels();
     void relay.start();
     // Boot already ran the retention sweep (src/index.ts), so the guard's first pass follows it.
     diskGuard?.start();

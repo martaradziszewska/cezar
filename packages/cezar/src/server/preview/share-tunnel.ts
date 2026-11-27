@@ -3,6 +3,7 @@ import type { Readable } from 'node:stream';
 
 import { resolveOnPath } from '../open-in-app.ts';
 import { TunnelError, type Tunnel, type TunnelAdapter } from './share-listener.ts';
+import { forgetTunnel, reapStaleTunnels, recordTunnel } from './share-tunnel-record.ts';
 
 /**
  * Tunnel adapters (spec 2026-11-26-preview-share-link § Mechanism 3): `cloudflared`'s quick tunnel
@@ -11,6 +12,8 @@ import { TunnelError, type Tunnel, type TunnelAdapter } from './share-listener.t
 
 /** The one child this needs. `onExit` fires once; `reason` is set for an exit that was not a spawn error. */
 export interface TunnelChild {
+  /** Absent when the spawn failed: nothing to record. */
+  pid?: number | undefined;
   onLine(listener: (line: string) => void): void;
   onExit(listener: (error?: Error, reason?: string) => void): void;
   kill(): void;
@@ -21,6 +24,10 @@ export interface CloudflaredOptions {
   spawn?(bin: string, args: readonly string[]): TunnelChild;
   platform?: NodeJS.Platform;
   timeoutMs?: number;
+  /** Where live children are recorded; the default is `~/.cache/cez/share-tunnels.json`. */
+  recordPath?: string;
+  /** Runs before every start. The default ends tunnels a hard-killed cezar left behind. */
+  reap?(): Promise<unknown>;
 }
 
 // Never the `api` host (it appears in cloudflared's error lines) nor a longer host that starts with a match.
@@ -97,13 +104,16 @@ const spawnCloudflared = (bin: string, args: readonly string[]): TunnelChild => 
     }, KILL_GRACE_MS);
     escalate.unref();
   };
-  // Nothing can wait inside the process `exit` hook: SIGKILL, not SIGTERM.
+  // Nothing can wait inside the process `exit` hook: SIGKILL, not SIGTERM. Its record goes with it,
+  // so the next boot finds no file and asks `ps` nothing.
   const killNow = (): void => {
     if (!gone()) child.kill('SIGKILL');
+    if (child.pid !== undefined) forgetTunnel(child.pid);
   };
   installExitHook();
   live.add(killNow);
   return {
+    pid: child.pid,
     onLine: (listener) => { lineListeners.push(listener); },
     kill,
     onExit: (listener) => {
@@ -129,93 +139,103 @@ export function cloudflaredTunnel(options: CloudflaredOptions = {}): TunnelAdapt
   const platform = options.platform ?? process.platform;
   const timeoutMs = options.timeoutMs ?? START_TIMEOUT_MS;
 
+  // A real start first ends what a hard-killed cezar left running (spec § Exposure, a stray child).
+  const reap = options.reap ?? (options.spawn ? undefined : () => reapStaleTunnels());
+
   return {
     start(port, signal) {
-      return new Promise<Tunnel>((resolveStart, rejectStart) => {
-        // Checked before the PATH lookup so a test gets the same answer whatever is installed.
-        if (!options.spawn && process.env.VITEST) {
-          rejectStart(new TunnelError('cloudflared is not started under test', 'tunnel-failed'));
-          return;
-        }
-        if (signal?.aborted) {
-          rejectStart(new TunnelError(STOPPED, 'tunnel-failed'));
-          return;
-        }
-        const bin = resolve('cloudflared');
-        if (!bin) {
-          rejectStart(new TunnelError('Sharing needs cloudflared', 'no-tunnel', installHint(platform)));
-          return;
-        }
-        let child: TunnelChild;
-        try {
-          child = spawn(bin, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`]);
-        } catch (error) {
-          rejectStart(error instanceof TunnelError
-            ? error
-            : new TunnelError(error instanceof Error ? error.message : 'cloudflared did not start', 'tunnel-failed'));
-          return;
-        }
-
-        const tail: string[] = [];
-        const listeners: Array<(reason: string) => void> = [];
-        let settled = false;
-        let stopped = false;
-        let exitedWhy: string | undefined;
-        let timer: NodeJS.Timeout | undefined;
-
-        const lastLine = (): string => (tail.at(-1) ?? 'cloudflared did not start').slice(0, MESSAGE_CHARS);
-        const finish = (): void => {
-          settled = true;
-          if (timer) clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-        };
-        const fail = (message: string): void => {
-          if (settled) return;
-          finish();
-          child.kill();
-          rejectStart(new TunnelError(message, 'tunnel-failed'));
-        };
-        function onAbort(): void {
-          fail(STOPPED);
-        }
-
-        child.onLine((line) => {
-          if (line.trim() === '') return;
-          tail.push(line.slice(0, TAIL_LINE_CHARS));
-          if (tail.length > TAIL_LINES) tail.shift();
-          if (settled) return;
-          const found = ADDRESS.exec(line);
-          if (!found) return;
-          finish();
-          resolveStart({
-            origin: found[0],
-            stop: () => {
-              stopped = true;
-              child.kill();
-            },
-            onExit: (listener) => {
-              if (exitedWhy !== undefined) listener(exitedWhy);
-              else listeners.push(listener);
-            },
-          });
-        });
-        child.onExit((error, reason) => {
-          if (!settled) {
-            fail(error ? error.message : lastLine());
-            return;
-          }
-          if (stopped) return;
-          const why = error ? 'exited with code unknown' : (reason ?? 'exited with code unknown');
-          exitedWhy = why;
-          for (const listener of listeners.splice(0)) listener(why);
-        });
-
-        timer = setTimeout(() => fail(lastLine()), timeoutMs);
-        timer.unref();
-        signal?.addEventListener('abort', onAbort, { once: true });
-      });
+      // Checked before the PATH lookup so a test gets the same answer whatever is installed.
+      if (!options.spawn && process.env.VITEST) {
+        return Promise.reject(new TunnelError('cloudflared is not started under test', 'tunnel-failed'));
+      }
+      if (reap === undefined) return open(port, signal);
+      return new Promise<unknown>((done) => done(reap())).catch(() => undefined).then(() => open(port, signal));
     },
   };
+
+  function open(port: number, signal?: AbortSignal): Promise<Tunnel> {
+    return new Promise<Tunnel>((resolveStart, rejectStart) => {
+      if (signal?.aborted) {
+        rejectStart(new TunnelError(STOPPED, 'tunnel-failed'));
+        return;
+      }
+      const bin = resolve('cloudflared');
+      if (!bin) {
+        rejectStart(new TunnelError('Sharing needs cloudflared', 'no-tunnel', installHint(platform)));
+        return;
+      }
+      let child: TunnelChild;
+      try {
+        child = spawn(bin, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`]);
+      } catch (error) {
+        rejectStart(error instanceof TunnelError
+          ? error
+          : new TunnelError(error instanceof Error ? error.message : 'cloudflared did not start', 'tunnel-failed'));
+        return;
+      }
+      const pid = child.pid;
+      if (pid !== undefined) recordTunnel({ pid, port, startedAt: new Date().toISOString(), owner: process.pid }, options.recordPath);
+
+      const tail: string[] = [];
+      const listeners: Array<(reason: string) => void> = [];
+      let settled = false;
+      let stopped = false;
+      let exitedWhy: string | undefined;
+      let timer: NodeJS.Timeout | undefined;
+
+      const lastLine = (): string => (tail.at(-1) ?? 'cloudflared did not start').slice(0, MESSAGE_CHARS);
+      const finish = (): void => {
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const fail = (message: string): void => {
+        if (settled) return;
+        finish();
+        child.kill();
+        rejectStart(new TunnelError(message, 'tunnel-failed'));
+      };
+      function onAbort(): void {
+        fail(STOPPED);
+      }
+
+      child.onLine((line) => {
+        if (line.trim() === '') return;
+        tail.push(line.slice(0, TAIL_LINE_CHARS));
+        if (tail.length > TAIL_LINES) tail.shift();
+        if (settled) return;
+        const found = ADDRESS.exec(line);
+        if (!found) return;
+        finish();
+        resolveStart({
+          origin: found[0],
+          stop: () => {
+            stopped = true;
+            child.kill();
+          },
+          onExit: (listener) => {
+            if (exitedWhy !== undefined) listener(exitedWhy);
+            else listeners.push(listener);
+          },
+        });
+      });
+      child.onExit((error, reason) => {
+        if (pid !== undefined) forgetTunnel(pid, options.recordPath);
+        if (!settled) {
+          fail(error ? error.message : lastLine());
+          return;
+        }
+        if (stopped) return;
+        const why = error ? 'exited with code unknown' : (reason ?? 'exited with code unknown');
+        exitedWhy = why;
+        for (const listener of listeners.splice(0)) listener(why);
+      });
+
+      timer = setTimeout(() => fail(lastLine()), timeoutMs);
+      timer.unref();
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
 }
 
 /** Only for `CEZ_DRY_RUN=1`: the share listener binds 127.0.0.1, so nothing is exposed. */
