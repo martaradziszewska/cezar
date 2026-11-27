@@ -129,6 +129,13 @@ export function publishGuestCommentList(project: ProjectContext, runId: string):
  */
 export function previewShareRoutes(deps: PreviewShareRouteDeps) {
   const { shares } = deps;
+  // A share is found by run id alone, and `/p/<another project>/runs/<this run>/…` reaches these
+  // handlers too: every one that reads or steers a share first asks whose it is.
+  const mine = async (project: ProjectContext, runId: string): Promise<boolean> => {
+    const asking = await deps.projectId(project);
+    // Nothing is awaited between this answer and the handler's own call on the share.
+    return shares.projectOf(runId) === asking;
+  };
   return new Hono<ProjectApiEnv>()
     .post('/runs/:id/preview-share', jsonZodValidator(previewShareRequestSchema), async (c) => {
       if (!deps.enabled()) return c.json(OFF, 409);
@@ -151,34 +158,41 @@ export function previewShareRoutes(deps: PreviewShareRouteDeps) {
       return c.json(refused, 409);
     })
 
-    .get('/runs/:id/preview-share', (c) => c.json({ share: shares.get(c.req.param('id')) }))
+    .get('/runs/:id/preview-share', async (c) => {
+      const id = c.req.param('id');
+      return c.json({ share: (await mine(c.get('project'), id)) ? shares.get(id) : null });
+    })
 
     // Idempotent, and also cancels a start still waiting on its tunnel.
-    .delete('/runs/:id/preview-share', (c) => {
+    .delete('/runs/:id/preview-share', async (c) => {
       const id = c.req.param('id');
+      if (!(await mine(c.get('project'), id))) return c.json({ share: null });
       shares.stop(id);
       return c.json({ share: shares.get(id) });
     })
 
     // Gated: it prolongs the exposure (spec 2026-11-26-preview-share-link C5).
-    .post('/runs/:id/preview-share/extend', paramZodValidator(runIdParamSchema), (c) => {
+    .post('/runs/:id/preview-share/extend', paramZodValidator(runIdParamSchema), async (c) => {
       if (!deps.enabled()) return c.json(OFF, 409);
-      const share = shares.extend(c.req.valid('param').id);
+      const { id } = c.req.valid('param');
+      const share = (await mine(c.get('project'), id)) ? shares.extend(id) : null;
       if (share === null) return c.json({ error: 'This task is not sharing' }, 404);
       return c.json({ share }, 200);
     })
 
-    .post('/runs/:id/preview-share/guests/:guestId', paramZodValidator(previewShareGuestParamSchema), jsonZodValidator(previewShareDecisionSchema), (c) => {
+    .post('/runs/:id/preview-share/guests/:guestId', paramZodValidator(previewShareGuestParamSchema), jsonZodValidator(previewShareDecisionSchema), async (c) => {
       if (!deps.enabled()) return c.json(OFF, 409);
       const { id, guestId } = c.req.valid('param');
-      if (!shares.decide(id, guestId, c.req.valid('json').decision)) return c.json({ error: 'That visitor is no longer waiting' }, 404);
+      const decided = (await mine(c.get('project'), id)) && shares.decide(id, guestId, c.req.valid('json').decision);
+      if (!decided) return c.json({ error: 'That visitor is no longer waiting' }, 404);
       return c.json({ share: shares.get(id) }, 200);
     })
 
-    .delete('/runs/:id/preview-share/guests/:guestId', paramZodValidator(previewShareGuestParamSchema), (c) => {
+    .delete('/runs/:id/preview-share/guests/:guestId', paramZodValidator(previewShareGuestParamSchema), async (c) => {
       if (!deps.enabled()) return c.json(OFF, 409);
       const { id, guestId } = c.req.valid('param');
-      if (!shares.removeGuest(id, guestId)) return c.json({ error: 'That visitor is not on this link' }, 404);
+      const removed = (await mine(c.get('project'), id)) && shares.removeGuest(id, guestId);
+      if (!removed) return c.json({ error: 'That visitor is not on this link' }, 404);
       return c.json({ share: shares.get(id) }, 200);
     })
 

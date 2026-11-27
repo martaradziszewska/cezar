@@ -3586,7 +3586,8 @@ export function createAppParts(deps: ServerDeps) {
       // closed (index flushed), manager's timers and usage subscription dropped.
       trackerWatches.invalidateProject(entry.root);
       // Its terminals live in the app-level registry, which no project route reaches once it is gone.
-      for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskAndShare(run.id);
+      const leaving = contexts.peek(id);
+      for (const run of leaving?.store.listRuns() ?? []) stopTaskAndShare(run.id, leaving!);
       stopTaskProcesses(projectTerminalOwner(entry.root));
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
@@ -4041,16 +4042,21 @@ export function createAppParts(deps: ServerDeps) {
   // A task that goes away takes its share with it, whatever removed it. Every project store is
   // watched: the boot one, those already built, and each built later. A disposed context's store
   // drops its own listeners (`teardown`), so there is nothing to undo there.
-  const endTaskShare = (runId: string): void => void previewShares.stop(runId, TASK_REMOVED);
-  const offTaskShares = [bootContext, ...contexts.ids().flatMap((id) => contexts.peek(id) ?? [])]
-    .map((project) => onTaskRemoved(project.store, endTaskShare));
-  offTaskShares.push(contexts.onContextBuilt((project) => offTaskShares.push(onTaskRemoved(project.store, endTaskShare))));
+  // Only the share's own project ends it: a run id named by another project's store is not its task.
+  const endTaskShare = (project: ProjectContext, runId: string): void => {
+    const owner = previewShares.projectOf(runId);
+    if (owner !== null && shareProject(owner) === project) previewShares.stop(runId, TASK_REMOVED);
+  };
+  const watchTaskShares = (project: ProjectContext): (() => void) =>
+    onTaskRemoved(project.store, (runId) => endTaskShare(project, runId));
+  const offTaskShares = [bootContext, ...contexts.ids().flatMap((id) => contexts.peek(id) ?? [])].map(watchTaskShares);
+  offTaskShares.push(contexts.onContextBuilt((project) => offTaskShares.push(watchTaskShares(project))));
   deps.onDispose?.(() => { for (const off of offTaskShares) off(); });
   /** The two removals the store cannot report: a project leaving the workspace, and a lifecycle
    *  operation accepted now whose record changes only when its teardown is done. */
-  const stopTaskAndShare = (runId: string) => {
+  const stopTaskAndShare = (runId: string, project: ProjectContext) => {
     stopTaskProcesses(runId);
-    endTaskShare(runId);
+    endTaskShare(project, runId);
   };
   const previewShareFamily = previewShareRoutes({
     shares: previewShares,

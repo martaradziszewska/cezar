@@ -18,7 +18,7 @@ export function lifecycleError(c: Context, error: unknown) {
 
 /** One chained family: validated inputs and exact response inference survive both mounts.
  *  `stopTaskProcesses`: a task's shells must not outlive the directory teardown removes (spec 2026-10-07-task-workspace §6). */
-export function worktreeLifecycleRoutes(opts: { stopTaskProcesses?: (runId: string) => void } = {}) {
+export function worktreeLifecycleRoutes(opts: { stopTaskProcesses?: (runId: string, project: ProjectContext) => void } = {}) {
   return new Hono<ProjectApiEnv>()
     .get('/worktree-lifecycle', queryZodValidator(lifecycleListQuerySchema), async c => {
       try { return c.json(await c.get('project').manager.lifecycle.list(c.req.valid('query'))); }
@@ -31,8 +31,9 @@ export function worktreeLifecycleRoutes(opts: { stopTaskProcesses?: (runId: stri
     .post('/worktree-lifecycle/operations', jsonZodValidator(startLifecycleRemovalInputSchema), async c => {
       const input = c.req.valid('json');
       try {
-        const operation = await c.get('project').manager.lifecycle.startRemoval(input);
-        if ('runId' in input) opts.stopTaskProcesses?.(input.runId);
+        const project = c.get('project');
+        const operation = await project.manager.lifecycle.startRemoval(input);
+        if ('runId' in input) opts.stopTaskProcesses?.(input.runId, project);
         return c.json({ operation }, 202);
       }
       catch (error) { return lifecycleError(c, error); }

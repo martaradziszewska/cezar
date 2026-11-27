@@ -159,6 +159,7 @@ interface Listener {
 
 interface Pending {
   origin: string;
+  projectId: string;
   /** Aborted by Stop, by shutdown and by a start that failed: the adapter's cue to leave nothing behind. */
   abort: AbortController;
   result: Promise<ShareStart>;
@@ -283,6 +284,15 @@ export class PreviewShares {
       .map((entry) => ({ projectId: entry.projectId, share: this.snapshot(entry) }));
   }
 
+  /** The project a run's share, or its start still waiting on a tunnel, belongs to: a share is
+   *  reached by run id, and only its own project's routes and store may reach it. */
+  projectOf(runId: string): string | null {
+    const entry = this.entries.get(runId);
+    if (entry !== undefined && this.settle(entry)) return entry.projectId;
+    const pending = this.pending.get(runId);
+    return pending !== undefined && !pending.abort.signal.aborted ? pending.projectId : null;
+  }
+
   /** Also cancels a start still waiting on its tunnel, so no tunnel arrives after a stop. */
   stop(runId: string, ended?: string): boolean {
     const pending = this.pending.get(runId);
@@ -361,7 +371,12 @@ export class PreviewShares {
     }
 
     const { pathname, search } = new URL(input.target);
-    const pending: Pending = { origin: upstream.origin, abort: new AbortController(), result: Promise.resolve({ ok: false, status: 409, error: STOPPED }) };
+    const pending: Pending = {
+      origin: upstream.origin,
+      projectId: input.projectId,
+      abort: new AbortController(),
+      result: Promise.resolve({ ok: false, status: 409, error: STOPPED }),
+    };
     pending.result = this.open(input.runId, input.projectId, upstream, pathname + search, pending)
       .then(
         (started) => {

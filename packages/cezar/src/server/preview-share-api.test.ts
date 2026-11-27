@@ -843,6 +843,57 @@ describe('the preview-share API', () => {
       });
     });
 
+    it('keeps a share out of reach of another project’s routes: read, stop, extend, allow and remove', async () => {
+      await otherProject(async (other) => {
+        const share = await start();
+        await joinAs(share, 'Ana');
+        const guest = (await get(runId)).share!.guests[0]!;
+        const elsewhere = (path: string, init?: RequestInit) => api(`/p/${other.id}${path}`, init);
+
+        const read = await elsewhere(`/runs/${runId}/preview-share`);
+        expect(read.status).toBe(200);
+        expect(await read.json()).toEqual({ share: null });
+        expect(await (await elsewhere(`/runs/${runId}/preview-share`, json('DELETE'))).json()).toEqual({ share: null });
+        const extended = await elsewhere(`/runs/${runId}/preview-share/extend`, json('POST'));
+        expect(extended.status).toBe(404);
+        expect(await extended.json()).toEqual({ error: 'This task is not sharing' });
+        const allowed = await elsewhere(`/runs/${runId}/preview-share/guests/${guest.id}`, json('POST', { decision: 'allow' }));
+        expect(allowed.status).toBe(404);
+        expect(await allowed.json()).toEqual({ error: 'That visitor is no longer waiting' });
+        const removed = await elsewhere(`/runs/${runId}/preview-share/guests/${guest.id}`, json('DELETE'));
+        expect(removed.status).toBe(404);
+        expect(await removed.json()).toEqual({ error: 'That visitor is not on this link' });
+
+        // Untouched: still live, same end, the visitor still waiting.
+        expect(tunnel.stopped).toBe(0);
+        expect((await get(runId)).share).toEqual({ ...share, guests: [guest] });
+        // Its own project still steers it, under both spellings.
+        expect((await api(`/p/${BOOT}/runs/${runId}/preview-share/guests/${guest.id}`, json('POST', { decision: 'allow' }))).status).toBe(200);
+
+        // The other way round: the other project's share under the boot project's mount.
+        expect((await elsewhere(`/runs/${other.run}/preview-share`, json('POST', body))).status).toBe(200);
+        expect((await get(other.run)).share).toBeNull();
+        expect((await del(other.run)).share).toBeNull();
+        expect((await api(`/runs/${other.run}/preview-share/extend`, json('POST'))).status).toBe(404);
+        expect(shares.get(other.run)).not.toBeNull();
+        expect(previewShareStateResponseSchema.parse(await (await elsewhere(`/runs/${other.run}/preview-share`, json('DELETE'))).json()).share).toBeNull();
+        expect(shares.get(other.run)).toBeNull();
+        expect(shares.get(runId)).not.toBeNull();
+      });
+    });
+
+    it('ends only its own project’s share when a store says a task is gone', async () => {
+      await otherProject(async (other) => {
+        await live();
+        // Another project's store naming this run id: not this share's task.
+        other.store.emit('deleted', runId);
+        other.store.emit('run', { ...store.getRun(runId)!, archived: true });
+        expectLive();
+        store.emit('deleted', runId);
+        expectEnded();
+      });
+    });
+
     it('keeps the share when the agent is only stopped: the task is still there', async () => {
       await live();
       await api(`/runs/${runId}/cancel`, json('POST', {}));
