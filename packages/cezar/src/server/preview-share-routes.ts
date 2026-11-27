@@ -13,7 +13,7 @@ import {
 import { Hono } from 'hono';
 
 import { deleteGuestComment, readGuestComments, removeSentGuestComments, toGuestComment } from '../runs/guest-comments.ts';
-import type { RunStore } from '../runs/store.ts';
+import type { RunRecord, RunStore } from '../runs/store.ts';
 import type { PreviewShares } from './preview/share-listener.ts';
 import type { ProjectContext } from './project-context.ts';
 import { jsonZodValidator, paramZodValidator } from './validators.ts';
@@ -83,6 +83,33 @@ export function onPreviewShareFrames(
   return () => {
     store.off('preview-share', onShare);
     store.off('guest-comments', onComments);
+  };
+}
+
+/**
+ * Calls `removed` when a task goes away by any path (spec 2026-11-26-preview-share-link § States):
+ * deleted, archived, or its worktree reclaimed or removed. The store is the one place every path
+ * writes, the retention sweeps and deferred lifecycle operations included.
+ */
+export function onTaskRemoved(store: RunStore, removed: (runId: string) => void): () => void {
+  // Only a tree that was there and is gone is a removal: a task that never had one stays shareable.
+  const hasTree = (run: RunRecord): boolean => !!run.worktreePath && run.worktreeReclaimedAt === undefined;
+  const trees = new Set(store.listRuns().filter(hasTree).map((run) => run.id));
+  const onRun = (run: RunRecord): void => {
+    const lost = trees.has(run.id) && !hasTree(run);
+    if (hasTree(run)) trees.add(run.id);
+    else trees.delete(run.id);
+    if (lost || run.archived) removed(run.id);
+  };
+  const onDeleted = (runId: string): void => {
+    trees.delete(runId);
+    removed(runId);
+  };
+  store.on('run', onRun);
+  store.on('deleted', onDeleted);
+  return () => {
+    store.off('run', onRun);
+    store.off('deleted', onDeleted);
   };
 }
 

@@ -260,7 +260,7 @@ import { createGuestRoutes } from './preview/share-guest-routes.ts';
 import { guestScript } from './preview/share-guest-script.ts';
 import { PreviewShares, type PreviewSharesOptions } from './preview/share-listener.ts';
 import { shareTunnel } from './preview/share-tunnel.ts';
-import { TASK_REMOVED, liveShareRoutes, onPreviewShareFrames, previewShareRoutes, publishGuestCommentList } from './preview-share-routes.ts';
+import { TASK_REMOVED, liveShareRoutes, onPreviewShareFrames, onTaskRemoved, previewShareRoutes, publishGuestCommentList } from './preview-share-routes.ts';
 import { getTeamSkillsCached, isSafeRef, refreshTeamSkills, safeRemoteFor, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -4037,10 +4037,19 @@ export function createAppParts(deps: ServerDeps) {
   };
   const previewShares = deps.previewShares?.(shareWiring) ?? new PreviewShares({ ...shareWiring, tunnel: shareTunnel(process.env) });
   deps.onDispose?.(() => previewShares.closeAll());
-  /** Archive, delete and worktree removal: the task's shells stop and its share link ends with it. */
+  // A task that goes away takes its share with it, whatever removed it. Every project store is
+  // watched: the boot one, those already built, and each built later. A disposed context's store
+  // drops its own listeners (`teardown`), so there is nothing to undo there.
+  const endTaskShare = (runId: string): void => void previewShares.stop(runId, TASK_REMOVED);
+  const offTaskShares = [bootContext, ...contexts.ids().flatMap((id) => contexts.peek(id) ?? [])]
+    .map((project) => onTaskRemoved(project.store, endTaskShare));
+  offTaskShares.push(contexts.onContextBuilt((project) => offTaskShares.push(onTaskRemoved(project.store, endTaskShare))));
+  deps.onDispose?.(() => { for (const off of offTaskShares) off(); });
+  /** The two removals the store cannot report: a project leaving the workspace, and a lifecycle
+   *  operation accepted now whose record changes only when its teardown is done. */
   const stopTaskAndShare = (runId: string) => {
     stopTaskProcesses(runId);
-    previewShares.stop(runId, TASK_REMOVED);
+    endTaskShare(runId);
   };
   const previewShareFamily = previewShareRoutes({
     shares: previewShares,
@@ -5574,7 +5583,7 @@ export function createAppParts(deps: ServerDeps) {
         isLive: (id) => manager.isActive(id), dryRun: body.dryRun === true, lifecycle: manager.lifecycle,
         activity: storeActivity(store),
         // The rest of what `DELETE /runs/:id` does: terminals stop, a PR head's ref goes with it.
-        onDeleted: (run) => stopTaskAndShare(run.id),
+        onDeleted: (run) => stopTaskProcesses(run.id),
       });
       if (body.dryRun !== true && result.deleted.length > 0) await manager.sweepPrHeadRefs();
       return c.json({ ...result, days, dryRun: body.dryRun === true });
@@ -5588,7 +5597,7 @@ export function createAppParts(deps: ServerDeps) {
       // and its worktree (branch kept, Continue restores it).
       if (archived > 0) {
         const taken = open.filter((id) => store.getRun(id)?.archived);
-        for (const id of taken) stopTaskAndShare(id);
+        for (const id of taken) stopTaskProcesses(id);
         manager.reclaimWorktreesOf(taken);
       }
       // One event for the sweep, `value` = how many it archived (summed on the dashboard).
@@ -5612,7 +5621,7 @@ export function createAppParts(deps: ServerDeps) {
       const retiresQuestion = parsed.data.archived !== false && store.getRun(id)?.awaitingAnswerSince !== undefined;
       const run = store.setArchived(id, parsed.data.archived !== false);
       if (run && parsed.data.archived !== false) {
-        stopTaskAndShare(id);
+        stopTaskProcesses(id);
         manager.reclaimWorktreesOf([id]);
       }
       if (run && retiresQuestion) manager.notifyQuestionRetired?.(id);
@@ -6771,7 +6780,7 @@ export function createAppParts(deps: ServerDeps) {
       try {
         return await legacyWorktreeMutation(c.get('project'), id, async () => {
           // A shell must not outlive the directory it is standing in (spec §6).
-          stopTaskAndShare(id);
+          stopTaskProcesses(id);
           if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
           store.updateRun(id, { worktreePath: undefined, branch: undefined });
           if (run.prHead) await manager.sweepPrHeadRefs();
@@ -6791,7 +6800,7 @@ export function createAppParts(deps: ServerDeps) {
       // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so do its terminals.
       try {
         return await legacyWorktreeMutation(c.get('project'), id, async () => {
-          stopTaskAndShare(id);
+          stopTaskProcesses(id);
           // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
           deleteRunLayouts(dataDir, id);
           deleteRunGuestComments(dataDir, id);
@@ -7035,7 +7044,7 @@ export function createAppParts(deps: ServerDeps) {
         let removed = false;
         let cleanupError: string | undefined;
         // A shell must not outlive the directory it is standing in (spec §6).
-        stopTaskAndShare(loser.id);
+        stopTaskProcesses(loser.id);
         try {
           const operation = manager.lifecycle ? await manager.lifecycle.discardVariant(loser.id) : null;
           if (!operation) {

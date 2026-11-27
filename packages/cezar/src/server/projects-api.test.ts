@@ -1034,6 +1034,7 @@ describe('workspace projects API', () => {
         localHandoff: true,
         terminal: true,
         designMode: true,
+        previewShare: true,
         followups: false,
         phonePairing: true,
         singleProject: false,

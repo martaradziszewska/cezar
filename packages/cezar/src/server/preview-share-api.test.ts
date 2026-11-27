@@ -1,9 +1,11 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -18,6 +20,7 @@ import {
   type GuestCommentInput,
   type PreviewShare,
 } from '@open-mercato/cezar-contract';
+import { createWorktree } from '../git-worktree.ts';
 import { runInRelayScope } from '../relay/scope.ts';
 import { addGuestComment, readGuestComments, updateGuestComment } from '../runs/guest-comments.ts';
 import { RunStore } from '../runs/store.ts';
@@ -40,6 +43,7 @@ const COCKPIT = 'http://localhost:4321';
 const BOOT = 'boot';
 const OFF = { error: 'Sharing is not available on this cockpit' };
 const REMOVED = 'the task was removed';
+const exec = promisify(execFile);
 
 class FakeTunnel implements TunnelAdapter {
   started: number[] = [];
@@ -586,6 +590,25 @@ describe('the preview-share API', () => {
       expect(tunnel.stopped).toBe(1);
       expect(ended).toEqual([{ runId, share: null, ended: REMOVED }]);
     };
+    const expectLive = (): void => {
+      expect(shares.get(runId)?.target).toBe(upstreamOrigin);
+      expect(tunnel.stopped).toBe(0);
+      expect(ended).toEqual([]);
+    };
+    /** Rebuilds the app on a manager whose removals are lifecycle operations: accepted now, done later. */
+    const useLifecycle = (): void => {
+      const lifecycle = { startRemoval: async () => ({ id: 'op-1' }), requiresGate: async () => false };
+      app = createApp({
+        repoRoot,
+        store,
+        manager: { ...manager, lifecycle } as unknown as RunManager,
+        version: '0.0.0-test',
+        bootProjectId: BOOT,
+        contexts,
+        onDispose: (cleanup) => disposers.push(cleanup),
+        previewShares: (wiring) => (shares = new PreviewShares({ ...wiring, tunnel })),
+      });
+    };
 
     it('ends the share when its run is deleted', async () => {
       await live();
@@ -606,15 +629,6 @@ describe('the preview-share API', () => {
       expectEnded();
     });
 
-    it('ends the share when the archived-task sweep deletes its run', async () => {
-      await live();
-      // Archived behind the route's back, so the link is still up when the sweep reaches the task.
-      store.updateRun(runId, { status: 'done', archived: true, archivedAt: new Date(Date.now() - 2 * 86_400_000).toISOString() });
-      const res = await api('/runs/archived/delete-expired', json('POST', { olderThanDays: 1 }));
-      expect(await res.json()).toMatchObject({ deleted: [runId] });
-      expectEnded();
-    });
-
     it('ends the share of a variant that lost the pick', async () => {
       const winner = store.createRun({ title: 'A', workflow: 'quick-task', task: 't', steps: [], groupId: 'g1', variant: 'a' }).id;
       const loser = store.createRun({ title: 'B', workflow: 'quick-task', task: 't', steps: [], groupId: 'g1', variant: 'b' }).id;
@@ -628,68 +642,151 @@ describe('the preview-share API', () => {
     });
 
     it('ends the share when its worktree is removed', async () => {
+      store.updateRun(runId, { worktreePath: join(repoRoot, 'gone-tree') });
       await live();
       expect((await api(`/runs/${runId}/remove-worktree`, json('POST'))).status).toBe(200);
       expectEnded();
     });
 
-    it('ends the share when a lifecycle operation removes, deletes or reclaims its task', async () => {
-      const lifecycle = { startRemoval: async () => ({ id: 'op-1' }), requiresGate: async () => false };
-      const withLifecycle = createApp({
-        repoRoot,
-        store,
-        manager: { ...manager, lifecycle } as unknown as RunManager,
-        version: '0.0.0-test',
-        bootProjectId: BOOT,
-        contexts,
-        onDispose: (cleanup) => disposers.push(cleanup),
-        previewShares: (wiring) => (shares = new PreviewShares({ ...wiring, tunnel })),
-      });
+    it('ends the share, and says so on the stream, when a reclaim takes its worktree', async () => {
+      await exec('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+      writeFileSync(join(repoRoot, 'base.txt'), 'base\n');
+      await exec('git', ['add', 'base.txt'], { cwd: repoRoot });
+      await exec('git', ['-c', 'user.name=test', '-c', 'user.email=test@local', 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
+      const tree = await createWorktree(repoRoot, runId, 'main');
+      store.updateRun(runId, { status: 'done', worktreePath: tree.path, branch: tree.branch, baseBranch: 'main' });
+      await start();
+
+      // The pass "Reclaim now", the hourly retention sweep and the disk guard all run.
+      const text = await streamed(
+        '/workspace/events',
+        async () => {
+          const res = await api('/worktrees/reclaim', json('POST', { runIds: [runId] }));
+          expect(await res.json()).toEqual({ reclaimed: [runId] });
+        },
+        (seen) => seen.includes('event: preview-share\n'),
+      );
+      expect(existsSync(tree.path)).toBe(false);
+      expect(store.getRun(runId)?.worktreeReclaimedAt).toBeDefined();
+      expect(shares.get(runId)).toBeNull();
+      expect(tunnel.stopped).toBe(1);
+      expect(framesOf(text, 'preview-share')).toEqual([{ type: 'preview-share', runId, project: BOOT, share: null, ended: REMOVED }]);
+    });
+
+    it('ends the share when anything stamps its worktree reclaimed, or drops it', async () => {
+      for (const loss of [{ worktreeReclaimedAt: new Date().toISOString() }, { worktreePath: undefined, branch: undefined }]) {
+        store.updateRun(runId, { worktreePath: join(repoRoot, 'tree'), worktreeReclaimedAt: undefined });
+        await start();
+        store.updateRun(runId, loss);
+        expect(shares.get(runId), JSON.stringify(loss)).toBeNull();
+      }
+    });
+
+    it('ends a share started while a lifecycle delete was still running, once the run goes', async () => {
+      useLifecycle();
+      expect((await api('/worktree-lifecycle/operations', json('POST', { requestId: randomUUID(), runId, intent: 'delete-task' }))).status).toBe(202);
+      // Teardown is still running, so the task is still there and can be shared.
+      await live();
+      store.deleteRun(runId);
+      expectEnded();
+    });
+
+    it('ends the share when the run is archived or deleted behind the routes', async () => {
+      await live();
+      store.setArchived(runId, true);
+      expectEnded();
+
+      const other = store.createRun({ title: 'Other', workflow: 'quick-task', task: 't', steps: [] }).id;
+      await start(other);
+      store.deleteRun(other);
+      expect(shares.get(other)).toBeNull();
+    });
+
+    it('keeps the share through changes that keep the task', async () => {
+      store.updateRun(runId, { worktreePath: join(repoRoot, 'tree') });
+      await live();
+      expect((await api(`/runs/${runId}`, json('PATCH', { title: 'Renamed' }))).status).toBe(200);
+      expect((await api(`/runs/${runId}/pin`, json('POST', {}))).status).toBe(200);
+      store.updateRun(runId, { status: 'review' });
+      store.updateRun(runId, { status: 'done' });
+      // Unarchiving is a change too, and not a removal.
+      store.setArchived(runId, false);
+      expectLive();
+    });
+
+    it('keeps a share started on a task whose worktree was already reclaimed', async () => {
+      store.updateRun(runId, { worktreePath: join(repoRoot, 'tree'), worktreeReclaimedAt: new Date().toISOString() });
+      await live();
+      store.updateRun(runId, { status: 'review' });
+      expectLive();
+    });
+
+    it('ends the share when a lifecycle operation is asked to remove, delete or reclaim its task', async () => {
+      useLifecycle();
       for (const intent of ['remove-worktree', 'delete-task', 'reclaim'] as const) {
-        const started = await apiRequest(withLifecycle, `/api/v1/runs/${runId}/preview-share`, json('POST', body));
-        expect(started.status, intent).toBe(200);
-        const res = await apiRequest(withLifecycle, '/api/v1/worktree-lifecycle/operations', json('POST', { requestId: randomUUID(), runId, intent }));
-        expect(res.status, intent).toBe(202);
+        await start();
+        expect((await api('/worktree-lifecycle/operations', json('POST', { requestId: randomUUID(), runId, intent }))).status, intent).toBe(202);
         expect(shares.get(runId), intent).toBeNull();
       }
     });
 
-    it('ends the share when its project is removed from the workspace', async () => {
+    /** A second registered project, opened by its first request, with one finished run. */
+    const otherProject = async (use: (other: { id: string; store: RunStore; run: string }) => Promise<void>): Promise<void> => {
       const otherRoot = mkdtempSync(join(tmpdir(), 'cez-share-api-other-'));
       mkdirSync(join(otherRoot, '.ai/cezar'), { recursive: true });
       try {
-        const other = await registerProject(otherRoot);
-        expect((await api(`/p/${other.id}/runs`)).status).toBe(200);
-        const otherStore = contexts.peek(other.id)!.store;
-        const otherRun = otherStore.createRun({ title: 'Elsewhere', workflow: 'quick-task', task: 't', steps: [] }).id;
+        const { id } = await registerProject(otherRoot);
+        expect((await api(`/p/${id}/runs`)).status).toBe(200);
+        const otherStore = contexts.peek(id)!.store;
+        const run = otherStore.createRun({ title: 'Elsewhere', workflow: 'quick-task', task: 't', steps: [] }).id;
         // A project with a running task is not removable.
-        otherStore.updateRun(otherRun, { status: 'done' });
-        const published: unknown[] = [];
-        otherStore.on('preview-share', (payload: unknown) => published.push(payload));
+        otherStore.updateRun(run, { status: 'done' });
+        await use({ id, store: otherStore, run });
+      } finally {
+        rmSync(otherRoot, { recursive: true, force: true });
+      }
+    };
 
-        const started = await api(`/p/${other.id}/runs/${otherRun}/preview-share`, json('POST', body));
+    it('ends the share when its project is removed from the workspace', async () => {
+      await otherProject(async (other) => {
+        const published: unknown[] = [];
+        other.store.on('preview-share', (payload: unknown) => published.push(payload));
+
+        const started = await api(`/p/${other.id}/runs/${other.run}/preview-share`, json('POST', body));
         expect(started.status).toBe(200);
         // The frame travels on the share's own project, never the boot one.
         expect(published).toHaveLength(1);
         expect(liveSharesResponseSchema.parse(await (await api('/workspace/preview-shares')).json()).shares).toEqual([
-          expect.objectContaining({ projectId: other.id, runId: otherRun, title: 'Elsewhere' }),
+          expect.objectContaining({ projectId: other.id, runId: other.run, title: 'Elsewhere' }),
         ]);
 
         expect((await api(`/projects/${other.id}`, json('DELETE'))).status).toBe(200);
-        expect(shares.get(otherRun)).toBeNull();
+        expect(shares.get(other.run)).toBeNull();
         expect(tunnel.stopped).toBe(1);
-        expect(published.at(-1)).toEqual({ runId: otherRun, share: null, ended: REMOVED });
-      } finally {
-        rmSync(otherRoot, { recursive: true, force: true });
-      }
+        expect(published.at(-1)).toEqual({ runId: other.run, share: null, ended: REMOVED });
+      });
+    });
+
+    it('watches every project: one opened after the app was built, and one already open', async () => {
+      await otherProject(async (other) => {
+        const share = () => api(`/p/${other.id}/runs/${other.run}/preview-share`, json('POST', body));
+        expect((await share()).status).toBe(200);
+        other.store.setArchived(other.run, true);
+        expect(shares.get(other.run)).toBeNull();
+
+        // A second app over the same contexts finds this project already open.
+        other.store.setArchived(other.run, false);
+        useLifecycle();
+        expect((await share()).status).toBe(200);
+        other.store.deleteRun(other.run);
+        expect(shares.get(other.run)).toBeNull();
+      });
     });
 
     it('keeps the share when the agent is only stopped: the task is still there', async () => {
       await live();
       await api(`/runs/${runId}/cancel`, json('POST', {}));
-      expect(shares.get(runId)?.target).toBe(upstreamOrigin);
-      expect(tunnel.stopped).toBe(0);
-      expect(ended).toEqual([]);
+      expectLive();
     });
 
     it('ends every share when the server shuts down', async () => {

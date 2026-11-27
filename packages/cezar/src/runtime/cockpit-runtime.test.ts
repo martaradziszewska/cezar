@@ -26,6 +26,7 @@ const health = (runtimeId: string) => ({
     localHandoff: true,
     terminal: false,
     designMode: false,
+    previewShare: false,
     followups: false,
     phonePairing: false,
     singleProject: false,
