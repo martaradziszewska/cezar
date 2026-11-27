@@ -192,13 +192,18 @@ export function safeNext(next: string | null): string | null {
   return /^\/(?![/\\])[^\u0000-\u001f\u007f]*$/.test(next) ? next : null;
 }
 
-/** Bidi controls and zero-width characters: a name must not reorder or hide the code shown beside it (C12). */
-const INVISIBLE = /[\u061c\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+/** Bidi controls and zero-width characters: a name must not reorder or hide the code shown beside it
+ *  (C12). The joiners U+200C and U+200D stay: emoji sequences and Persian or Indic names need them. */
+const INVISIBLE = /[\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
+/** A joiner with nothing on one side joins nothing, and a run of them is invisible padding. */
+const STRAY_JOINERS = /(^|\s)[\u200c\u200d]+|[\u200c\u200d]+(?=\s|$)|(?<=[\u200c\u200d])[\u200c\u200d]+/g;
 
 /** The name goes into the owner's review message, so it stays on one line. */
 function cleanName(raw: unknown): string {
   if (typeof raw !== 'string') return '';
-  return raw.replace(INVISIBLE, '').replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, GUEST_NAME_MAX).trim();
+  const tidy = (text: string): string => text.replace(STRAY_JOINERS, '$1').replace(/\s+/g, ' ').trim();
+  // Twice: the cap can leave a joiner at the new end.
+  return tidy(tidy(raw.replace(INVISIBLE, '').replace(/[\s\u0000-\u001f\u007f]+/g, ' ')).slice(0, GUEST_NAME_MAX));
 }
 
 function clientAddress(req: IncomingMessage): string {

@@ -1342,6 +1342,27 @@ describe('the share listener', () => {
       expect(shares.get('r1')!.guests[1]!.name).toBe('y'.repeat(60));
     });
 
+    it('keeps the joiners a name is written with: an emoji sequence and a Persian name stay whole', async () => {
+      const ZWJ = String.fromCodePoint(0x200d);
+      const ZWNJ = String.fromCodePoint(0x200c);
+      const coder = `${String.fromCodePoint(0x1f469)}${ZWJ}${String.fromCodePoint(0x1f4bb)}`;
+      const persian = `علی${ZWNJ}رضا`;
+      await ask(await join(), `${coder} ${persian}`);
+      expect(shares.get('r1')!.guests[0]!.name).toBe(`${coder} ${persian}`);
+      // A joiner with nothing on one side joins nothing: it is only invisible padding.
+      await ask(await join(), `${ZWJ}${ZWNJ}Ana${ZWNJ}${ZWJ}`);
+      expect(shares.get('r1')!.guests[1]!.name).toBe('Ana');
+      // And a name made of joiners alone is no name.
+      const empty = await join();
+      expect(await ask(empty, `${ZWJ}${ZWNJ}${ZWJ}`)).toEqual({ error: expect.any(String) });
+      expect(await ask(empty, ` ${ZWNJ} ${ZWJ} `)).toEqual({ error: expect.any(String) });
+      expect(shares.get('r1')!.guests).toHaveLength(2);
+      // The bidi controls and the other zero-width characters still go.
+      const mixed = [0x202e, 0x200b, 0x200e, 0x200f, 0x2060, 0xfeff, 0x061c, 0x2066].map((code) => String.fromCodePoint(code)).join('');
+      await ask(empty, `P${mixed}iotr`);
+      expect(shares.get('r1')!.guests[2]!.name).toBe('Piotr');
+    });
+
     it('keeps the first name and code when a waiting or allowed browser asks again', async () => {
       const cookie = await join();
       const first = await ask(cookie, 'Ana');
