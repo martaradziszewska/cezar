@@ -312,8 +312,10 @@ export class DesignProxies {
         }
         allowFramingBy(answer, entry.parentOrigin);
         // A redirect to the app's own origin stays inside the proxy; one that leaves it, leaves.
+        // The origin must END there: `…:3000` is a prefix of `…:30001`, which is another server.
         if (typeof answer.location === 'string' && answer.location.startsWith(entry.upstream.origin)) {
-          answer.location = own + answer.location.slice(entry.upstream.origin.length);
+          const rest = answer.location.slice(entry.upstream.origin.length);
+          if (rest === '' || /^[/?#]/.test(rest)) answer.location = own + rest;
         }
         const status = incoming.statusCode ?? 502;
         const type = String(incoming.headers['content-type'] ?? '');

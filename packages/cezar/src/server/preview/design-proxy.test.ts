@@ -62,6 +62,11 @@ describe('the Design Mode proxy', () => {
         res.writeHead(302, { location: 'https://example.com/elsewhere' }).end();
         return;
       }
+      const to = new URL(req.url ?? '/', 'http://app').searchParams.get('to');
+      if (to !== null) {
+        res.writeHead(302, { location: to }).end();
+        return;
+      }
       if (req.url === '/app.js') {
         res.writeHead(200, { 'content-type': 'application/javascript' }).end('console.log("<head>")');
         return;
@@ -164,6 +169,20 @@ describe('the Design Mode proxy', () => {
     const origin = await open();
     expect((await get(`${origin}/redirect`)).headers.location).toBe(`${origin}/landed`);
     expect((await get(`${origin}/away`)).headers.location).toBe('https://example.com/elsewhere');
+  });
+
+  it('rewrites a redirect only when it names the app\'s whole origin', async () => {
+    const origin = await open();
+    const redirected = async (to: string): Promise<string | string[] | undefined> =>
+      (await get(`${origin}/go?to=${encodeURIComponent(to)}`)).headers.location;
+    expect(await redirected(`${upstreamOrigin}/landed?x=1`)).toBe(`${origin}/landed?x=1`);
+    expect(await redirected(upstreamOrigin)).toBe(origin);
+    expect(await redirected(`${upstreamOrigin}?x=1`)).toBe(`${origin}?x=1`);
+    expect(await redirected(`${upstreamOrigin}#top`)).toBe(`${origin}#top`);
+    // Another port that only STARTS like the app's: a prefix match turned it into `<own>1/x`.
+    expect(await redirected(`${upstreamOrigin}1/x`)).toBe(`${upstreamOrigin}1/x`);
+    expect(await redirected(`${upstreamOrigin}.evil.example/x`)).toBe(`${upstreamOrigin}.evil.example/x`);
+    expect(await redirected(`${upstreamOrigin}@evil.example/x`)).toBe(`${upstreamOrigin}@evil.example/x`);
   });
 
   it('splices a WebSocket upgrade through to the app', async () => {
