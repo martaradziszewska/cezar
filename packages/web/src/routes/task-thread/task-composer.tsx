@@ -42,7 +42,6 @@ export function TaskComposer({
   getMentionCandidates,
   onSendingChange,
   onOpenComment,
-  onOpenInPreview,
 }: {
   run: ApiRun
   draft: Draft
@@ -54,8 +53,6 @@ export function TaskComposer({
   onSendingChange?: (sending: boolean) => void
   /** Passed to the chips — see `DiffCommentChips.onOpen`. */
   onOpenComment?: (comment: DiffComment) => void
-  /** Passed to the chips — see `DiffCommentChips.onOpenInPreview`. */
-  onOpenInPreview?: (url: string) => void
 }) {
   // The legacy session-open rule (web/app.js `updateDetail`): the composer can deliver while the
   // engine owns a live session — running queues the message, waiting answers it. A queued run's
@@ -149,7 +146,6 @@ export function TaskComposer({
               comments={diffComments.all}
               onRemove={diffComments.remove}
               onOpen={onOpenComment}
-              onOpenInPreview={onOpenInPreview}
             />
           : undefined
         }

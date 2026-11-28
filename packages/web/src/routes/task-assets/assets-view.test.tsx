@@ -18,6 +18,12 @@ vi.mock('../task-thread/follow-up-engine', () => ({
   useContinueAction: () => ({ available: true, canContinue: true, providerPending: false, pills: null, continueWith: vi.fn() }),
 }))
 vi.mock('../task-thread/active-provider', () => ({ useActiveProviderAvailability: () => ({ usable: true }) }))
+// The Share control has its own suite; here it is a probe that shows where it sits and what it was given.
+vi.mock('./share-control', () => ({
+  ShareControl: (props: { runId: string; asset: string; assetTitle: string }) => (
+    <span data-testid="share-probe" data-run={props.runId} data-asset={props.asset} data-title={props.assetTitle} />
+  ),
+}))
 
 const art = (name: string, kind: RunArtifact['kind'], updatedAt: string, title?: string): RunArtifact => ({
   name,
@@ -431,5 +437,69 @@ describe('AssetsView — comments on HTML elements', () => {
     expect(message).toContain('- `demo.html` (HTML asset) element `main > h1` — "Title":')
     await waitFor(() => expect(document.querySelector('[data-slot="assets-ask-comments"]')).toBeNull())
     await waitFor(() => expect(puts.at(-1)).toBe(''))
+  })
+})
+
+describe('AssetsView — Share (spec 2026-11-28-asset-share-link)', () => {
+  const probe = () => screen.queryByTestId('share-probe')
+  const drafts = () =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input)
+        const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+        if (path.endsWith('/runs/r1/artifacts')) return json(listing)
+        if (path.endsWith('/runs/r1/drafts')) return json({ surfaces: {} })
+        if (path.endsWith('/artifacts/notes.md')) return new Response('# Notes', { status: 200 })
+        return new Response('not found', { status: 404 })
+      }),
+    )
+
+  it('sits right after Comment on an HTML asset, given the asset on screen and its title', async () => {
+    listing = { artifacts: [DEMO, NOTES], truncated: false }
+    drafts()
+    mount('/tasks/r1/assets/demo.html', true, RUN)
+    await waitFor(() => expect(probe()).not.toBeNull())
+    expect(probe()!.dataset).toMatchObject({ run: 'r1', asset: 'demo.html', title: 'Dry-run demo' })
+    const comment = document.querySelector('[data-action="assets-comment"]')!
+    const focus = document.querySelector('[data-action="assets-focus"]')!
+    expect(comment.compareDocumentPosition(probe()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(probe()!.compareDocumentPosition(focus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names an untitled page by its file name', async () => {
+    listing = { artifacts: [art('plain.html', 'html', '2026-10-22T10:00:00.000Z')], truncated: false }
+    drafts()
+    mount('/tasks/r1/assets/plain.html', true, RUN)
+    await waitFor(() => expect(probe()).not.toBeNull())
+    expect(probe()!.dataset).toMatchObject({ asset: 'plain.html', title: 'plain.html' })
+  })
+
+  it('is offered only where Comment is: not for another kind, not without the run, not on an older version', async () => {
+    listing = { artifacts: [DEMO, NOTES], truncated: false }
+    drafts()
+    mount('/tasks/r1/assets/notes.md', true, RUN)
+    await waitFor(() => expect(document.querySelector('[data-slot="assets-markdown"]')).not.toBeNull())
+    expect(probe()).toBeNull()
+    cleanup()
+
+    mount('/tasks/r1/assets/demo.html')
+    await waitFor(() => expect(frame()).not.toBeNull())
+    expect(probe()).toBeNull()
+    cleanup()
+
+    listing = { artifacts: [IMPACT], truncated: false, versions: [v(1), v(2)] }
+    mount('/tasks/r1/assets/impact.html', true, RUN)
+    await waitFor(() => expect(probe()).not.toBeNull())
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Version v2/ }), { button: 0, ctrlKey: false })
+    const older = await waitFor(() => {
+      const item = document.querySelector<HTMLElement>('[data-version="1"]')
+      if (!item) throw new Error('menu not open')
+      return item
+    })
+    fireEvent.click(older)
+    await waitFor(() => expect(screen.getByText(/Viewing v1/)).toBeTruthy())
+    expect(probe()).toBeNull()
+    expect(document.querySelector('[data-action="assets-comment"]')).toBeNull()
   })
 })

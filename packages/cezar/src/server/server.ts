@@ -257,11 +257,11 @@ import { BUILD_HEADER, readWebBuildId } from './build-identity.ts';
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
 import { createGuestRoutes } from './preview/share-guest-routes.ts';
-import { guestScript } from './preview/share-guest-script.ts';
-import { PreviewShares, type PreviewSharesOptions } from './preview/share-listener.ts';
+import { guestShell } from './preview/share-guest-shell.ts';
+import { AssetShares, type AssetSharesOptions } from './preview/share-listener.ts';
 import { shareTunnel } from './preview/share-tunnel.ts';
 import { reapStaleTunnels } from './preview/share-tunnel-record.ts';
-import { TASK_REMOVED, liveShareRoutes, onPreviewShareFrames, onTaskRemoved, previewShareRoutes, publishGuestCommentList } from './preview-share-routes.ts';
+import { TASK_REMOVED, assetShareRoutes, liveShareRoutes, onAssetShareFrames, onTaskRemoved, publishGuestCommentList } from './asset-share-routes.ts';
 import { getTeamSkillsCached, isSafeRef, refreshTeamSkills, safeRemoteFor, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -627,9 +627,9 @@ export interface ServerDeps {
   /** The Design Mode proxies behind `POST /api/v1/preview/design-proxy` (src/server/preview/).
    *  Injected by tests that need to close the listeners they opened. */
   designProxies?: DesignProxies;
-  /** Builds the app's one `PreviewShares` from the server's own wiring (spec
-   *  2026-11-26-preview-share-link). Tests pass a fake tunnel; the default looks for `cloudflared`. */
-  previewShares?: (wiring: Pick<PreviewSharesOptions, 'guestRoutes' | 'onChange'>) => PreviewShares;
+  /** Builds the app's one `AssetShares` from the server's own wiring (spec
+   *  2026-11-28-asset-share-link). Tests pass a fake tunnel; the default looks for `cloudflared`. */
+  assetShares?: (wiring: Pick<AssetSharesOptions, 'guestRoutes' | 'onChange'>) => AssetShares;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
@@ -4019,48 +4019,49 @@ export function createAppParts(deps: ServerDeps) {
     return c.json({ origin: opened.origin });
   });
 
-  // ---- Preview Share (spec `.ai/specs/2026-11-26-preview-share-link.md`) ----
+  // ---- Asset Share (spec `.ai/specs/2026-11-28-asset-share-link.md`) ----
   // Nothing listens and nothing is spawned before the first POST. The boot context is not in the
   // lazy map, so a share started on it is found again by the registry id it was started under.
   const bootShareIds = new Set<string>();
   const shareProject = (projectId: string): ProjectContext | undefined =>
     bootShareIds.has(projectId) ? bootContext : contexts.peek(projectId);
-  const shareWiring: Pick<PreviewSharesOptions, 'guestRoutes' | 'onChange'> = {
+  const shareWiring: Pick<AssetSharesOptions, 'guestRoutes' | 'onChange'> = {
     guestRoutes: createGuestRoutes({
       dataDirOf: (projectId) => shareProject(projectId)?.dataDir ?? null,
       onComments: (projectId, runId) => {
         const project = shareProject(projectId);
         if (project) publishGuestCommentList(project, runId);
       },
-      guestScript,
+      guestShell,
     }),
     // A project whose context is gone has no stream left to tell.
-    onChange: (projectId, runId, share, ended) => shareProject(projectId)?.store.publishPreviewShare(runId, share, ended),
+    onChange: (projectId, runId, share, ended) => shareProject(projectId)?.store.publishAssetShare(runId, share, ended),
   };
-  const previewShares = deps.previewShares?.(shareWiring) ?? new PreviewShares({ ...shareWiring, tunnel: shareTunnel(process.env) });
-  deps.onDispose?.(() => previewShares.closeAll());
+  const assetShares = deps.assetShares?.(shareWiring) ?? new AssetShares({ ...shareWiring, tunnel: shareTunnel(process.env) });
+  deps.onDispose?.(() => assetShares.closeAll());
   // A task that goes away takes its share with it, whatever removed it. Every project store is
   // watched: the boot one, those already built, and each built later. A disposed context's store
   // drops its own listeners (`teardown`), so there is nothing to undo there.
   // Only the share's own project ends it: a run id named by another project's store is not its task.
   const endTaskShare = (project: ProjectContext, runId: string): void => {
-    const owner = previewShares.projectOf(runId);
-    if (owner !== null && shareProject(owner) === project) previewShares.stop(runId, TASK_REMOVED);
+    const owner = assetShares.projectOf(runId);
+    if (owner !== null && shareProject(owner) === project) assetShares.stop(runId, TASK_REMOVED);
   };
   const watchTaskShares = (project: ProjectContext): (() => void) =>
     onTaskRemoved(project.store, (runId) => endTaskShare(project, runId));
   const offTaskShares = [bootContext, ...contexts.ids().flatMap((id) => contexts.peek(id) ?? [])].map(watchTaskShares);
   offTaskShares.push(contexts.onContextBuilt((project) => offTaskShares.push(watchTaskShares(project))));
   deps.onDispose?.(() => { for (const off of offTaskShares) off(); });
-  /** The two removals the store cannot report: a project leaving the workspace, and a lifecycle
-   *  operation accepted now whose record changes only when its teardown is done. */
-  const stopTaskAndShare = (runId: string, project: ProjectContext) => {
+  /** The two removals the store cannot report yet: a project leaving the workspace, and a task
+   *  delete accepted now whose record goes only when its teardown is done. Removing or reclaiming
+   *  a worktree keeps the task and its assets, so it keeps the share (spec § States). */
+  const stopTaskAndShare = (runId: string, project: ProjectContext, intent?: 'remove-worktree' | 'delete-task' | 'reclaim') => {
     stopTaskProcesses(runId);
-    endTaskShare(project, runId);
+    if (intent === undefined || intent === 'delete-task') endTaskShare(project, runId);
   };
-  const previewShareFamily = previewShareRoutes({
-    shares: previewShares,
-    enabled: () => capabilities().previewShare,
+  const assetShareFamily = assetShareRoutes({
+    shares: assetShares,
+    enabled: () => capabilities().assetShare,
     projectId: async (project) => {
       if (project !== bootContext) return project.id;
       const id = await resolveBootProject();
@@ -4069,7 +4070,7 @@ export function createAppParts(deps: ServerDeps) {
     },
   });
   const liveShareFamily = liveShareRoutes({
-    shares: previewShares,
+    shares: assetShares,
     title: (projectId, runId) => {
       const run = shareProject(projectId)?.store.getRun(runId);
       return run ? (run.titleSummary ?? run.title) : '';
@@ -7458,7 +7459,7 @@ export function createAppParts(deps: ServerDeps) {
           void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing)) });
         const offRun = onRunFrames(store, (_run, frames) => void stream.writeSSE({ event: 'run', data: frames.record() }));
         store.on('artifacts', onArtifacts);
-        const offShare = onPreviewShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }));
+        const offShare = onAssetShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }));
         const offDeleted = onRunDeleted(store, onDeleted);
         stream.onAbort(() => {
           offRun();
@@ -7516,7 +7517,7 @@ export function createAppParts(deps: ServerDeps) {
           const onArtifacts = (listing: ArtifactsBusPayload) =>
             void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing, project)) });
           store.on('artifacts', onArtifacts);
-          const offShare = onPreviewShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }), project);
+          const offShare = onAssetShareFrames(store, (event, frame) => void stream.writeSSE({ event, data: JSON.stringify(frame) }), project);
           const offDeleted = onRunDeleted(store, onDeleted);
           attached.set(project, {
             store,
@@ -9053,7 +9054,7 @@ export function createAppParts(deps: ServerDeps) {
     .route('/', groupsRoutes)
     .route('/', openTargetsRoutes)
     .route('/', worktreesRoutes)
-    .route('/', previewShareFamily)
+    .route('/', assetShareFamily)
     .route('/', worktreeLifecycleRoutes({ stopTaskProcesses: stopTaskAndShare }))
     .route('/', todosRoutes)
     .route('/', sseRoutes)
@@ -10263,7 +10264,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     }
   });
   server.once('listening', () => {
-    // A cezar that was killed hard may have left a public tunnel up (spec 2026-11-26-preview-share-link
+    // A cezar that was killed hard may have left a public tunnel up (spec 2026-11-28-asset-share-link
     // § Exposure). Reads one file; `ps` runs only when it lists a live pid.
     void reapStaleTunnels();
     void relay.start();

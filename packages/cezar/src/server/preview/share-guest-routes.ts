@@ -1,14 +1,19 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { GUEST_NAME_MAX, GUEST_URL_MAX, guestCommentInputSchema, withoutBidiControls, type GuestCommentInput } from '@open-mercato/cezar-contract';
+import { Readable } from 'node:stream';
+import { GUEST_NAME_MAX, guestCommentInputSchema, withoutBidiControls, type GuestCommentInput } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
 
+import { artifactsCdnEnabled, findArtifact } from '../../runs/artifacts.ts';
 import { addGuestComment, deleteGuestComment, readGuestComments, toGuestComment, updateGuestComment } from '../../runs/guest-comments.ts';
-import { safeNext, SHARE_PREFIX, type GuestRequest, type GuestRoutes } from './share-listener.ts';
+import { artifactsDir } from '../../runs/store.ts';
+import { SHARED_ARTIFACT_SANDBOX, appendToStream, artifactHeaders, artifactPickerTag, openArtifact } from '../artifacts.ts';
+import { guestShellCsp } from './share-guest-shell.ts';
+import { SHARE_PREFIX, type GuestRequest, type GuestRoutes } from './share-listener.ts';
 
 /**
- * The share listener's own pages (spec 2026-11-26-preview-share-link § Mechanism 5–9): the waiting
- * page, and what an allowed guest's script saves. Anyone holding the link reaches these.
+ * What the share listener answers with (spec 2026-11-28-asset-share-link § Mechanism 3–9): the
+ * waiting page, the guest shell, the asset in its frame, and what an allowed guest saves.
  */
 
 export interface GuestRoutesDeps {
@@ -16,7 +21,10 @@ export interface GuestRoutesDeps {
   dataDirOf(projectId: string): string | null;
   /** After every write that landed: the server publishes the listing. */
   onComments(projectId: string, runId: string): void;
-  guestScript(config: { upstreamOrigin: string; name: string }): string;
+  /** The whole HTML document of an allowed guest's `/`. */
+  guestShell(config: { name: string; frameSrc: string; nonce: string; title: string }): string;
+  /** `CEZ_ARTIFACTS_CDN`, read per answer as the cockpit's own asset route does. */
+  cdnEnabled?(): boolean;
   now?(): number;
   /** How long a body may take to arrive. Tests shorten it. */
   bodyTimeoutMs?: number;
@@ -34,6 +42,8 @@ const MAX_WRITERS = 1000;
 const COMMENT_PATH = /^comments\/([A-Za-z0-9_-]{1,64})$/;
 
 const GONE = 'This link is no longer active.';
+/** The shared file is missing for now: the agent may be rewriting it, so the share stays up (spec § States). */
+const ASSET_AWAY = 'This page is not available right now.';
 const INBOX_FULL = "The reviewer's inbox is full.";
 const INVALID = 'That comment cannot be saved as it is.';
 const NOT_SAVED = 'The comment could not be saved.';
@@ -69,23 +79,10 @@ function ownJson(ctx: GuestRequest, req: IncomingMessage): boolean {
   return req.headers.origin === ctx.tunnelOrigin && type === 'application/json';
 }
 
-/**
- * The app's own page in the one spelling that is stored, or `null`. The text a guest sent is never
- * kept: it can read as another host to a parser that is not this one (spec § Mechanism 9).
- */
-function pageAddress(sent: string, upstreamOrigin: string): string | null {
-  if (!URL.canParse(sent)) return null;
-  const url = new URL(sent);
-  if (url.protocol !== 'http:' || url.username !== '' || url.password !== '' || url.origin !== upstreamOrigin) return null;
-  // Spelled out it can be longer than what was sent, and an entry over the cap is not read back.
-  return url.href.length <= GUEST_URL_MAX ? url.href : null;
-}
-
-/** Every text field of a comment without bidi controls (spec 2026-11-26-preview-share-link § Exposure):
+/** Every text field of a comment without bidi controls (spec 2026-11-28-asset-share-link § Exposure):
  *  the owner must read the order the agent will receive. */
 function readable(input: GuestCommentInput): GuestCommentInput {
   return {
-    url: input.url,
     selector: withoutBidiControls(input.selector),
     label: withoutBidiControls(input.label),
     excerpt: withoutBidiControls(input.excerpt),
@@ -179,11 +176,7 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
     }
   }
 
-  function waiting(req: IncomingMessage, res: ServerResponse): void {
-    const url = req.url ?? '';
-    const mark = url.indexOf('?');
-    // Directly addressable, so `next` is judged again here and never trusted from the join redirect.
-    const next = safeNext(mark === -1 ? null : new URLSearchParams(url.slice(mark + 1)).get('next')) ?? '/';
+  function waiting(res: ServerResponse): void {
     const nonce = randomBytes(16).toString('base64');
     res
       .writeHead(200, {
@@ -192,7 +185,70 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
         'x-content-type-options': 'nosniff',
         'referrer-policy': 'no-referrer',
       })
-      .end(waitingPage(next, nonce));
+      .end(waitingPage(nonce));
+  }
+
+  /** The guest's page (spec § Mechanism 4): cezar's own document, which frames the asset. */
+  function shell(ctx: GuestRequest, res: ServerResponse): void {
+    const guest = ctx.guest;
+    if (guest === null || guest.state !== 'allowed' || guest.name === undefined || ctx.viewBase === undefined) {
+      gone(res);
+      return;
+    }
+    const nonce = randomBytes(16).toString('base64');
+    // Built before any header goes out: a shell that cannot be built is a 500, not half a page.
+    const page = deps.guestShell({ name: guest.name, frameSrc: `${ctx.viewBase}${ctx.asset}`, nonce, title: ctx.assetTitle });
+    res
+      .writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        // `frame-src 'self'` is half of C15: the asset cannot take its frame to another site.
+        'content-security-policy': guestShellCsp(nonce),
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+      })
+      .end(page);
+  }
+
+  /**
+   * One file of the share (spec § Mechanism 5–6): the shared HTML asset, sandboxed with the picker
+   * appended, or an image artifact of the run. `findArtifact` is the traversal guard, as on the
+   * cockpit's own route.
+   */
+  async function asset(ctx: GuestRequest, name: string, res: ServerResponse): Promise<void> {
+    const dataDir = ctx.viewBase === undefined ? null : deps.dataDirOf(ctx.projectId);
+    if (dataDir === null || ctx.viewBase === undefined) {
+      gone(res);
+      return;
+    }
+    const dir = artifactsDir(dataDir, ctx.runId);
+    const shared = name === ctx.asset;
+    const artifact = await findArtifact(dir, name);
+    // Another HTML asset, Markdown, JSON: not part of this link.
+    const served = artifact !== null && (shared ? artifact.kind === 'html' : artifact.kind === 'image');
+    const stream = served ? await openArtifact(dir, name) : null;
+    // Remove, or the share ending, cut the answer while the file was being opened.
+    if (res.destroyed) {
+      void stream?.cancel().catch(() => {});
+      return;
+    }
+    if (artifact === null || stream === null) {
+      if (shared) res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }).end(ASSET_AWAY);
+      else gone(res);
+      return;
+    }
+    const cdn = (deps.cdnEnabled ?? artifactsCdnEnabled)();
+    const headers = shared
+      ? artifactHeaders(artifact, cdn, `${ctx.tunnelOrigin}${ctx.viewBase}`, SHARED_ARTIFACT_SANDBOX)
+      : artifactHeaders(artifact, cdn);
+    // The shell is the picker's only parent; both schemes, as a TLS edge sees one and this server the other.
+    const host = new URL(ctx.tunnelOrigin).host;
+    const body = shared ? appendToStream(stream, artifactPickerTag([`http://${host}`, `https://${host}`])) : stream;
+    // The listener's own `private, no-store` must stand over the artifact's `no-store`.
+    res.writeHead(200, { ...headers, 'cache-control': 'private, no-store' });
+    const source = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0]);
+    source.on('error', () => res.destroy());
+    res.on('close', () => source.destroy());
+    source.pipe(res);
   }
 
   function ask(ctx: GuestRequest, req: IncomingMessage, res: ServerResponse): void {
@@ -212,14 +268,14 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
     withBody(req, res, { max: BODY_MAX, timeoutMs }, (value) => {
       // Unknown keys are dropped: author, guest, id and revision are the server's to set.
       const parsed = guestCommentInputSchema.safeParse(value);
-      const url = parsed.success ? pageAddress(parsed.data.url, ctx.upstreamOrigin) : null;
       // Stripped once, here, so every reader gets the stored order; what is left must still be a comment.
       const text = parsed.success ? guestCommentInputSchema.safeParse(readable(parsed.data)) : parsed;
-      if (!text.success || url === null) {
+      if (!text.success) {
         json(res, 400, { error: INVALID });
         return;
       }
-      const saved = addGuestComment(dir, ctx.runId, { ...text.data, url, author, guestId: guest.id }, () => new Date(now()));
+      // The asset is the share's, never the request's (spec § Mechanism 8).
+      const saved = addGuestComment(dir, ctx.runId, { ...text.data, asset: ctx.asset, author, guestId: guest.id }, () => new Date(now()));
       if (saved.ok) {
         announce(ctx);
         json(res, 201, { comment: toGuestComment(saved.comment) });
@@ -267,7 +323,7 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
       return;
     }
     if (method === 'GET' && name === 'wait') {
-      waiting(req, res);
+      waiting(res);
       return;
     }
     if (method === 'GET' && name === 'status') {
@@ -283,15 +339,10 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
       return;
     }
 
-    // Past this line is the app's side of the gate (spec § Mechanism 7): an allowed guest, or 404.
+    // Past this line is the far side of the gate (spec § Mechanism 7): an allowed guest, or 404.
     const author = guest.name;
     if (guest.state !== 'allowed' || author === undefined) {
       gone(res);
-      return;
-    }
-    if (method === 'GET' && name === 'guest.js') {
-      const script = deps.guestScript({ upstreamOrigin: ctx.upstreamOrigin, name: author });
-      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', ...OWN }).end(script);
       return;
     }
     const id = COMMENT_PATH.exec(name)?.[1];
@@ -327,7 +378,7 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
   }
 
   return {
-    // Always `true`: a path under the prefix is answered here and never reaches the app.
+    // Always `true`: a path under the prefix is answered here.
     handle(ctx, req, res) {
       try {
         answer(ctx, req, res);
@@ -336,12 +387,20 @@ export function createGuestRoutes(deps: GuestRoutesDeps): GuestRoutes {
       }
       return true;
     },
+    shell(ctx, _req, res) {
+      try {
+        shell(ctx, res);
+      } catch {
+        fail(res);
+      }
+    },
+    asset(ctx, name, _req, res) {
+      asset(ctx, name, res).catch(() => fail(res));
+    },
   };
 }
 
-/** `next` travels as data, with `<` escaped, so no value of it can close the block or open a tag. */
-function waitingPage(next: string, nonce: string): string {
-  const config = JSON.stringify({ next }).replace(/</g, '\\u003c');
+function waitingPage(nonce: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -349,12 +408,12 @@ function waitingPage(next: string, nonce: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="robots" content="noindex">
-<title>App preview</title>
+<title>Shared design</title>
 <style nonce="${nonce}">${WAITING_STYLE}</style>
 </head>
 <body>
 <main>
-<h1>Someone is sharing an app preview with you.</h1>
+<h1>Someone is sharing a design with you.</h1>
 <form id="ask">
 <label for="name">Your name</label>
 <input id="name" name="name" type="text" maxlength="${GUEST_NAME_MAX}" autocomplete="name" required autofocus>
@@ -366,7 +425,6 @@ function waitingPage(next: string, nonce: string): string {
 </div>
 <button id="again" type="button" hidden>Ask again</button>
 </main>
-<script type="application/json" id="cezar-share-config">${config}</script>
 <script nonce="${nonce}">${WAITING_SCRIPT}</script>
 </body>
 </html>
@@ -410,9 +468,6 @@ const WAITING_SCRIPT = String.raw`
   var code = el('code');
   var message = el('message');
   var again = el('again');
-  var next = '/';
-  try { next = JSON.parse(el('cezar-share-config').textContent).next; } catch (e) { next = '/'; }
-  if (typeof next !== 'string') next = '/';
   var name = '';
   var timer = null;
   var turn = 0;
@@ -433,7 +488,8 @@ const WAITING_SCRIPT = String.raw`
   function apply(body) {
     var state = body && body.state;
     if (body && typeof body.name === 'string') name = body.name;
-    if (state === 'allowed') { location.replace(next); return; }
+    // One page to land on: the shell (spec 2026-11-28-asset-share-link § Mechanism 3).
+    if (state === 'allowed') { location.replace('/'); return; }
     if (state === 'waiting') {
       code.textContent = 'Your code: ' + (typeof body.code === 'string' ? body.code : '');
       render('waiting');

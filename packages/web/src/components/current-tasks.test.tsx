@@ -142,7 +142,7 @@ describe('CurrentTasksContainer', () => {
       const body = path === '/api/v1/health'
         ? { version: '1.0.0', bootProject: 'cezar', checks: [], capabilities: { automations: true } }
         : path.endsWith('/automations') ? { automations: [scheduled] }
-        : path.endsWith('/workspace/preview-shares') ? { shares: [{ projectId: 'cezar', runId: 'live', title: 'A real run', target: 'http://localhost:5173', expiresAt: '2099-01-01T00:00:00Z', waiting: 0 }] }
+        : path.endsWith('/workspace/asset-shares') ? { shares: [{ projectId: 'cezar', runId: 'live', title: 'A real run', asset: 'settings.html', assetTitle: 'Settings mockup', expiresAt: '2099-01-01T00:00:00Z', waiting: 0 }] }
         : [run({ id: 'live', title: 'A real run', status: 'running' })]
       return new Response(JSON.stringify(body), { status: 200 })
     })
@@ -155,7 +155,7 @@ describe('CurrentTasksContainer', () => {
     )
     const region = await screen.findByRole('region', { name: 'Scheduled tasks' })
     expect(within(region).getByRole('link', { name: /Later/ })).toBeTruthy()
-    // The live share's run wears the badge beside its chips (spec 2026-11-26-preview-share-link C7).
+    // The live share's run wears the badge beside its chips (spec 2026-11-28-asset-share-link C7).
     await waitFor(() => expect(document.querySelector('[data-run-id="live"] [data-slot="task-share-badge"]')?.textContent).toBe('Sharing'))
   })
 })

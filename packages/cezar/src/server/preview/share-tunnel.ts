@@ -6,7 +6,7 @@ import { TunnelError, type Tunnel, type TunnelAdapter } from './share-listener.t
 import { forgetTunnel, reapStaleTunnels, recordTunnel } from './share-tunnel-record.ts';
 
 /**
- * Tunnel adapters (spec 2026-11-26-preview-share-link § Mechanism 3): `cloudflared`'s quick tunnel
+ * Tunnel adapters (spec 2026-11-28-asset-share-link § Mechanism 3): `cloudflared`'s quick tunnel
  * as a child process, and a loopback stand-in for `CEZ_DRY_RUN=1`.
  */
 

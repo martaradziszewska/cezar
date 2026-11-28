@@ -1,15 +1,12 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
-import type { Duplex } from 'node:stream';
-import { GUEST_NAME_MAX, type PreviewShare, type PreviewShareGuest } from '@open-mercato/cezar-contract';
-
-import { injectTag, loopbackAliases, parseDesignTarget, parseParentOrigin } from './design-proxy.ts';
-import { forwardRequest, spliceUpgrade, type ForwardOptions } from './forward.ts';
+import { ARTIFACT_PATH_RE, GUEST_NAME_MAX, type AssetShare, type AssetShareGuest } from '@open-mercato/cezar-contract';
 
 /**
- * The share listener (spec 2026-11-26-preview-share-link § Mechanism 2–7): the only thing between
- * one dev server and the internet. Nothing of the app is forwarded without an allowed guest.
+ * The share listener (spec 2026-11-28-asset-share-link § Mechanism 2–7): the only thing between
+ * one HTML asset and the internet. It forwards nothing, and serves nothing of the asset without
+ * an allowed guest.
  */
 
 export interface Tunnel {
@@ -36,13 +33,18 @@ export class TunnelError extends Error {
 }
 
 export type ShareStart =
-  | { ok: true; share: PreviewShare }
-  | { ok: false; status: 400 | 409; error: string; code?: 'no-tunnel' | 'tunnel-failed'; install?: string };
+  | { ok: true; share: AssetShare }
+  | { ok: false; status: 409; error: string; code?: 'no-tunnel' | 'tunnel-failed'; install?: string };
 
 export interface GuestRoutes {
-  /** Called only for a cookie-holder on a path under `/__cezar_share__/` other than the join link.
-   *  `true` = it answers, now or later; `false` gets the 404. Never the app's. */
+  /** Called only for a cookie-holder on a path under `/__cezar_share__/` other than the join link
+   *  and the asset files. `true` = it answers, now or later; `false` gets the 404. */
   handle(ctx: GuestRequest, req: IncomingMessage, res: ServerResponse): boolean;
+  /** `GET /` of an allowed guest: the page that frames the asset. */
+  shell(ctx: GuestRequest, req: IncomingMessage, res: ServerResponse): void;
+  /** One file under an allowed guest's view key. `name` is a well-formed artifact name; which
+   *  names are served is this method's to decide. */
+  asset(ctx: GuestRequest, name: string, req: IncomingMessage, res: ServerResponse): void;
 }
 
 export interface GuestRequest {
@@ -51,7 +53,11 @@ export interface GuestRequest {
   /** The request path without its query. */
   path: string;
   tunnelOrigin: string;
-  upstreamOrigin: string;
+  /** The shared artifact's listed name, and its title. */
+  asset: string;
+  assetTitle: string;
+  /** `/__cezar_share__/a/<viewKey>/`: where this guest's frame loads the asset from. Allowed guests only. */
+  viewBase?: string;
   /** `id` is the PUBLIC guest id. Never `null` when `handle` is called. */
   guest: { id: string; state: GuestState; name?: string; code?: string } | null;
   /** Creates this browser's join request. */
@@ -60,16 +66,11 @@ export interface GuestRequest {
 
 type GuestState = 'new' | 'waiting' | 'allowed' | 'denied' | 'expired';
 
-/** C10. `not-cezar` only for an origin that answered HTTP; silence is `no-answer`, never a "no". */
-export type CezarVerdict = 'cezar' | 'not-cezar' | 'no-answer';
-
-export interface PreviewSharesOptions {
+export interface AssetSharesOptions {
   tunnel: TunnelAdapter;
   guestRoutes: GuestRoutes;
-  /** C10. The default probes `${origin}/api/v1/health`. One that throws or rejects counts as `cezar`. */
-  isCezar?(origin: string): Promise<CezarVerdict>;
   /** Fires on start, on every change to the listed guests, and with `null` when the share ends. */
-  onChange(projectId: string, runId: string, share: PreviewShare | null, ended?: string): void;
+  onChange(projectId: string, runId: string, share: AssetShare | null, ended?: string): void;
   now?(): number;
   lifetimeMs?: number;
   max?: number;
@@ -81,21 +82,14 @@ export const SHARE_PREFIX = '/__cezar_share__';
 export const SHARE_COOKIE = '__cezar_share';
 const JOIN_PREFIX = `${SHARE_PREFIX}/join/`;
 const WAIT_PATH = `${SHARE_PREFIX}/wait`;
-const GUEST_TAG = `<script src="${SHARE_PREFIX}/guest.js" data-cezar-design></script>`;
+/** Asset files: `/__cezar_share__/a/<viewKey>/<artifact name>` (spec 2026-11-28-asset-share-link C14). */
+const ASSET_PREFIX = `${SHARE_PREFIX}/a/`;
+const VIEW_KEY_RE = /^[a-f0-9]{64}$/;
 const GONE = 'This link is no longer active.';
-const CEZAR_ITSELF = 'Sharing cannot be pointed at cezar itself';
-const TURNED_CEZAR = 'the app turned out to be cezar';
-const UNREACHABLE = 'The app is not running right now.';
 const STOPPED = 'Sharing was stopped';
-// C10 while live (spec 2026-11-26-preview-share-link § States): how soon a doubted app is asked
-// again, and how old a verdict may grow before a request has it checked in the background.
-const RETRY_PROBE_MS = 1_000;
-const REPROBE_MS = 60_000;
 // A tunnel's edge caches static files whatever cookie asked for them, and a cached byte is served
-// without reaching the gate (spec 2026-11-26-preview-share-link § Anti-goals).
+// without reaching the gate (spec 2026-11-28-asset-share-link § Exposure).
 const UNCACHEABLE = { 'cache-control': 'private, no-store', 'cdn-cache-control': 'no-store' } as const;
-/** What the app could send to outrank `UNCACHEABLE` or to date a copy. */
-const APP_CACHE_HEADERS = ['expires', 'cloudflare-cdn-cache-control', 'surrogate-control'] as const;
 
 const JOINS_PER_MINUTE = 10;
 const JOIN_WINDOW_MS = 60_000;
@@ -104,8 +98,6 @@ const MAX_JOIN_ADDRESSES = 1000;
 const MAX_IDLE_GUESTS = 50;
 const MAX_DENIED_GUESTS = 100;
 const ADDRESS_MAX = 64;
-const NEXT_MAX = 2048;
-const PROBE_BODY_MAX = 1024 * 1024;
 
 interface Guest {
   /** SHA-256 of the cookie, in full: what a request is matched on. */
@@ -119,14 +111,17 @@ interface Guest {
   code?: string;
   requestedAt?: number;
   timer?: NodeJS.Timeout;
-  /** In-flight answers and spliced sockets, so Remove cuts them at once. */
+  /** Minted on Allow, gone with it: the path segment this guest's frame reads the asset under (C14). */
+  viewKey?: string;
+  /** In-flight answers, so Remove cuts them at once. */
   live: Set<{ destroy(): unknown }>;
 }
 
 interface Entry {
   runId: string;
   projectId: string;
-  upstream: URL;
+  asset: string;
+  assetTitle: string;
   /** The tunnel's origin, and its `Host`. */
   origin: string;
   host: string;
@@ -139,14 +134,10 @@ interface Entry {
   sockets: Set<Socket>;
   tunnel: Tunnel;
   timer: NodeJS.Timeout;
-  forward: ForwardOptions;
   guests: Map<string, Guest>;
+  /** SHA-256 of a view key → its guest. Only allowed guests are in it. */
+  views: Map<string, Guest>;
   joins: Map<string, number[]>;
-  /** C10 while live: `false` from a failed connect until a probe says the app is still not a cezar. */
-  verified: boolean;
-  /** When the last verdict, or the failed connect, was noted. */
-  checkedAt: number;
-  probing: Promise<CezarVerdict> | null;
 }
 
 interface Listener {
@@ -158,7 +149,8 @@ interface Listener {
 }
 
 interface Pending {
-  origin: string;
+  asset: string;
+  assetTitle: string;
   projectId: string;
   /** Aborted by Stop, by shutdown and by a start that failed: the adapter's cue to leave nothing behind. */
   abort: AbortController;
@@ -174,22 +166,6 @@ function sameSecret(candidate: string, secret: string): boolean {
 
 function plain(res: ServerResponse, status: number, body: string, headers: Record<string, string> = {}): void {
   res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8', ...UNCACHEABLE, ...headers }).end(body);
-}
-
-function uncacheable(headers: Record<string, string | string[]>): void {
-  for (const name of APP_CACHE_HEADERS) delete headers[name];
-  Object.assign(headers, UNCACHEABLE);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** A same-origin relative path or nothing: a browser reads `//`, `/\` and a dropped tab as another site.
- *  The waiting page is directly addressable, so it applies this to its own `next` too. */
-export function safeNext(next: string | null): string | null {
-  if (next === null || next.length > NEXT_MAX) return null;
-  return /^\/(?![/\\])[^\u0000-\u001f\u007f]*$/.test(next) ? next : null;
 }
 
 /** Bidi controls and zero-width characters: a name must not reorder or hide the code shown beside it
@@ -212,60 +188,29 @@ function clientAddress(req: IncomingMessage): string {
   return address.slice(0, ADDRESS_MAX);
 }
 
-/**
- * C10's default. A narrow mark instead of `healthResponseSchema`: the cezar a task previews is
- * another version of it, and one the strict schema rejects would be shared.
- */
-export async function answersAsCezar(origin: string): Promise<CezarVerdict> {
-  let text: string;
-  try {
-    const res = await fetch(`${origin}/api/v1/health`, {
-      redirect: 'manual',
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (!res.ok || res.body === null) {
-      void res.body?.cancel().catch(() => {});
-      return 'not-cezar';
-    }
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of res.body) {
-      size += chunk.length;
-      if (size > PROBE_BODY_MAX) return 'not-cezar';
-      chunks.push(chunk);
-    }
-    text = Buffer.concat(chunks).toString('utf8');
-  } catch {
-    // Down, booting or slow: a cezar can be any of those, so silence is never a "no".
-    return 'no-answer';
-  }
-  try {
-    const body: unknown = JSON.parse(text);
-    const marked = isRecord(body) && typeof body.version === 'string' && typeof body.repoRoot === 'string' && isRecord(body.capabilities);
-    return marked ? 'cezar' : 'not-cezar';
-  } catch {
-    return 'not-cezar';
-  }
+export interface ShareStartInput {
+  runId: string;
+  projectId: string;
+  /** A listed HTML artifact of the run: the caller has checked it. */
+  asset: string;
+  assetTitle: string;
 }
 
-export class PreviewShares {
+export class AssetShares {
   private readonly entries = new Map<string, Entry>();
   private readonly pending = new Map<string, Pending>();
   private readonly tunnel: TunnelAdapter;
   private readonly guestRoutes: GuestRoutes;
-  private readonly isCezar: (origin: string) => Promise<CezarVerdict>;
-  private readonly onChange: PreviewSharesOptions['onChange'];
+  private readonly onChange: AssetSharesOptions['onChange'];
   private readonly now: () => number;
   private readonly lifetimeMs: number;
   private readonly max: number;
   private readonly maxWaiting: number;
   private readonly waitingMs: number;
 
-  constructor(options: PreviewSharesOptions) {
+  constructor(options: AssetSharesOptions) {
     this.tunnel = options.tunnel;
     this.guestRoutes = options.guestRoutes;
-    this.isCezar = options.isCezar ?? answersAsCezar;
     this.onChange = options.onChange;
     this.now = options.now ?? Date.now;
     this.lifetimeMs = options.lifetimeMs ?? 8 * 60 * 60_000;
@@ -274,16 +219,16 @@ export class PreviewShares {
     this.waitingMs = options.waitingMs ?? 10 * 60_000;
   }
 
-  start(input: { runId: string; projectId: string; target: string; parentOrigin: string; forbidden: readonly string[] }): Promise<ShareStart> {
+  start(input: ShareStartInput): Promise<ShareStart> {
     return Promise.resolve(this.begin(input));
   }
 
-  get(runId: string): PreviewShare | null {
+  get(runId: string): AssetShare | null {
     const entry = this.entries.get(runId);
     return entry !== undefined && this.settle(entry) ? this.snapshot(entry) : null;
   }
 
-  list(): Array<{ projectId: string; share: PreviewShare }> {
+  list(): Array<{ projectId: string; share: AssetShare }> {
     return [...this.entries.values()]
       .filter((entry) => this.settle(entry))
       .map((entry) => ({ projectId: entry.projectId, share: this.snapshot(entry) }));
@@ -309,7 +254,7 @@ export class PreviewShares {
   }
 
   /** Extend (C5): a full lifetime from now, never shorter. The link, the guests and their clocks stay. */
-  extend(runId: string): PreviewShare | null {
+  extend(runId: string): AssetShare | null {
     const entry = this.entries.get(runId);
     if (entry === undefined || !this.settle(entry)) return null;
     entry.expiresAt = Math.max(entry.expiresAt, this.now() + this.lifetimeMs);
@@ -336,6 +281,7 @@ export class PreviewShares {
     if (entry === undefined || !this.settle(entry)) return false;
     const guest = this.find(entry, guestId);
     if (guest === undefined || (guest.state !== 'waiting' && guest.state !== 'allowed')) return false;
+    // Out of `views` first, so nothing new is served under the key while the open answers are cut.
     this.move(entry, guest, 'denied');
     for (const open of [...guest.live]) open.destroy();
     guest.live.clear();
@@ -349,25 +295,17 @@ export class PreviewShares {
   }
 
   /** Everything decided before the first `await`, so two requests for one run cannot both open. */
-  private begin(input: { runId: string; projectId: string; target: string; parentOrigin: string; forbidden: readonly string[] }): ShareStart | Promise<ShareStart> {
-    const target = parseDesignTarget(input.target);
-    if (!target.ok) return { ok: false, status: 400, error: target.reason.replace('Design Mode', 'Sharing') };
-    const upstream = target.url;
-    const parentOrigin = parseParentOrigin(input.parentOrigin);
-    if (parentOrigin === null) return { ok: false, status: 400, error: 'Sharing needs a local cockpit' };
-    const refused = new Set([parentOrigin, ...input.forbidden].flatMap(loopbackAliases));
-    if (loopbackAliases(upstream.origin).some((alias) => refused.has(alias))) return { ok: false, status: 400, error: CEZAR_ITSELF };
-
+  private begin(input: ShareStartInput): ShareStart | Promise<ShareStart> {
+    // C9: a second asset never replaces a link teammates already hold.
+    const busy = (title: string): ShareStart => ({ ok: false, status: 409, error: `Already sharing “${title}” — stop it first` });
     const live = this.entries.get(input.runId);
     if (live !== undefined && this.settle(live)) {
-      if (live.upstream.origin === upstream.origin) return { ok: true, share: this.snapshot(live) };
-      return { ok: false, status: 409, error: `Already sharing ${live.upstream.origin} — stop it first` };
+      return live.asset === input.asset ? { ok: true, share: this.snapshot(live) } : busy(live.assetTitle);
     }
     // A stopped start is still unwinding: it is not a share, and not the answer to a new request.
     const starting = this.pending.get(input.runId);
     if (starting !== undefined && !starting.abort.signal.aborted) {
-      if (starting.origin === upstream.origin) return starting.result;
-      return { ok: false, status: 409, error: `Already sharing ${starting.origin} — stop it first` };
+      return starting.asset === input.asset ? starting.result : busy(starting.assetTitle);
     }
     const shares = [...this.entries.values()].filter((entry) => this.settle(entry)).length;
     const starts = [...this.pending.values()].filter((other) => !other.abort.signal.aborted).length;
@@ -375,14 +313,14 @@ export class PreviewShares {
       return { ok: false, status: 409, error: `${this.max} share links are already live — stop one first` };
     }
 
-    const { pathname, search } = new URL(input.target);
     const pending: Pending = {
-      origin: upstream.origin,
+      asset: input.asset,
+      assetTitle: input.assetTitle,
       projectId: input.projectId,
       abort: new AbortController(),
       result: Promise.resolve({ ok: false, status: 409, error: STOPPED }),
     };
-    pending.result = this.open(input.runId, input.projectId, upstream, pathname + search, pending)
+    pending.result = this.open(input, pending)
       .then(
         (started) => {
           if (!started.ok) pending.abort.abort();
@@ -400,16 +338,9 @@ export class PreviewShares {
     return pending.result;
   }
 
-  private async open(runId: string, projectId: string, upstream: URL, path: string, pending: Pending): Promise<ShareStart> {
+  private async open(input: ShareStartInput, pending: Pending): Promise<ShareStart> {
+    const { runId, projectId } = input;
     const stopped = (): boolean => pending.abort.signal.aborted;
-    const verdict = await this.verdict(upstream.origin);
-    if (verdict === 'cezar') return { ok: false, status: 400, error: CEZAR_ITSELF };
-    // A cezar that is booting or slow at the click answers nothing yet, and must not be shared.
-    if (verdict === 'no-answer') {
-      return { ok: false, status: 400, error: `The app at ${upstream.origin} is not answering. Start it, then share.` };
-    }
-    const checkedAt = this.now();
-    if (stopped()) return { ok: false, status: 409, error: STOPPED };
 
     let listener: Listener;
     try {
@@ -467,32 +398,22 @@ export class PreviewShares {
     const entry: Entry = {
       runId,
       projectId,
-      upstream,
+      asset: input.asset,
+      assetTitle: input.assetTitle,
       origin: origin.origin,
       host: origin.host,
       secure: origin.protocol === 'https:',
       token,
-      url: `${origin.origin}${JOIN_PREFIX}${token}?next=${encodeURIComponent(path)}`,
+      url: `${origin.origin}${JOIN_PREFIX}${token}`,
       startedAt,
       expiresAt: startedAt + this.lifetimeMs,
       server: listener.server,
       sockets: listener.sockets,
       tunnel,
       timer: setTimeout(() => this.end(entry, 'expired'), this.lifetimeMs),
-      forward: {
-        upstream,
-        own: origin.origin,
-        dropCookies: [SHARE_COOKIE],
-        rewriteAnswer: uncacheable,
-        injectHtml: (html) => injectTag(html, GUEST_TAG),
-        unreachable: UNREACHABLE,
-        onUnreachable: () => this.doubt(entry),
-      },
       guests: new Map(),
+      views: new Map(),
       joins: new Map(),
-      verified: true,
-      checkedAt,
-      probing: null,
     };
     // Never the reason a process stays alive.
     entry.timer.unref();
@@ -515,10 +436,10 @@ export class PreviewShares {
         sockets.add(socket);
         socket.on('close', () => sockets.delete(socket));
       });
-      // A throw in a listener is an uncaught exception in the cockpit; nothing is forwarded after one.
+      // A throw in a listener is an uncaught exception in the cockpit; nothing is served after one.
       server.on('request', (req, res) => {
         try {
-          // The default for every answer: the 502 page and the guest routes' included.
+          // The default for every answer: the guest routes' and the asset's included.
           for (const [name, value] of Object.entries(UNCACHEABLE)) res.setHeader(name, value);
           if (slot.entry === null) plain(res, 403, 'forbidden');
           else this.handle(slot.entry, req, res);
@@ -531,14 +452,8 @@ export class PreviewShares {
           }
         }
       });
-      server.on('upgrade', (req, socket, head) => {
-        try {
-          if (slot.entry === null) socket.destroy();
-          else this.upgrade(slot.entry, req, socket, head);
-        } catch {
-          socket.destroy();
-        }
-      });
+      // Nothing here speaks WebSocket, and nothing is forwarded (spec 2026-11-28-asset-share-link § Mechanism 2).
+      server.on('upgrade', (_req, socket) => socket.destroy());
       server.once('error', reject);
       server.listen(0, '127.0.0.1', () => {
         const address = server.address();
@@ -555,7 +470,7 @@ export class PreviewShares {
     });
   }
 
-  /** The gate (spec § Mechanism 7). Every branch but the last answers without touching the app. */
+  /** The gate (spec § Mechanism 7). */
   private handle(entry: Entry, req: IncomingMessage, res: ServerResponse): void {
     // Over: `end` has already closed this socket with every other one.
     if (!this.settle(entry)) {
@@ -567,7 +482,7 @@ export class PreviewShares {
       return;
     }
     const url = req.url ?? '';
-    // An absolute request line names another server; only a path is ever forwarded.
+    // An absolute request line names another server.
     if (!url.startsWith('/')) {
       plain(res, 400, 'bad request');
       return;
@@ -577,13 +492,16 @@ export class PreviewShares {
       this.join(entry, req, res, url);
       return;
     }
+    if (path.startsWith(ASSET_PREFIX)) {
+      this.file(entry, req, res, path);
+      return;
+    }
     const guest = this.guestOf(entry, req);
     if (path === SHARE_PREFIX || path.startsWith(`${SHARE_PREFIX}/`)) {
       let handled = false;
       if (guest !== null) {
         // Remove cuts this too: a comment still uploading must not land after its guest is out.
-        guest.live.add(res);
-        res.on('close', () => guest.live.delete(res));
+        this.hold(guest, res);
         try {
           handled = this.guestRoutes.handle(this.context(entry, guest, path), req, res);
         } catch {
@@ -603,107 +521,39 @@ export class PreviewShares {
       res.writeHead(302, { location: WAIT_PATH, ...UNCACHEABLE }).end();
       return;
     }
-    // Only a browser already let in gets here, so this is not a guess at the token.
-    if (url.includes(entry.token)) {
+    // One page: the shell. There is no app behind this listener to hand any other path to.
+    if (path !== '/' || req.method !== 'GET') {
       plain(res, 404, GONE);
       return;
     }
+    this.hold(guest, res);
+    this.guestRoutes.shell(this.context(entry, guest, path), req, res);
+  }
+
+  /**
+   * An asset file (C14). The frame is an opaque origin and sends no cookie, so the view key in the
+   * path is the whole check: an allowed guest's, or the same 404 a stranger gets.
+   */
+  private file(entry: Entry, req: IncomingMessage, res: ServerResponse, path: string): void {
+    const rest = path.slice(ASSET_PREFIX.length);
+    const slash = rest.indexOf('/');
+    const key = slash === -1 ? '' : rest.slice(0, slash);
+    const name = slash === -1 ? '' : rest.slice(slash + 1);
+    const guest = VIEW_KEY_RE.test(key) ? entry.views.get(sha256(key).toString('hex')) : undefined;
+    // `path` is raw: an encoded name is another path, not an artifact's. A dot file is never one.
+    const named = ARTIFACT_PATH_RE.test(name) && !name.split('/').some((segment) => segment.startsWith('.'));
+    if (guest === undefined || guest.state !== 'allowed' || req.method !== 'GET' || !named) {
+      plain(res, 404, GONE);
+      return;
+    }
+    this.hold(guest, res);
+    this.guestRoutes.asset(this.context(entry, guest, path), name, req, res);
+  }
+
+  /** Remove cuts what a guest has open. */
+  private hold(guest: Guest, res: ServerResponse): void {
     guest.live.add(res);
     res.on('close', () => guest.live.delete(res));
-    const due = this.probeDue(entry);
-    if (entry.verified) {
-      if (due) void this.probe(entry);
-      forwardRequest(req, res, entry.forward);
-      return;
-    }
-    if (!due) {
-      plain(res, 502, UNREACHABLE);
-      return;
-    }
-    // Held for the one probe: forwarded only if the app answers as something that is not a cezar.
-    void this.probe(entry).then((verdict) => {
-      // Remove, or the share ending, destroyed it while the probe was out.
-      if (res.destroyed) return;
-      try {
-        if (verdict === 'not-cezar' && entry.verified) forwardRequest(req, res, entry.forward);
-        else plain(res, 502, UNREACHABLE);
-      } catch {
-        res.destroy();
-      }
-    });
-  }
-
-  private upgrade(entry: Entry, req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const url = req.url ?? '';
-    const path = url.split('?')[0]!;
-    const open =
-      this.settle(entry) &&
-      (req.headers.host ?? '').toLowerCase() === entry.host &&
-      url.startsWith('/') &&
-      path !== SHARE_PREFIX &&
-      !path.startsWith(`${SHARE_PREFIX}/`) &&
-      !url.includes(entry.token);
-    const guest = open ? this.guestOf(entry, req) : null;
-    if (guest === null || guest.state !== 'allowed') {
-      socket.destroy();
-      return;
-    }
-    const due = this.probeDue(entry);
-    if (due) void this.probe(entry);
-    // A hot-reload client asks again by itself, so an upgrade is never held for the verdict.
-    if (!entry.verified) {
-      socket.destroy();
-      return;
-    }
-    guest.live.add(socket);
-    spliceUpgrade(req, socket, head, entry.forward, () => guest.live.delete(socket));
-  }
-
-  private async verdict(origin: string): Promise<CezarVerdict> {
-    try {
-      const verdict = await this.isCezar(origin);
-      // Fail closed: a probe that throws, rejects or answers anything else is not a "no".
-      return verdict === 'not-cezar' || verdict === 'no-answer' ? verdict : 'cezar';
-    } catch {
-      return 'cezar';
-    }
-  }
-
-  /** A failed connect: the port may be free for another server, a cezar included (C10). */
-  private doubt(entry: Entry): void {
-    if (!entry.verified) return;
-    entry.verified = false;
-    try {
-      entry.checkedAt = this.now();
-    } catch {
-      // The old time stands, so the next request asks at once.
-    }
-  }
-
-  private probeDue(entry: Entry): boolean {
-    return entry.probing !== null || this.now() - entry.checkedAt >= (entry.verified ? REPROBE_MS : RETRY_PROBE_MS);
-  }
-
-  /** One probe at a time per share. Never rejects. */
-  private probe(entry: Entry): Promise<CezarVerdict> {
-    if (entry.probing !== null) return entry.probing;
-    const probing = this.verdict(entry.upstream.origin)
-      .then((verdict) => {
-        entry.probing = null;
-        if (this.entries.get(entry.runId) !== entry) return verdict;
-        if (verdict === 'cezar') {
-          this.end(entry, TURNED_CEZAR);
-          return verdict;
-        }
-        // Shut first, so a clock that throws leaves the gate closed.
-        entry.verified = false;
-        entry.checkedAt = this.now();
-        entry.verified = verdict === 'not-cezar';
-        return verdict;
-      })
-      .catch((): CezarVerdict => 'no-answer');
-    entry.probing = probing;
-    return probing;
   }
 
   private join(entry: Entry, req: IncomingMessage, res: ServerResponse, url: string): void {
@@ -717,9 +567,8 @@ export class PreviewShares {
       plain(res, 404, GONE);
       return;
     }
-    const next = safeNext(mark === -1 ? null : new URLSearchParams(url.slice(mark + 1)).get('next'));
     const headers: Record<string, string> = {
-      location: next === null ? WAIT_PATH : `${WAIT_PATH}?next=${encodeURIComponent(next)}`,
+      location: WAIT_PATH,
       'referrer-policy': 'no-referrer',
       ...UNCACHEABLE,
     };
@@ -782,7 +631,9 @@ export class PreviewShares {
       projectId: entry.projectId,
       path,
       tunnelOrigin: entry.origin,
-      upstreamOrigin: entry.upstream.origin,
+      asset: entry.asset,
+      assetTitle: entry.assetTitle,
+      ...(guest.state === 'allowed' && guest.viewKey !== undefined ? { viewBase: `${ASSET_PREFIX}${guest.viewKey}/` } : {}),
       guest: {
         id: guest.id,
         state: guest.state,
@@ -827,7 +678,14 @@ export class PreviewShares {
   private move(entry: Entry, guest: Guest, state: GuestState): void {
     if (guest.timer !== undefined) clearTimeout(guest.timer);
     delete guest.timer;
+    // The view key lives exactly as long as the Allow (C14).
+    if (guest.viewKey !== undefined) entry.views.delete(sha256(guest.viewKey).toString('hex'));
+    delete guest.viewKey;
     guest.state = state;
+    if (state === 'allowed') {
+      guest.viewKey = randomBytes(32).toString('hex');
+      entry.views.set(sha256(guest.viewKey).toString('hex'), guest);
+    }
     guest.since = this.now();
     if (state === 'expired') this.trim(entry, ['new', 'expired'], MAX_IDLE_GUESTS);
     if (state === 'denied') this.trim(entry, ['denied'], MAX_DENIED_GUESTS);
@@ -869,6 +727,7 @@ export class PreviewShares {
       if (guest.timer !== undefined) clearTimeout(guest.timer);
     }
     entry.guests.clear();
+    entry.views.clear();
     entry.joins.clear();
     try {
       entry.tunnel.stop();
@@ -881,8 +740,8 @@ export class PreviewShares {
     this.emit(entry.projectId, entry.runId, null, ended);
   }
 
-  private snapshot(entry: Entry): PreviewShare {
-    const guests: PreviewShareGuest[] = [];
+  private snapshot(entry: Entry): AssetShare {
+    const guests: AssetShareGuest[] = [];
     for (const guest of entry.guests.values()) {
       if ((guest.state !== 'waiting' && guest.state !== 'allowed') || guest.name === undefined || guest.code === undefined) continue;
       guests.push({
@@ -896,7 +755,8 @@ export class PreviewShares {
     guests.sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
     return {
       runId: entry.runId,
-      target: entry.upstream.origin,
+      asset: entry.asset,
+      assetTitle: entry.assetTitle,
       url: entry.url,
       startedAt: new Date(entry.startedAt).toISOString(),
       expiresAt: new Date(entry.expiresAt).toISOString(),
@@ -909,7 +769,7 @@ export class PreviewShares {
   }
 
   /** A listener that throws must not take a request, or the gate, down with it. */
-  private emit(projectId: string, runId: string, share: PreviewShare | null, ended?: string): void {
+  private emit(projectId: string, runId: string, share: AssetShare | null, ended?: string): void {
     try {
       this.onChange(projectId, runId, share, ended);
     } catch {

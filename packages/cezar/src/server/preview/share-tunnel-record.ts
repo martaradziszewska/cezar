@@ -8,7 +8,7 @@ import { atomicWriteJsonSync } from '../../workspace/config.ts';
 
 /**
  * Which `cloudflared` children are running, on disk, so a cezar that was killed hard does not leave
- * a public address pointing at a port anyone may bind next (spec 2026-11-26-preview-share-link
+ * a public address pointing at a port anyone may bind next (spec 2026-11-28-asset-share-link
  * § Exposure, "A stray child"). Every failure is swallowed: no record is today's behaviour.
  */
 

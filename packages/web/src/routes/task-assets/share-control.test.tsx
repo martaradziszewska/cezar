@@ -2,32 +2,31 @@ import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { PreviewShare, PreviewShareGuest } from '@open-mercato/cezar-api-client'
+import type { AssetShare, AssetShareGuest } from '@open-mercato/cezar-api-client'
 import { ApiError, ShareError } from '@/api/client'
 import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
 
-import { BrowserView } from './browser-view'
 import { ShareControl } from './share-control'
 
-/** The Share control in the Preview toolbar (spec 2026-11-26-preview-share-link). */
+/** The Share control in the Assets toolbar (spec 2026-11-28-asset-share-link). */
 
 const api = vi.hoisted(() => ({
-  startPreviewShare: vi.fn(),
-  stopPreviewShare: vi.fn(),
-  extendPreviewShare: vi.fn(),
-  decidePreviewShareGuest: vi.fn(),
-  removePreviewShareGuest: vi.fn(),
-  getPreviewShare: vi.fn(),
+  startAssetShare: vi.fn(),
+  stopAssetShare: vi.fn(),
+  extendAssetShare: vi.fn(),
+  decideAssetShareGuest: vi.fn(),
+  removeAssetShareGuest: vi.fn(),
+  getAssetShare: vi.fn(),
   getGuestComments: vi.fn(),
 }))
 vi.mock('@/api/client', async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }))
 
-const capability = vi.hoisted(() => ({ previewShare: true as boolean | undefined }))
+const capability = vi.hoisted(() => ({ assetShare: true as boolean | undefined }))
 vi.mock('@/api/queries', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useHealth: () => ({
-    data: capability.previewShare === undefined ? undefined : { capabilities: { previewShare: capability.previewShare } },
+    data: capability.assetShare === undefined ? undefined : { capabilities: { assetShare: capability.assetShare } },
   }),
 }))
 
@@ -37,11 +36,12 @@ vi.mock('@/lib/clipboard', () => ({ writeClipboard }))
 const toast = vi.hoisted(() => vi.fn())
 vi.mock('@/components/ui/toaster', async (importOriginal) => ({ ...(await importOriginal<object>()), toast }))
 
-const TARGET = 'http://localhost:5173'
-const SECRET_URL = 'https://quiet-fox.trycloudflare.com/__cezar_share__/join/SECRET-TOKEN?next=%2Fsettings'
+const ASSET = 'mockups/settings.html'
+const ASSET_TITLE = 'Settings mockup'
+const SECRET_URL = 'https://quiet-fox.trycloudflare.com/__cezar_share__/join/SECRET-TOKEN'
 const GUEST_ID = 'a1b2c3d4e5f60718'
 
-const guest = (overrides: Partial<PreviewShareGuest> = {}): PreviewShareGuest => ({
+const guest = (overrides: Partial<AssetShareGuest> = {}): AssetShareGuest => ({
   id: GUEST_ID,
   name: 'Ana',
   code: '4821',
@@ -50,9 +50,10 @@ const guest = (overrides: Partial<PreviewShareGuest> = {}): PreviewShareGuest =>
   ...overrides,
 })
 
-const liveShare = (overrides: Partial<PreviewShare> = {}): PreviewShare => ({
+const liveShare = (overrides: Partial<AssetShare> = {}): AssetShare => ({
   runId: 'r1',
-  target: TARGET,
+  asset: ASSET,
+  assetTitle: ASSET_TITLE,
   url: SECRET_URL,
   startedAt: '2026-11-27T10:00:00.000Z',
   expiresAt: '2026-11-27T18:40:00.000Z',
@@ -62,17 +63,17 @@ const liveShare = (overrides: Partial<PreviewShare> = {}): PreviewShare => ({
 
 let client: QueryClient
 
-function seed(share: PreviewShare | null, comments = 0) {
-  client.setQueryData(queryKeys.runs.previewShare('r1'), { share })
+function seed(share: AssetShare | null, comments = 0) {
+  client.setQueryData(queryKeys.runs.assetShare('r1'), { share })
   client.setQueryData(queryKeys.runs.guestComments('r1'), {
     comments: Array.from({ length: comments }, (_, index) => ({ id: `c${index}` })),
   })
 }
 
-function renderControl(props: { targetOrigin?: string | null; path?: string } = {}) {
+function renderControl(props: { asset?: string; assetTitle?: string } = {}) {
   return render(
     <QueryClientProvider client={client}>
-      <ShareControl runId="r1" targetOrigin={props.targetOrigin === undefined ? TARGET : props.targetOrigin} path={props.path ?? '/settings'} />
+      <ShareControl runId="r1" asset={props.asset ?? ASSET} assetTitle={props.assetTitle ?? ASSET_TITLE} />
     </QueryClientProvider>,
   )
 }
@@ -86,9 +87,9 @@ const labelled = async (text: string) => waitFor(() => expect(rows().map(label))
 
 beforeEach(() => {
   client = createQueryClient()
-  capability.previewShare = true
+  capability.assetShare = true
   for (const fn of Object.values(api)) fn.mockReset()
-  api.getPreviewShare.mockResolvedValue({ share: null })
+  api.getAssetShare.mockResolvedValue({ share: null })
   api.getGuestComments.mockResolvedValue({ comments: [] })
   writeClipboard.mockReset().mockResolvedValue(undefined)
   toast.mockReset()
@@ -101,23 +102,25 @@ afterEach(() => {
 describe('ShareControl', () => {
   it('shows the exposure text every time before creating a link', async () => {
     seed(null)
-    api.startPreviewShare.mockResolvedValue({ share: liveShare() })
+    api.startAssetShare.mockResolvedValue({ share: liveShare() })
     renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    // Verbatim (spec § Exposure), under the name of what is about to be shared.
     const confirm = await screen.findByText(
-      /Anyone with this link can use this app and read whatever your dev server serves, including source files\. Traffic passes through Cloudflare\./,
+      "People you let in with this link can open this page, and the images among this task's assets, and comment. Traffic passes through Cloudflare.",
     )
     expect(confirm).toBeTruthy()
-    expect(api.startPreviewShare).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-slot="share-asset"]')?.textContent).toBe('Share “Settings mockup”')
+    expect(api.startAssetShare).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Create link' }))
-    expect(api.startPreviewShare).toHaveBeenCalledWith('r1', { target: 'http://localhost:5173/settings', parentOrigin: window.location.origin })
+    expect(api.startAssetShare).toHaveBeenCalledWith('r1', { asset: ASSET })
     await waitFor(() => expect(liveButton()).toBeTruthy())
     expect(writeClipboard).toHaveBeenCalledWith(SECRET_URL)
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Link copied'))
 
     // Stopping and sharing again asks again: nothing was remembered (C8).
-    api.stopPreviewShare.mockResolvedValue({ share: null })
+    api.stopAssetShare.mockResolvedValue({ share: null })
     fireEvent.click(liveButton())
     fireEvent.click(await screen.findByRole('button', { name: 'Stop sharing' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy())
@@ -128,13 +131,13 @@ describe('ShareControl', () => {
   it('sends one request for a double click on Create link and says it is working', async () => {
     seed(null)
     let finish: (value: unknown) => void = () => {}
-    api.startPreviewShare.mockReturnValue(new Promise((resolve) => (finish = resolve)))
+    api.startAssetShare.mockReturnValue(new Promise((resolve) => (finish = resolve)))
     renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     const create = await screen.findByRole('button', { name: 'Create link' })
     fireEvent.click(create)
     fireEvent.click(create)
-    expect(api.startPreviewShare).toHaveBeenCalledTimes(1)
+    expect(api.startAssetShare).toHaveBeenCalledTimes(1)
     expect((screen.getByRole('button', { name: 'Creating link…' }) as HTMLButtonElement).disabled).toBe(true)
     await act(async () => finish({ share: liveShare() }))
     await waitFor(() => expect(liveButton()).toBeTruthy())
@@ -142,7 +145,7 @@ describe('ShareControl', () => {
 
   it('keeps the share live when the clipboard refuses the link', async () => {
     seed(null)
-    api.startPreviewShare.mockResolvedValue({ share: liveShare() })
+    api.startAssetShare.mockResolvedValue({ share: liveShare() })
     writeClipboard.mockRejectedValue(new Error('denied'))
     renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
@@ -153,7 +156,7 @@ describe('ShareControl', () => {
 
   it('offers the install command and Retry when cloudflared is missing', async () => {
     seed(null)
-    api.startPreviewShare.mockRejectedValueOnce(
+    api.startAssetShare.mockRejectedValueOnce(
       new ShareError(409, 'cloudflared is not installed', { code: 'no-tunnel', install: 'brew install cloudflared' }),
     )
     renderControl()
@@ -167,15 +170,15 @@ describe('ShareControl', () => {
     fireEvent.click(within(panel).getByRole('button', { name: 'Copy install command' }))
     expect(writeClipboard).toHaveBeenCalledWith('brew install cloudflared')
 
-    api.startPreviewShare.mockResolvedValueOnce({ share: liveShare() })
+    api.startAssetShare.mockResolvedValueOnce({ share: liveShare() })
     fireEvent.click(within(panel).getByRole('button', { name: 'Retry' }))
-    expect(api.startPreviewShare).toHaveBeenCalledTimes(2)
+    expect(api.startAssetShare).toHaveBeenCalledTimes(2)
     await waitFor(() => expect(liveButton()).toBeTruthy())
   })
 
   it("shows cloudflared's own line and Retry when the tunnel does not start", async () => {
     seed(null)
-    api.startPreviewShare.mockRejectedValueOnce(
+    api.startAssetShare.mockRejectedValueOnce(
       new ShareError(409, 'failed to request quick Tunnel: 429 Too Many Requests', { code: 'tunnel-failed' }),
     )
     renderControl()
@@ -188,7 +191,7 @@ describe('ShareControl', () => {
 
   it('shows any other refusal with Retry instead of failing silently', async () => {
     seed(null)
-    api.startPreviewShare.mockRejectedValueOnce(new ShareError(409, 'Four shares are live already — stop one first'))
+    api.startAssetShare.mockRejectedValueOnce(new ShareError(409, 'Four shares are live already — stop one first'))
     renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
@@ -196,12 +199,12 @@ describe('ShareControl', () => {
     expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('is disabled with the reason on a tab that is not a local http:// address', () => {
+  it('is always ready to share the asset it was rendered for', () => {
     seed(null)
-    renderControl({ targetOrigin: null })
+    renderControl()
     const share = screen.getByRole('button', { name: 'Share' })
-    expect((share as HTMLButtonElement).disabled).toBe(true)
-    expect(share.getAttribute('title')).toBe('Sharing works on local http:// addresses')
+    expect((share as HTMLButtonElement).disabled).toBe(false)
+    expect(share.getAttribute('title')).toBeNull()
   })
 
   it('reads the comment count and the end time on the live control', () => {
@@ -216,13 +219,13 @@ describe('ShareControl', () => {
 
   it('lets a waiting guest in, with the name and code on the row', async () => {
     seed(liveShare({ guests: [guest()] }))
-    api.decidePreviewShareGuest.mockResolvedValue({ share: liveShare({ guests: [guest({ state: 'allowed' })] }) })
+    api.decideAssetShareGuest.mockResolvedValue({ share: liveShare({ guests: [guest({ state: 'allowed' })] }) })
     renderControl()
     expect(screen.getByRole('img', { name: '1 person waiting to join' })).toBeTruthy()
     fireEvent.click(liveButton())
     await labelled('Ana · 4821 wants to join')
     fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
-    expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
+    expect(api.decideAssetShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
     // The answer lands in the cache, so the row moves on without waiting for the frame.
     await labelled('Ana — allowed')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy())
@@ -239,23 +242,23 @@ describe('ShareControl', () => {
         ],
       }),
     )
-    api.decidePreviewShareGuest.mockResolvedValue({ share: liveShare() })
+    api.decideAssetShareGuest.mockResolvedValue({ share: liveShare() })
     renderControl()
     expect(screen.getByRole('img', { name: '2 people waiting to join' })).toBeTruthy()
     fireEvent.click(liveButton())
     await labelled('Ana · 4821 wants to join')
     expect(rows().map(label)).toEqual(['Ana · 4821 wants to join', 'Ola · 1234 wants to join', 'Piotr'])
     fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[0]!)
-    expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'deny')
+    expect(api.decideAssetShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'deny')
   })
 
   it('removes an allowed guest, and toasts a failed decision leaving the row as it was', async () => {
     seed(liveShare({ guests: [guest({ state: 'allowed' })] }))
-    api.removePreviewShareGuest.mockRejectedValue(new Error('Not found'))
+    api.removeAssetShareGuest.mockRejectedValue(new Error('Not found'))
     renderControl()
     fireEvent.click(liveButton())
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
-    expect(api.removePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID)
+    expect(api.removeAssetShareGuest).toHaveBeenCalledWith('r1', GUEST_ID)
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Not found', expect.objectContaining({ tone: 'danger' })))
     expect(rows().map(label)).toEqual(['Ana'])
     // Enabled again once the settle window (600 ms) has passed.
@@ -280,14 +283,14 @@ describe('ShareControl', () => {
     seed(liveShare({ guests: [guest()] }))
     const later = '2026-11-28T02:41:00.000Z'
     let answer: (value: unknown) => void = () => {}
-    api.extendPreviewShare.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    api.extendAssetShare.mockReturnValue(new Promise((resolve) => (answer = resolve)))
     const { baseElement } = renderControl()
     fireEvent.click(liveButton())
     const extend = await screen.findByRole('button', { name: 'Extend 8 hours' })
     fireEvent.click(extend)
     fireEvent.click(extend)
-    expect(api.extendPreviewShare).toHaveBeenCalledTimes(1)
-    expect(api.extendPreviewShare).toHaveBeenCalledWith('r1')
+    expect(api.extendAssetShare).toHaveBeenCalledTimes(1)
+    expect(api.extendAssetShare).toHaveBeenCalledWith('r1')
     await waitFor(() => expect((extend as HTMLButtonElement).disabled).toBe(true))
     await act(async () => answer({ share: liveShare({ guests: [guest()], expiresAt: later }) }))
     await waitFor(() => expect(toast).toHaveBeenCalledWith(`Sharing until ${until(later)}`))
@@ -296,7 +299,7 @@ describe('ShareControl', () => {
     expect(baseElement.innerHTML).not.toContain('SECRET-TOKEN')
     expect(toast.mock.calls.flat().join(' ')).not.toContain('SECRET-TOKEN')
 
-    api.extendPreviewShare.mockRejectedValue(new Error('This task is not sharing'))
+    api.extendAssetShare.mockRejectedValue(new Error('This task is not sharing'))
     fireEvent.click(extend)
     await waitFor(() => expect(toast).toHaveBeenCalledWith('This task is not sharing', expect.objectContaining({ tone: 'danger' })))
     expect(liveButton().textContent).toContain(`until ${until(later)}`)
@@ -304,7 +307,7 @@ describe('ShareControl', () => {
 
   describe('Stop against an answer that is still on its way', () => {
     const later = '2026-11-28T02:41:00.000Z'
-    const opened = async (share: PreviewShare) => {
+    const opened = async (share: AssetShare) => {
       seed(share)
       renderControl()
       fireEvent.click(liveButton())
@@ -315,18 +318,18 @@ describe('ShareControl', () => {
     }
 
     it('turns Extend off while Stop is in flight', async () => {
-      api.stopPreviewShare.mockReturnValue(new Promise(() => {}))
+      api.stopAssetShare.mockReturnValue(new Promise(() => {}))
       const { extend, stop } = await opened(liveShare())
       fireEvent.click(stop)
       await waitFor(() => expect(extend.disabled).toBe(true))
       fireEvent.click(extend)
-      expect(api.extendPreviewShare).not.toHaveBeenCalled()
+      expect(api.extendAssetShare).not.toHaveBeenCalled()
     })
 
     it('shows Share, and no new end time, when an Extend answers after the stop', async () => {
       let answerExtend: (value: unknown) => void = () => {}
-      api.extendPreviewShare.mockReturnValue(new Promise((resolve) => (answerExtend = resolve)))
-      api.stopPreviewShare.mockResolvedValue({ share: null })
+      api.extendAssetShare.mockReturnValue(new Promise((resolve) => (answerExtend = resolve)))
+      api.stopAssetShare.mockResolvedValue({ share: null })
       const { extend, stop } = await opened(liveShare())
       fireEvent.click(extend)
       // A live link is always stoppable, a pending Extend included.
@@ -340,14 +343,14 @@ describe('ShareControl', () => {
       })
       expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
       expect(screen.queryByRole('button', { name: /Sharing/ })).toBeNull()
-      expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+      expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: null })
       expect(toast.mock.calls.flat().filter((arg) => typeof arg === 'string' && arg.startsWith('Sharing until'))).toEqual([])
     })
 
     it('shows Share when a guest decision answers after the stop', async () => {
       let answerAllow: (value: unknown) => void = () => {}
-      api.decidePreviewShareGuest.mockReturnValue(new Promise((resolve) => (answerAllow = resolve)))
-      api.stopPreviewShare.mockResolvedValue({ share: null })
+      api.decideAssetShareGuest.mockReturnValue(new Promise((resolve) => (answerAllow = resolve)))
+      api.stopAssetShare.mockResolvedValue({ share: null })
       const { stop } = await opened(liveShare({ guests: [guest()] }))
       fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
       fireEvent.click(stop)
@@ -357,12 +360,12 @@ describe('ShareControl', () => {
         await new Promise((resolve) => setTimeout(resolve, 20))
       })
       expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
-      expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+      expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: null })
     })
 
     it('takes later answers again after a Stop that failed', async () => {
-      api.stopPreviewShare.mockRejectedValueOnce(new Error('cannot reach the cezar server'))
-      api.extendPreviewShare.mockResolvedValue({ share: liveShare({ expiresAt: later }) })
+      api.stopAssetShare.mockRejectedValueOnce(new Error('cannot reach the cezar server'))
+      api.extendAssetShare.mockResolvedValue({ share: liveShare({ expiresAt: later }) })
       const { extend, stop } = await opened(liveShare())
       fireEvent.click(stop)
       await waitFor(() => expect(toast).toHaveBeenCalledWith('cannot reach the cezar server', expect.objectContaining({ tone: 'danger' })))
@@ -373,9 +376,9 @@ describe('ShareControl', () => {
     })
 
     it('takes the answers of the next share', async () => {
-      api.stopPreviewShare.mockResolvedValue({ share: null })
-      api.startPreviewShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2` }) })
-      api.extendPreviewShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2`, expiresAt: later }) })
+      api.stopAssetShare.mockResolvedValue({ share: null })
+      api.startAssetShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2` }) })
+      api.extendAssetShare.mockResolvedValue({ share: liveShare({ url: `${SECRET_URL}2`, expiresAt: later }) })
       const { stop } = await opened(liveShare())
       fireEvent.click(stop)
       fireEvent.click(await screen.findByRole('button', { name: 'Share' }))
@@ -389,7 +392,7 @@ describe('ShareControl', () => {
 
   it('offers no Extend when the capability is off', async () => {
     seed(liveShare())
-    capability.previewShare = false
+    capability.assetShare = false
     renderControl()
     fireEvent.click(liveButton())
     await screen.findByRole('button', { name: 'Stop sharing' })
@@ -403,7 +406,7 @@ describe('ShareControl', () => {
     await labelled('Ana · 4821 wants to join')
     // Review Focus 4: the query answers { share: null } after having answered a live one.
     act(() => {
-      client.setQueryData(queryKeys.runs.previewShare('r1'), { share: null })
+      client.setQueryData(queryKeys.runs.assetShare('r1'), { share: null })
     })
     // The cache notifies on its own tick, so the switch is awaited rather than read at once.
     expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy()
@@ -411,15 +414,26 @@ describe('ShareControl', () => {
     expect(screen.queryByText(/Traffic passes through Cloudflare/)).toBeNull()
   })
 
-  it('does not offer a second link on a tab with another origin', async () => {
-    seed(liveShare())
-    api.stopPreviewShare.mockResolvedValue({ share: null })
-    renderControl({ targetOrigin: 'http://localhost:3000' })
-    expect(liveButton().textContent).toContain('Sharing localhost:5173')
+  it('names the shared asset on another asset of the task, and offers no second link (C9)', async () => {
+    seed(liveShare(), 3)
+    api.stopAssetShare.mockResolvedValue({ share: null })
+    renderControl({ asset: 'other.html', assetTitle: 'Billing mockup' })
+    expect(liveButton().textContent).toBe('Sharing “Settings mockup”')
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
     fireEvent.click(liveButton())
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop sharing' }))
-    expect(api.stopPreviewShare).toHaveBeenCalledWith('r1')
+    // The same menu, and no way to start a share of the asset on screen.
+    expect(await screen.findByRole('button', { name: 'Copy link' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Extend 8 hours' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Create link' })).toBeNull()
+    expect(screen.queryByText(/Traffic passes through Cloudflare/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }))
+    expect(api.stopAssetShare).toHaveBeenCalledWith('r1')
+  })
+
+  it('names an untitled shared asset by its file name', () => {
+    seed(liveShare({ asset: 'plain.html', assetTitle: '' }))
+    renderControl({ asset: 'other.html', assetTitle: 'Billing mockup' })
+    expect(liveButton().textContent).toBe('Sharing “plain.html”')
   })
 
   describe("a stranger's name beside the join code (C12)", () => {
@@ -477,10 +491,10 @@ describe('ShareControl', () => {
       if (button) fireEvent.click(button)
     }
 
-    async function decideFirst(decision: 'allow' | 'deny', answer: PreviewShare) {
+    async function decideFirst(decision: 'allow' | 'deny', answer: AssetShare) {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       seed(liveShare({ guests: [ana, ola] }))
-      api.decidePreviewShareGuest.mockResolvedValueOnce({ share: answer }).mockResolvedValueOnce({ share: liveShare() })
+      api.decideAssetShareGuest.mockResolvedValueOnce({ share: answer }).mockResolvedValueOnce({ share: liveShare() })
       renderControl()
       fireEvent.click(liveButton())
       await labelled('Ana · 4821 wants to join')
@@ -492,16 +506,16 @@ describe('ShareControl', () => {
       expect(screen.getAllByRole('button', { name }).every((button) => (button as HTMLButtonElement).disabled)).toBe(true)
       await advance(300)
       pressFirst(name)
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, decision)
+      expect(api.decideAssetShareGuest).toHaveBeenCalledTimes(1)
+      expect(api.decideAssetShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, decision)
 
       await advance(400)
       expect(rows().map(label)[0]).toBe('Ola · 1234 wants to join')
       const next = within(rows()[0]!).getByRole('button', { name }) as HTMLButtonElement
       expect(next.disabled).toBe(false)
       fireEvent.click(next)
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(2)
-      expect(api.decidePreviewShareGuest).toHaveBeenLastCalledWith('r1', ola.id, decision)
+      expect(api.decideAssetShareGuest).toHaveBeenCalledTimes(2)
+      expect(api.decideAssetShareGuest).toHaveBeenLastCalledWith('r1', ola.id, decision)
     }
 
     it('after Allow', async () => {
@@ -523,9 +537,9 @@ describe('ShareControl', () => {
       act(async () => {
         await vi.advanceTimersByTimeAsync(ms)
       })
-    const arrive = async (guests: PreviewShareGuest[], overrides: Partial<PreviewShare> = {}) => {
+    const arrive = async (guests: AssetShareGuest[], overrides: Partial<AssetShare> = {}) => {
       act(() => {
-        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: liveShare({ guests, ...overrides }) })
+        client.setQueryData(queryKeys.runs.assetShare('r1'), { share: liveShare({ guests, ...overrides }) })
       })
       // The cache notifies on its own tick.
       await advance(0)
@@ -535,13 +549,13 @@ describe('ShareControl', () => {
     const pressFirstRow = () => {
       for (const button of within(rows()[0]!).queryAllByRole('button')) fireEvent.click(button)
     }
-    const decided = () => api.decidePreviewShareGuest.mock.calls.length + api.removePreviewShareGuest.mock.calls.length
+    const decided = () => api.decideAssetShareGuest.mock.calls.length + api.removeAssetShareGuest.mock.calls.length
 
-    async function opened(guests: PreviewShareGuest[]) {
+    async function opened(guests: AssetShareGuest[]) {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       seed(liveShare({ guests }))
-      api.decidePreviewShareGuest.mockResolvedValue({ share: liveShare() })
-      api.removePreviewShareGuest.mockResolvedValue({ share: liveShare() })
+      api.decideAssetShareGuest.mockResolvedValue({ share: liveShare() })
+      api.removeAssetShareGuest.mockResolvedValue({ share: liveShare() })
       renderControl()
       fireEvent.click(liveButton())
       await waitFor(() => expect(rows()).toHaveLength(guests.length))
@@ -562,7 +576,7 @@ describe('ShareControl', () => {
       await advance(400)
       expect(buttons().map((button) => button.disabled)).toEqual([false, false, false])
       fireEvent.click(within(rows()[0]!).getByRole('button', { name: 'Allow' }))
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
+      expect(api.decideAssetShareGuest).toHaveBeenCalledWith('r1', GUEST_ID, 'allow')
     })
 
     it('when a waiting request expires and the next one moves up', async () => {
@@ -607,7 +621,7 @@ describe('ShareControl', () => {
 
     it('when a visitor arrives while a decision holds the rows: the wait starts again as the rows are let go', async () => {
       await opened([ana, ola])
-      api.decidePreviewShareGuest.mockResolvedValueOnce({ share: liveShare({ guests: [{ ...ana, state: 'allowed' }, ola] }) })
+      api.decideAssetShareGuest.mockResolvedValueOnce({ share: liveShare({ guests: [{ ...ana, state: 'allowed' }, ola] }) })
       fireEvent.click(within(rows()[0]!).getByRole('button', { name: 'Allow' }))
       await advance(0)
       const zed = guest({ id: '3333333333333333', name: 'Zed', code: '9999', requestedAt: '2026-11-27T10:02:00.000Z' })
@@ -619,24 +633,24 @@ describe('ShareControl', () => {
       expect(rows().map(label)).toEqual(['Ola · 1234 wants to join', 'Zed · 9999 wants to join', 'Ana'])
       expect(buttons().every((button) => button.disabled)).toBe(true)
       for (const button of buttons()) fireEvent.click(button)
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
+      expect(api.decideAssetShareGuest).toHaveBeenCalledTimes(1)
       await advance(650)
       expect(buttons().every((button) => !button.disabled)).toBe(true)
     })
 
     it('a share that ends with a decision still unanswered leaves the next share’s buttons working', async () => {
       await opened([ana])
-      api.decidePreviewShareGuest.mockReturnValue(new Promise(() => {}))
+      api.decideAssetShareGuest.mockReturnValue(new Promise(() => {}))
       fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
-      expect(api.decidePreviewShareGuest).toHaveBeenCalledTimes(1)
+      expect(api.decideAssetShareGuest).toHaveBeenCalledTimes(1)
       act(() => {
-        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: null })
+        client.setQueryData(queryKeys.runs.assetShare('r1'), { share: null })
       })
       await advance(0)
       expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy()
 
       act(() => {
-        client.setQueryData(queryKeys.runs.previewShare('r1'), { share: liveShare({ url: `${SECRET_URL}2` }) })
+        client.setQueryData(queryKeys.runs.assetShare('r1'), { share: liveShare({ url: `${SECRET_URL}2` }) })
       })
       await advance(0)
       fireEvent.click(liveButton())
@@ -645,14 +659,14 @@ describe('ShareControl', () => {
       expect(rows().map(label)).toEqual(['Ola · 1234 wants to join'])
       expect(buttons().map((button) => button.disabled)).toEqual([false, false])
       fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
-      expect(api.decidePreviewShareGuest).toHaveBeenLastCalledWith('r1', ola.id, 'allow')
+      expect(api.decideAssetShareGuest).toHaveBeenLastCalledWith('r1', ola.id, 'allow')
     })
   })
 
   it('toasts a start that fails after the popover closed, and opens on the confirm again', async () => {
     seed(null)
     let fail: (error: unknown) => void = () => {}
-    api.startPreviewShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
+    api.startAssetShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
     renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
@@ -670,7 +684,7 @@ describe('ShareControl', () => {
     async function startFailing(error: unknown) {
       seed(null)
       let fail: (error: unknown) => void = () => {}
-      api.startPreviewShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
+      api.startAssetShare.mockReturnValue(new Promise((_, reject) => (fail = reject)))
       renderControl()
       fireEvent.click(screen.getByRole('button', { name: 'Share' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
@@ -681,7 +695,7 @@ describe('ShareControl', () => {
 
     it.each([
       ['a refused start (409)', new ShareError(409, 'Four shares are live already'), true],
-      ['a refused target (400)', new ShareError(400, 'The app at http://localhost:5173 is not answering. Start it, then share.'), true],
+      ['a refused asset (400)', new ShareError(400, 'Only an HTML asset of this task can be shared'), true],
       ['a missing tunnel binary (409)', new ShareError(409, 'Sharing needs cloudflared', { code: 'no-tunnel', install: 'brew install cloudflared' }), true],
       ['a server that broke (500)', new ShareError(500, 'Internal Server Error'), false],
       ['a request that never arrived', new ShareError(0, 'cannot reach the cezar server'), false],
@@ -693,7 +707,7 @@ describe('ShareControl', () => {
 
     it('an Extend the server refused (404), as before', async () => {
       seed(liveShare())
-      api.extendPreviewShare.mockRejectedValue(new ApiError(404, 'This task is not sharing'))
+      api.extendAssetShare.mockRejectedValue(new ApiError(404, 'This task is not sharing'))
       renderControl()
       fireEvent.click(liveButton())
       fireEvent.click(await screen.findByRole('button', { name: 'Extend 8 hours' }))
@@ -701,19 +715,20 @@ describe('ShareControl', () => {
     })
   })
 
-  it('disables Create link when the tab leaves a local address with the popover open', async () => {
+  it('shares the asset now on screen when the owner switches asset with the popover open', async () => {
     seed(null)
+    api.startAssetShare.mockResolvedValue({ share: liveShare({ asset: 'other.html', assetTitle: 'Billing mockup' }) })
     const { rerender } = renderControl()
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     await screen.findByRole('button', { name: 'Create link' })
     rerender(
       <QueryClientProvider client={client}>
-        <ShareControl runId="r1" targetOrigin={null} path="/" />
+        <ShareControl runId="r1" asset="other.html" assetTitle="Billing mockup" />
       </QueryClientProvider>,
     )
-    const create = screen.getByRole('button', { name: 'Create link' }) as HTMLButtonElement
-    expect(create.disabled).toBe(true)
-    expect(create.getAttribute('title')).toBe('Sharing works on local http:// addresses')
+    expect(document.querySelector('[data-slot="share-asset"]')?.textContent).toBe('Share “Billing mockup”')
+    fireEvent.click(screen.getByRole('button', { name: 'Create link' }))
+    expect(api.startAssetShare).toHaveBeenCalledWith('r1', { asset: 'other.html' })
   })
 
   it('opens the confirm with focus on the panel, not on Create link', async () => {
@@ -728,32 +743,32 @@ describe('ShareControl', () => {
   it('keeps the started share when a refetch that began before it answers late', async () => {
     seed(null)
     let late: (value: unknown) => void = () => {}
-    api.getPreviewShare.mockReturnValueOnce(new Promise((resolve) => (late = resolve)))
-    api.startPreviewShare.mockResolvedValue({ share: liveShare() })
+    api.getAssetShare.mockReturnValueOnce(new Promise((resolve) => (late = resolve)))
+    api.startAssetShare.mockResolvedValue({ share: liveShare() })
     renderControl()
-    void client.refetchQueries({ queryKey: queryKeys.runs.previewShare('r1') })
+    void client.refetchQueries({ queryKey: queryKeys.runs.assetShare('r1') })
     fireEvent.click(screen.getByRole('button', { name: 'Share' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
     await waitFor(() => expect(liveButton()).toBeTruthy())
     await act(async () => late({ share: null }))
     expect(liveButton()).toBeTruthy()
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: liveShare() })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: liveShare() })
   })
 
 
   it('renders nothing when the capability is off', () => {
     seed(null)
-    capability.previewShare = false
+    capability.assetShare = false
     const { container } = renderControl()
     expect(container.innerHTML).toBe('')
     cleanup()
-    capability.previewShare = undefined
+    capability.assetShare = undefined
     expect(renderControl().container.innerHTML).toBe('')
   })
 
   it('keeps a live share stoppable when the capability reads off, without guest decisions', async () => {
     seed(liveShare({ guests: [guest()] }))
-    capability.previewShare = false
+    capability.assetShare = false
     renderControl()
     // The owner cannot act on a waiting guest here, so nothing calls for attention.
     expect(screen.queryByRole('img', { name: /waiting to join/ })).toBeNull()
@@ -762,32 +777,5 @@ describe('ShareControl', () => {
     expect(rows().map(label)).toEqual(['Ana · 4821 wants to join'])
     expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull()
-  })
-})
-
-describe('the Preview toolbar', () => {
-  const view = (runId?: string) =>
-    render(
-      <QueryClientProvider client={client}>
-        <BrowserView state={{ tabs: ['http://localhost:5173/settings?tab=1#top'], active: 0 }} onChange={vi.fn()} {...(runId ? { runId } : {})} />
-      </QueryClientProvider>,
-    )
-
-  it("shares the tab's own origin, path and search", async () => {
-    seed(null)
-    api.startPreviewShare.mockResolvedValue({ share: liveShare() })
-    view('r1')
-    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Create link' }))
-    expect(api.startPreviewShare).toHaveBeenCalledWith('r1', {
-      target: 'http://localhost:5173/settings?tab=1',
-      parentOrigin: window.location.origin,
-    })
-  })
-
-  it('offers no Share without a task', () => {
-    seed(null)
-    view()
-    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
   })
 })

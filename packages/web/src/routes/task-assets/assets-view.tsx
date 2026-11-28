@@ -52,6 +52,7 @@ import {
 import { useArtifactRefBridge, type ArtifactReference } from './artifact-bridge'
 import { AssetsAskComposer } from './ask-composer'
 import { AssetCommentsLayer, withPicker } from './asset-comments'
+import { ShareControl } from './share-control'
 
 export const ASSETS_EMPTY_TITLE = 'No assets yet'
 export const ASSETS_EMPTY_SUBTITLE =
@@ -59,7 +60,7 @@ export const ASSETS_EMPTY_SUBTITLE =
 
 /**
  * The task's Assets view (spec 2026-10-22-html-artifacts-and-impact § UI/UX, R2): ONE toolbar row —
- * the asset switcher, Focus, Open, Download, Reload — and the asset at full width below it.
+ * the asset switcher, Comment, Share, Focus, Open, Download, Reload — and the asset at full width below it.
  *
  * `routed`: the view fills its layout on its own (the Assets tab), so the selection lives in the
  * URL (`tasks/:id/assets/:name`). In a split layout it stays local — navigating there would swap
@@ -207,6 +208,8 @@ export function AssetsView({ runId, routed, run }: { runId: string; routed: bool
               </Button>
             </IconTooltip>
           ) : null}
+          {/* Wherever Comment is: an HTML asset, current version (spec 2026-11-28-asset-share-link). */}
+          {commentable && current ? <ShareControl runId={runId} asset={current.name} assetTitle={artifactLabel(current)} /> : null}
           <IconTooltip label={focus ? 'Leave focus — bring the sidebar back' : 'Focus — fold the sidebar to icons while Assets is open'}>
             <Button
               type="button"

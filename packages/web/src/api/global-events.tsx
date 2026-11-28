@@ -10,12 +10,12 @@ import { connectionStatus, nativeConnectionStatus } from './connection-status'
 import { reconnectTopics } from './ws'
 import {
   guestCommentsEventSchema,
-  previewShareEventSchema,
+  assetShareEventSchema,
   runArtifactsEventSchema,
   trackerChangedEventSchema,
   type ArtifactsBySubjectResponse,
   type GuestCommentsResponse,
-  type PreviewShareStateResponse,
+  type AssetShareStateResponse,
   type RunArtifactsResponse,
 } from '@open-mercato/cezar-api-client'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -907,15 +907,15 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
         void queryClient.invalidateQueries({ queryKey: queryKeys.runs.projectAssets })
       })
 
-      // Preview Share (spec 2026-11-26-preview-share-link): the frame is the WHOLE state, so it
+      // Asset Share (spec 2026-11-28-asset-share-link): the frame is the WHOLE state, so it
       // replaces the cache. The live-links indicator is workspace-wide, so another project's
       // frame still refreshes it and still announces an end.
-      current.addEventListener('preview-share', (event) => {
+      current.addEventListener('asset-share', (event) => {
         if (disposed || source !== current) return
         lastFrameAt = Date.now()
         let payload: unknown
         try { payload = JSON.parse((event as MessageEvent<string>).data) } catch { return }
-        const parsed = previewShareEventSchema.safeParse(payload)
+        const parsed = assetShareEventSchema.safeParse(payload)
         if (!parsed.success) return
         const { project, runId, share, ended } = parsed.data
         void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.liveShares })
@@ -924,7 +924,7 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
           inactiveProjectRefresher.onEvent(project)
           return
         }
-        queryClient.setQueryData<PreviewShareStateResponse>(queryKeys.runs.previewShare(runId), { share })
+        queryClient.setQueryData<AssetShareStateResponse>(queryKeys.runs.assetShare(runId), { share })
       })
 
       current.addEventListener('guest-comments', (event) => {

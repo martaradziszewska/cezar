@@ -1,0 +1,84 @@
+---
+title: "Share an asset for comments"
+description: "Give a teammate a public link to one HTML asset of a task, let them in, and collect their comments in your review."
+nav_title: "Share an asset"
+related:
+  links:
+    - features/tasks-and-sessions/design-notes
+    - features/tasks-and-sessions/design-mode
+sources:
+  - label: "Share control"
+    path: packages/web/src/routes/task-assets/share-control.tsx
+    line: 1
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Share listener and its limits"
+    path: packages/cezar/src/server/preview/share-listener.ts
+    line: 1
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Guest join page, asset files and comments"
+    path: packages/cezar/src/server/preview/share-guest-routes.ts
+    line: 1
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Guest page with the comment bar"
+    path: packages/cezar/src/server/preview/share-guest-shell.ts
+    line: 1
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Live link indicators"
+    path: packages/web/src/components/live-shares-indicator.tsx
+    line: 21
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Capability and CEZ_ASSET_SHARE"
+    path: packages/cezar/src/server/capabilities.ts
+    line: 212
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+  - label: "Specification"
+    path: .ai/specs/2026-11-28-asset-share-link.md
+    line: 1
+    commit: 58b78baaa433807fa028391bb5de008d9220befb
+---
+**Share** gives a public `https://` link to one HTML asset of a task, such as a clickable mockup the agent wrote. A teammate opens the link in any browser, with nothing installed, and asks to join. You let them in from the cockpit. They use the page as it is, and with **Comment** switched on they click an element and write a comment. Each comment arrives in your task as a review comment with the teammate's name on it, and the agent reads it only when you send the review. The teammate never sees the cockpit and never prompts the agent.
+
+## Where to find it
+
+Task → Assets → **Share**
+
+## How to use it
+
+1. Open an HTML asset in the Assets tab, click **Share**, read what the link exposes, and click **Create link**. The link is copied for you; **Copy link** in the Sharing menu copies it again.
+2. Send the link to your teammate. They type a name and click **Ask to join**, and their page shows a 4-digit code. In the cockpit, the Sharing menu shows `<name> · <code> wants to join`. Check the code with them if you are unsure who it is, then click **Allow** or **Deny**.
+3. Your teammate explores the page, then clicks **Comment**, picks an element, and saves a comment. It appears in the task's composer as a chip, such as `Ana · button.btn-primary “Save changes”`. Clicking the chip opens the Assets tab on that asset. Send the review as usual; the guest comments go with it. A comment that appeared, or was edited, in the last 5 seconds wears a **new** badge and stays behind for the next send, so nothing reaches the agent before you could read it.
+
+## What a guest can do
+
+- With **Comment** off, the page behaves as it does for you: clicks, state switches and reloads all work, and no comment marks cover it.
+- With **Comment** on, the guest's saved comments are framed and numbered on the page, and a click on an element opens the comment box.
+- A guest sees and edits only their own comments. You can delete a guest's comment from its chip, but you cannot edit it.
+- The page runs in the same sandbox as in your Assets tab, with one difference: a link that opens a new tab or another site does nothing for a guest.
+
+## While a link is live
+
+- The Assets toolbar shows `Sharing · <N> comments · until <time>`. Its menu holds **Copy link**, **Extend 8 hours** and **Stop sharing**, and lists who asked to join and who is in.
+- A task shares one asset at a time. On another asset of the same task the control names the shared asset and offers **Stop sharing**.
+- **Remove** cuts an allowed guest off at once. A browser you denied or removed cannot rejoin the same link; the way back is a private window or a new link.
+- The task's row in the sidebar shows **Sharing**, and a bar above every page says `1 live link` or `<N> live links`, with `· <M> waiting` when someone is asking to join. Its menu has **Open** and **Stop sharing** for each link.
+
+## When a link ends
+
+A link ends 8 hours after it starts, on **Stop sharing**, when the cockpit server stops, when the `cloudflared` tunnel process exits, when the task's project leaves the workspace, or when the task is archived or deleted. **Extend 8 hours** moves the end to 8 hours from now and keeps the same link. Sharing again after a link ends gives a new address. Comments outlive the link: they stay in your review until you send them or delete them.
+
+## Limits
+
+- **One page.** The link carries one HTML asset and the images among the task's assets. A link in the page that leads to another HTML asset does not open it.
+- **HTML only.** Markdown, JSON and image assets have no **Share**.
+- **The current file.** A guest sees the asset as it is now. When the agent rewrites it, the guest reloads to get the new version.
+- **A comment is pinned to an element.** On a page with several states, a comment's mark shows only while its element is on screen.
+- **Your computer must be awake.** If the asset is deleted or renamed, the guest sees "This page is not available right now" until the file is back.
+- **You must be at the cockpit** when a teammate first opens the link, to let them in. After that they can come and go until the link ends.
+
+> **Good to know**:
+>
+> - Sharing needs `cloudflared` on your `PATH` (`brew install cloudflared` on macOS). Without it, **Share** shows the install command and **Retry**. No Cloudflare account is needed.
+> - Traffic passes through Cloudflare, which terminates TLS. People you let in can open the shared page and the images among the task's assets. They cannot reach the cockpit, a dev server or any other file.
+> - Nothing listens and no process starts until you click **Create link**. `CEZ_ASSET_SHARE=0` turns sharing off.
+> - Sharing is unavailable in a hosted cockpit. A paired phone cannot start, extend or steer a share, but it can read the link and stop it.
+> - If cezar is killed hard (a crash, `kill -9`), the `cloudflared` process can keep running. The next time cezar starts, and the next time you share, it ends that leftover tunnel.

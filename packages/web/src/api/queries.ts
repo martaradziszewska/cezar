@@ -62,7 +62,7 @@ import {
   getRunDiff,
   getRunDrafts,
   getRunArtifacts,
-  getPreviewShare,
+  getAssetShare,
   getGuestComments,
   getLiveShares,
   getImpactForSubject,
@@ -232,8 +232,8 @@ export const queryKeys = {
     file: (id: string, path: string) => [queryScope(), 'runs', 'files', id, path] as const,
     /** Under `runs`, so the reconnect reconcile (`runs.all`) refetches it too. */
     artifacts: (id: string) => [queryScope(), 'runs', 'artifacts', id] as const,
-    /** Preview Share state; the link token lives in its DATA, never in the key. */
-    previewShare: (id: string) => [queryScope(), 'runs', 'preview-share', id] as const,
+    /** Asset Share state; the link token lives in its DATA, never in the key. */
+    assetShare: (id: string) => [queryScope(), 'runs', 'asset-share', id] as const,
     guestComments: (id: string) => [queryScope(), 'runs', 'guest-comments', id] as const,
     /** The newest impact run per subject (`pr:<n>` / `spec:<path>`), under `runs` for the same
      *  reconnect reconcile; the `artifacts` SSE frame patches it in place. */
@@ -471,7 +471,7 @@ export function useTrackerItem(association: TrackerAssociation | null | undefine
  * scope changes → key changes → data gone → provider unmounts).
  */
 export const workspaceQueryKeys = {
-  /** Live Preview shares across projects (spec 2026-11-26-preview-share-link). */
+  /** Live asset shares across projects (spec 2026-11-28-asset-share-link). */
   liveShares: ['workspace', 'live-shares'] as const,
   dashboard: ['workspace', 'dashboard'] as const,
   models: (runner: string) => ['workspace', 'models', runner] as const,
@@ -1568,18 +1568,18 @@ export function useRunArtifacts(id: string | undefined) {
   })
 }
 
-/** Two retries: one failed read must not hide a link that is live (spec 2026-11-26-preview-share-link
+/** Two retries: one failed read must not hide a link that is live (spec 2026-11-28-asset-share-link
  *  C7). Never for a 4xx, which is the server's considered answer. */
 function retryLiveLink(failureCount: number, error: unknown): boolean {
   return failureCount < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500)
 }
 
-/** The task's Preview share. The `preview-share` frame replaces it; the refetch on reconnect and
+/** The task's asset share. The `asset-share` frame replaces it; the refetch on reconnect and
  *  on a returning tab is what answers `{ share: null }` after a server restart. */
-export function usePreviewShare(runId: string | undefined) {
+export function useAssetShare(runId: string | undefined) {
   return useQuery({
-    queryKey: queryKeys.runs.previewShare(runId ?? ''),
-    queryFn: ({ signal }) => getPreviewShare(runId as string, { signal }),
+    queryKey: queryKeys.runs.assetShare(runId ?? ''),
+    queryFn: ({ signal }) => getAssetShare(runId as string, { signal }),
     enabled: Boolean(runId),
     staleTime: Infinity,
     refetchOnReconnect: 'always',
@@ -1588,7 +1588,7 @@ export function usePreviewShare(runId: string | undefined) {
   })
 }
 
-/** Comments guests left on the shared Preview; same live rules as `usePreviewShare`. */
+/** Comments guests left on shared assets; same live rules as `useAssetShare`. */
 export function useGuestComments(runId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.runs.guestComments(runId ?? ''),

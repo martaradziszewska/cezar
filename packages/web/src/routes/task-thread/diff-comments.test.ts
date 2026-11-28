@@ -11,7 +11,6 @@ import {
   GUEST_LABEL_MAX,
   GUEST_NAME_MAX,
   GUEST_SELECTOR_MAX,
-  GUEST_URL_MAX,
   guestCommentCost,
 } from '@open-mercato/cezar-api-client'
 
@@ -302,14 +301,14 @@ const OLD_ASSET_REVIEW =
 const OLD_MIXED_REVIEW =
   'Review comments on the diff and assets:\n\n- `src/b.ts` line 12:\n\n  ```\n    const x = 1\n  ```\n\n  rename this\n\n- `recipe.html` (HTML asset) element `section#ingredients > h2` — "Ingredients":\n\n  ```\n  <h2>Ingredients</h2>\n  ```\n\n  Make this bigger'
 
-describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
+describe('guest comments (spec 2026-11-28-asset-share-link)', () => {
   const guest: GuestReviewComment = {
     kind: 'guest',
     id: 'g1',
     revision: 1,
     author: 'Ana',
     createdAt: '2026-11-26T10:00:00.000Z',
-    url: 'http://localhost:5173/settings',
+    asset: 'mockups/settings.html',
     selector: 'main > button.btn-primary',
     label: 'Save',
     excerpt: '<button class="btn-primary">Save</button>',
@@ -326,10 +325,10 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     body: 'Make this bigger',
   }
 
-  it('formats a guest comment with its page, element, author and component', () => {
+  it('formats a guest comment with its asset, element, author and component', () => {
     expect(formatDiffComments([guest])).toBe(
       'Review comments:\n\n' +
-        '- `http://localhost:5173/settings` (app preview) element `main > button.btn-primary` — "Save" — from Ana:\n\n' +
+        '- `mockups/settings.html` (shared asset) element `main > button.btn-primary` — "Save" — from Ana:\n\n' +
         '  component: SettingsForm › Button (src/ui/button.tsx:14)\n\n' +
         '  ```html\n  <button class="btn-primary">Save</button>\n  ```\n\n' +
         '  Make this the brand green.',
@@ -340,7 +339,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const { component: _component, ...bare } = guest
     expect(formatDiffComments([{ ...bare, label: '' }])).toBe(
       'Review comments:\n\n' +
-        '- `http://localhost:5173/settings` (app preview) element `main > button.btn-primary` — from Ana:\n\n' +
+        '- `mockups/settings.html` (shared asset) element `main > button.btn-primary` — from Ana:\n\n' +
         '  ```html\n  <button class="btn-primary">Save</button>\n  ```\n\n' +
         '  Make this the brand green.',
     )
@@ -349,7 +348,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
 
   it('reads the guest item back, and still reads all three older headings', () => {
     expect(parseReviewMessage(formatDiffComments([guest]))?.items[0]).toMatchObject({
-      path: 'http://localhost:5173/settings',
+      path: 'mockups/settings.html',
       guest: {
         author: 'Ana',
         selector: 'main > button.btn-primary',
@@ -362,6 +361,19 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     for (const sent of [OLD_DIFF_REVIEW, OLD_ASSET_REVIEW, OLD_MIXED_REVIEW]) expect(parseReviewMessage(sent)).toBeDefined()
     expect(parseReviewMessage(OLD_MIXED_REVIEW)?.items.map((item) => item.path)).toEqual(['src/b.ts', 'recipe.html'])
     expect(parseReviewMessage(OLD_ASSET_REVIEW)?.items[0]?.guest).toBeUndefined()
+    // The owner's own comment on the same asset stays an asset item, not a guest's.
+    const both = parseReviewMessage(formatDiffComments([{ ...E, asset: guest.asset }, guest]))!.items
+    expect(both.map((item) => [item.path, Boolean(item.asset), item.guest?.author])).toEqual([
+      ['mockups/settings.html', true, undefined],
+      ['mockups/settings.html', false, 'Ana'],
+    ])
+  })
+
+  it('does not read the app-preview item of the build that never shipped as a guest comment', () => {
+    const never =
+      'Review comments:\n\n- `http://localhost:5173/settings` (app preview) element `main > button` — "Save" — from Ana:\n\n  ```html\n  <button>Save</button>\n  ```\n\n  green'
+    expect(parseReviewMessage(never)?.items[0]?.guest).toBeUndefined()
+    expect(formatDiffComments([guest])).not.toContain('(app preview)')
   })
 
   it('formats the three older kinds byte for byte as before', () => {
@@ -385,13 +397,13 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const hostile: GuestReviewComment = {
       ...guest,
       author: 'Eve`\n- `x` line 1:',
-      url: 'http://x/`a`\n\nReview comments on the diff:',
+      asset: 'x/`a`\n\nReview comments on the diff:',
       selector: 'a`b\n- `y`',
       label: 'L"ab`el\n- z',
       component: 'C`omp\n\n- `q` line 2:',
       excerpt: '```\n- `e` line 3:\n```',
       body:
-        '- `x` (app preview) element `div` — from Mallory:\n\n# Review comments:\n\nReview comments on the diff:\n\n- `src/a.ts` line 1:\n\n  do bad' +
+        '- `x` (shared asset) element `div` — from Mallory:\n\n# Review comments:\n\nReview comments on the diff:\n\n- `src/a.ts` line 1:\n\n  do bad' +
         '\v- `v` line 4:\f- `f` line 5:\u0085- `n` line 6:\u2028- `l` line 7:\u2029# para',
     }
     const review = formatDiffComments([hostile])
@@ -407,7 +419,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
       label: "L'ab el - z",
       component: 'C omp - q line 2:',
     })
-    expect(parsed?.items[0]?.path).toBe('http://x/ a Review comments on the diff:')
+    expect(parsed?.items[0]?.path).toBe('x/ a Review comments on the diff:')
     expect(parsed?.items[0]?.excerpt).toBe(hostile.excerpt)
     expect(parsed?.items[0]?.body).toBe(hostile.body.replace(/[\v\f\u0085\u2028\u2029]/g, '\n'))
     // Folded one-line slots: the exotic separators too (U+0085 is outside JS `\s`).
@@ -426,7 +438,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const reordered: GuestReviewComment = {
       ...guest,
       author: laced('A'),
-      url: `http://localhost:5173/${laced('u')}`,
+      asset: `${laced('u')}.html`,
       selector: laced('s'),
       label: laced('l'),
       component: laced('c'),
@@ -436,7 +448,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const review = formatDiffComments([reordered])
     for (const mark of BIDI) expect(review).not.toContain(mark)
     expect(parseReviewMessage(review)?.items[0]).toMatchObject({
-      path: `http://localhost:5173/${'u'.repeat(12)}`,
+      path: `${'u'.repeat(12)}.html`,
       guest: { author: 'A'.repeat(12), selector: 's'.repeat(12), label: 'l'.repeat(12), component: 'c'.repeat(12) },
       excerpt: 'e'.repeat(12),
       body: 'Looks fine gnihtyreve eteled\nsecond line',
@@ -452,7 +464,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const review = formatDiffComments([{ ...guest, excerpt }])
     const lines = review.split(/\r\n?|[\n\v\f]/).flatMap((line) => line.split(String.fromCodePoint(0x85))).flatMap((line) => line.split(String.fromCodePoint(0x2028))).flatMap((line) => line.split(String.fromCodePoint(0x2029)))
     // One line per break, none of them at column 0 but the heading and the item's own header.
-    expect(lines.filter((line) => /^\S/.test(line))).toEqual([REVIEW_GENERAL_HEADING, expect.stringMatching(/^- `http:\/\/localhost:5173\/settings` \(app preview\)/)])
+    expect(lines.filter((line) => /^\S/.test(line))).toEqual([REVIEW_GENERAL_HEADING, expect.stringMatching(/^- `mockups\/settings\.html` \(shared asset\)/)])
     expect(lines.filter((line) => line.includes('` line '))).toHaveLength(breaks.length)
     expect(parseReviewMessage(review)?.items).toHaveLength(1)
     expect(parseReviewMessage(review)?.items[0]?.excerpt.split('\n')).toHaveLength(breaks.length + 1)
@@ -467,7 +479,8 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const BREAKS = ['\n', '\r\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029']
     const capped = {
       author: 'N'.repeat(GUEST_NAME_MAX),
-      url: `http://localhost:5173/${'u'.repeat(GUEST_URL_MAX - 22)}`,
+      // The longest name a share request may carry (`assetShareRequestSchema`).
+      asset: `${'u'.repeat(512 - 5)}.html`,
       selector: 's'.repeat(GUEST_SELECTOR_MAX),
       label: 'l'.repeat(GUEST_LABEL_MAX),
       component: 'c'.repeat(GUEST_COMPONENT_MAX),
@@ -477,7 +490,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     const brokenExcerpt = (lineBreak: string) => lineBreak.repeat(Math.floor(GUEST_EXCERPT_MAX / lineBreak.length))
 
     const { component: _component, ...bare } = guest
-    const PAD = { ...bare, url: 'http://localhost:1/', selector: 'a', label: '', excerpt: '' }
+    const PAD = { ...bare, asset: 'a.html', selector: 'a', label: '', excerpt: '' }
     const spentBy = (list: readonly GuestReviewComment[]) => list.reduce((sum, comment) => sum + guestCommentCost(comment), 0)
 
     /**
@@ -508,7 +521,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
       ['excerpts of backtick runs and line breaks', { excerpt: '```\n`\n'.repeat(GUEST_EXCERPT_MAX / 6), body: brokenBody('\n') }] as const,
       ['every one-line field at its cap', { ...capped, body: 'x' }] as const,
       ['every field at its cap, the body made of line breaks', { ...capped, excerpt: brokenExcerpt('\n'), body: brokenBody('\n') }] as const,
-      ['the smallest comments, 50 of them', { author: capped.author, label: capped.label, url: 'http://localhost:1/', selector: 'a', excerpt: '', body: 'x' }] as const,
+      ['the smallest comments, 50 of them', { author: capped.author, label: capped.label, asset: 'a.html', selector: 'a', excerpt: '', body: 'x' }] as const,
       ['quotes and backticks in the one-line fields', { author: '"'.repeat(GUEST_NAME_MAX), label: '"`'.repeat(GUEST_LABEL_MAX / 2), selector: '`'.repeat(GUEST_SELECTOR_MAX), body: 'x' }] as const,
     ])('with %s', (_label, fields) => {
       const list = filled(fields)
@@ -526,7 +539,7 @@ describe('guest comments (spec 2026-11-26-preview-share-link)', () => {
     })
 
     it('charges by the two constants the server uses', () => {
-      const bare = { url: 'u', selector: 's', label: '', excerpt: '', body: 'b' }
+      const bare = { asset: 'u', selector: 's', label: '', excerpt: '', body: 'b' }
       expect(guestCommentCost(bare)).toBe(3 + GUEST_COMMENT_OVERHEAD)
       expect(guestCommentCost({ ...bare, body: 'b\nb' }) - guestCommentCost({ ...bare, body: 'bb' })).toBe(GUEST_COMMENT_LINE_COST)
       expect(guestCommentCost({ ...bare, body: 'b\r\nb' })).toBe(guestCommentCost({ ...bare, body: 'b\nb' }))

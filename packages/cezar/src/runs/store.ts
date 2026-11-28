@@ -42,7 +42,7 @@ import { askClosedEvent } from '../core/ui-events.ts';
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import type { GuestComment, PreviewShare, RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-contract';
+import type { AssetShare, GuestComment, RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-contract';
 import { dispatchSchema, runParkedSchema, runSubjectSchema, trackerAssociationSchema, trackerAutomationEventSchema, webhookAttentionRequestSchema, webhookCompletionReasonSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { foldReportedModel, foldRunModels } from './reported-model.ts';
@@ -2542,16 +2542,16 @@ export class RunStore extends EventEmitter {
     this.emit('artifacts', { runId, ...listing });
   }
 
-  /** Fan the run's whole guest-comment list out to the SSE streams (spec 2026-11-26-preview-share-link). */
+  /** Fan the run's whole guest-comment list out to the SSE streams (spec 2026-11-28-asset-share-link). */
   publishGuestComments(runId: string, comments: GuestComment[]): void {
     if (!this.runs.has(runId)) return;
     this.emit('guest-comments', { runId, comments });
   }
 
-  /** Fan a share's whole current value out to the SSE streams; `null` ends it (spec 2026-11-26-preview-share-link).
+  /** Fan a share's whole current value out to the SSE streams; `null` ends it (spec 2026-11-28-asset-share-link).
    *  No run check: the frame that ends a share must still go out once its run is deleted. */
-  publishPreviewShare(runId: string, share: PreviewShare | null, ended?: string): void {
-    this.emit('preview-share', { runId, share, ...(ended !== undefined ? { ended } : {}) });
+  publishAssetShare(runId: string, share: AssetShare | null, ended?: string): void {
+    this.emit('asset-share', { runId, share, ...(ended !== undefined ? { ended } : {}) });
   }
 
   private touch(run: RunRecord): void {
@@ -2639,7 +2639,7 @@ export class RunStore extends EventEmitter {
       // unreachable by definition, and it may be holding megabytes of pasted screenshots.
       deleteRunDrafts(this.dataDir, id);
       deleteRunLayouts(this.dataDir, id); // spec 2026-10-07-task-workspace §5.3
-      deleteRunGuestComments(this.dataDir, id); // spec 2026-11-26-preview-share-link
+      deleteRunGuestComments(this.dataDir, id); // spec 2026-11-28-asset-share-link
       // Mediated tracker state (server/tracker/task-access.ts paths): issue text and comment bodies.
       rmSync(join(this.dataDir, 'runs', `${id}.tracker-context.json`), { force: true });
       rmSync(join(this.dataDir, 'runs', `${id}.tracker-operations`), { recursive: true, force: true });

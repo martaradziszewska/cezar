@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 /**
- * Preview Share (spec `.ai/specs/2026-11-26-preview-share-link.md`): a public link to the task's
- * app, plus the comments a guest leaves on it for the agent.
+ * Asset Share (spec `.ai/specs/2026-11-28-asset-share-link.md`): a public link to one HTML asset of
+ * a task, plus the comments a guest leaves on it for the agent.
  */
 
 export const GUEST_COMMENT_BODY_MAX = 2000;
@@ -10,7 +10,6 @@ export const GUEST_EXCERPT_MAX = 600;
 export const GUEST_NAME_MAX = 60;
 export const GUEST_LABEL_MAX = 80;
 export const GUEST_SELECTOR_MAX = 1000;
-export const GUEST_URL_MAX = 2000;
 export const GUEST_COMPONENT_MAX = 300;
 export const GUEST_COMMENTS_MAX = 50;
 export const GUEST_COMMENTS_TEXT_BUDGET = 60_000;
@@ -21,7 +20,7 @@ export const GUEST_COMMENT_OVERHEAD = 200;
 
 /**
  * What a comment spends of `GUEST_COMMENTS_TEXT_BUDGET`: never less than the review item it becomes
- * (spec 2026-11-26-preview-share-link § Storage). The server charges it; the cockpit's tests hold
+ * (spec 2026-11-28-asset-share-link § Storage). The server charges it; the cockpit's tests hold
  * the formatter to it.
  */
 export function guestCommentCost(comment: {
@@ -29,7 +28,7 @@ export function guestCommentCost(comment: {
   excerpt: string;
   label: string;
   selector: string;
-  url: string;
+  asset: string;
   component?: string | undefined;
 }): number {
   return (
@@ -38,7 +37,7 @@ export function guestCommentCost(comment: {
     costOf(comment.excerpt, LINE_BREAK_OR_BACKTICK) +
     comment.label.length +
     comment.selector.length +
-    comment.url.length +
+    comment.asset.length +
     (comment.component?.length ?? 0)
   );
 }
@@ -61,9 +60,9 @@ export function withoutBidiControls(text: string): string {
   return text.replace(BIDI_CONTROLS, '');
 }
 
-/** What a guest posts. Every string is capped: it comes from a page the cockpit does not control. */
+/** What a guest posts. Every string is capped: it comes from a page the cockpit does not control.
+ *  The asset is never the guest's to name: the server sets it from the share. */
 export const guestCommentInputSchema = z.object({
-  url: z.string().min(1).max(GUEST_URL_MAX),
   selector: z.string().min(1).max(GUEST_SELECTOR_MAX),
   label: z.string().max(GUEST_LABEL_MAX),
   excerpt: z.string().max(GUEST_EXCERPT_MAX),
@@ -72,9 +71,10 @@ export const guestCommentInputSchema = z.object({
 });
 export type GuestCommentInput = z.infer<typeof guestCommentInputSchema>;
 
-/** What the cockpit reads. `url` is the app's real address, never the tunnel's. */
+/** What the cockpit reads. `asset` is the shared artifact's listed name. */
 export const guestCommentSchema = guestCommentInputSchema.extend({
   id: z.string(),
+  asset: z.string(),
   revision: z.number().int().positive(),
   author: z.string(),
   createdAt: z.string(),
@@ -95,48 +95,47 @@ export const guestCommentsSentResponseSchema = z.object({ removed: z.array(z.str
 export type GuestCommentsSentResponse = z.infer<typeof guestCommentsSentResponseSchema>;
 
 /** `id` is the PUBLIC guest id (16 hex), never the cookie's secret. */
-export const previewShareGuestSchema = z.object({
+export const assetShareGuestSchema = z.object({
   id: z.string(),
   name: z.string(),
   code: z.string().regex(/^\d{4}$/),
   state: z.enum(['waiting', 'allowed']),
   requestedAt: z.string(),
 });
-export type PreviewShareGuest = z.infer<typeof previewShareGuestSchema>;
+export type AssetShareGuest = z.infer<typeof assetShareGuestSchema>;
 
-export const previewShareSchema = z.object({
+export const assetShareSchema = z.object({
   runId: z.string(),
-  target: z.string(),
+  /** The shared artifact's listed name, and its title (the name when the page has none). */
+  asset: z.string(),
+  assetTitle: z.string(),
   url: z.string(),
   startedAt: z.string(),
   expiresAt: z.string(),
-  guests: z.array(previewShareGuestSchema),
+  guests: z.array(assetShareGuestSchema),
 });
-export type PreviewShare = z.infer<typeof previewShareSchema>;
+export type AssetShare = z.infer<typeof assetShareSchema>;
 
-export const previewShareRequestSchema = z.object({
-  target: z.string().min(1).max(2048),
-  parentOrigin: z.string().min(1).max(512),
-});
-export type PreviewShareRequest = z.infer<typeof previewShareRequestSchema>;
+export const assetShareRequestSchema = z.object({ asset: z.string().min(1).max(512) });
+export type AssetShareRequest = z.infer<typeof assetShareRequestSchema>;
 
-export const previewShareResponseSchema = z.object({ share: previewShareSchema });
-export type PreviewShareResponse = z.infer<typeof previewShareResponseSchema>;
+export const assetShareResponseSchema = z.object({ share: assetShareSchema });
+export type AssetShareResponse = z.infer<typeof assetShareResponseSchema>;
 
-export const previewShareStateResponseSchema = z.object({ share: previewShareSchema.nullable() });
-export type PreviewShareStateResponse = z.infer<typeof previewShareStateResponseSchema>;
+export const assetShareStateResponseSchema = z.object({ share: assetShareSchema.nullable() });
+export type AssetShareStateResponse = z.infer<typeof assetShareStateResponseSchema>;
 
-export const previewShareErrorSchema = z.object({
+export const assetShareErrorSchema = z.object({
   error: z.string(),
   code: z.enum(['no-tunnel', 'tunnel-failed']).optional(),
   install: z.string().optional(),
 });
-export type PreviewShareError = z.infer<typeof previewShareErrorSchema>;
+export type AssetShareError = z.infer<typeof assetShareErrorSchema>;
 
-export const previewShareDecisionSchema = z.object({ decision: z.enum(['allow', 'deny']) });
-export type PreviewShareDecision = z.infer<typeof previewShareDecisionSchema>;
+export const assetShareDecisionSchema = z.object({ decision: z.enum(['allow', 'deny']) });
+export type AssetShareDecision = z.infer<typeof assetShareDecisionSchema>;
 
-export const previewShareGuestParamSchema = z.object({
+export const assetShareGuestParamSchema = z.object({
   id: z.string(),
   guestId: z.string().regex(/^[a-f0-9]{16}$/),
 });
@@ -151,7 +150,8 @@ export const liveSharesResponseSchema = z.object({
       projectId: z.string(),
       runId: z.string(),
       title: z.string(),
-      target: z.string(),
+      asset: z.string(),
+      assetTitle: z.string(),
       expiresAt: z.string(),
       waiting: z.number().int(),
     }),
@@ -160,15 +160,15 @@ export const liveSharesResponseSchema = z.object({
 export type LiveSharesResponse = z.infer<typeof liveSharesResponseSchema>;
 
 /** SSE frame on the global stream; carries the WHOLE current value, like `runArtifactsEventSchema`. */
-export const previewShareEventSchema = z.object({
-  type: z.literal('preview-share'),
+export const assetShareEventSchema = z.object({
+  type: z.literal('asset-share'),
   runId: z.string(),
   project: z.string().optional(),
-  share: previewShareSchema.nullable(),
+  share: assetShareSchema.nullable(),
   /** Why the share ended on its own. */
   ended: z.string().optional(),
 });
-export type PreviewShareEvent = z.infer<typeof previewShareEventSchema>;
+export type AssetShareEvent = z.infer<typeof assetShareEventSchema>;
 
 export const guestCommentsEventSchema = z.object({
   type: z.literal('guest-comments'),

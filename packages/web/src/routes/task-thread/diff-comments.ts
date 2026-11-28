@@ -24,7 +24,7 @@ import { toast } from '@/components/ui/toaster'
  * in-memory list per run (merged with the server's on every save) rather than in `useDraft`.
  *
  * The same list also holds comments pinned to elements of an HTML asset (`AssetComment`, left on
- * the Assets tab), so both kinds ride one review message. Guest comments from a shared Preview
+ * the Assets tab), so both kinds ride one review message. Guest comments from a shared asset
  * join them in the review, but are read live from their own server list, never stored here.
  */
 
@@ -56,7 +56,7 @@ export interface AssetComment {
 
 export type NewAssetComment = Omit<AssetComment, 'id' | 'kind'>
 
-/** A comment a guest left on the shared Preview. Server-owned (spec 2026-11-26-preview-share-link
+/** A comment a guest left on a shared asset. Server-owned (spec 2026-11-28-asset-share-link
  *  § Storage): read from its own query, never stored in the `diff-comments` draft. */
 export interface GuestReviewComment extends GuestComment {
   kind: 'guest'
@@ -67,7 +67,7 @@ export interface GuestReviewComment extends GuestComment {
 }
 
 /** A guest comment rides a review only after the owner has had this long to read it: the cache
- *  holds one the moment its frame lands (spec 2026-11-26-preview-share-link § Exposure, C1). */
+ *  holds one the moment its frame lands (spec 2026-11-28-asset-share-link § Exposure, C1). */
 export const GUEST_HOLD_MS = 5_000
 
 /** Everything the review carries: a diff line comment, an asset element comment or a guest's. */
@@ -202,15 +202,15 @@ function sortGuestComments<C extends { createdAt: string }>(comments: readonly C
 export const REVIEW_HEADING = 'Review comments on the diff:'
 export const REVIEW_ASSETS_HEADING = 'Review comments on assets:'
 export const REVIEW_MIXED_HEADING = 'Review comments on the diff and assets:'
-/** Any review a guest comment rides in (spec 2026-11-26-preview-share-link). */
+/** Any review a guest comment rides in (spec 2026-11-28-asset-share-link). */
 export const REVIEW_GENERAL_HEADING = 'Review comments:'
 const REVIEW_HEADINGS = [REVIEW_HEADING, REVIEW_ASSETS_HEADING, REVIEW_MIXED_HEADING]
 
 /** What an asset comment's item header says after the file name — `parseReviewMessage` reads it back. */
 const ASSET_ITEM = /^\(HTML asset\) element `([^`]+)`(?: — "(.*)")?$/
-/** A guest item's header after the page address. Label and author never hold `"` (`guestWhere`),
+/** A guest item's header after the asset's name. Label and author never hold `"` (`guestWhere`),
  *  so where one ends and the other starts is unambiguous. */
-const GUEST_ITEM = /^\(app preview\) element `([^`]+)`(?: — "([^"]*)")? — from ([^"]+)$/
+const GUEST_ITEM = /^\(shared asset\) element `([^`]+)`(?: — "([^"]*)")? — from ([^"]+)$/
 
 function assetWhere(comment: AssetComment): string {
   const label = comment.label ? ` — "${comment.label.replace(/"/g, "'")}"` : ''
@@ -231,7 +231,7 @@ function guestLines(text: string): string {
 function guestWhere(comment: GuestComment): string {
   const label = guestLine(comment.label, '').replace(/"/g, "'")
   const author = guestLine(comment.author, 'a guest').replace(/"/g, "'")
-  return `\`${guestLine(comment.url, '?')}\` (app preview) element \`${guestLine(comment.selector, '?')}\`${label ? ` — "${label}"` : ''} — from ${author}`
+  return `\`${guestLine(comment.asset, '?')}\` (shared asset) element \`${guestLine(comment.selector, '?')}\`${label ? ` — "${label}"` : ''} — from ${author}`
 }
 
 /**
@@ -242,7 +242,7 @@ export function readableGuestComment<C extends GuestComment>(comment: C): C {
   return {
     ...comment,
     author: withoutBidiControls(comment.author),
-    url: withoutBidiControls(comment.url),
+    asset: withoutBidiControls(comment.asset),
     selector: withoutBidiControls(comment.selector),
     label: withoutBidiControls(comment.label),
     excerpt: withoutBidiControls(comment.excerpt),
@@ -309,7 +309,7 @@ export interface ReviewItem {
   body: string
   /** An asset element comment: `path` is the asset's name, `selector` the element. */
   asset?: { selector: string }
-  /** A guest's comment on the shared Preview: `path` is the page address. Everything the agent
+  /** A guest's comment on a shared asset: `path` is the asset's name. Everything the agent
    *  read is kept, so the card can show the owner all of it (C1). */
   guest?: { selector: string; author: string; label: string; component?: string }
 }
@@ -404,7 +404,7 @@ function readItem(headerPath: string, label: string, content: string[]): ReviewI
 
 /** `formatGuestComment` read back: an optional `component:` line, the ```html excerpt, the note. */
 function readGuestItem(
-  url: string,
+  asset: string,
   label: string,
   head: { selector: string; author: string; label: string },
   content: string[],
@@ -427,7 +427,7 @@ function readGuestItem(
     rest = close === -1 ? [] : rest.slice(close + 1)
   }
   return {
-    path: url,
+    path: asset,
     label,
     guest: { ...head, ...(component ? { component } : {}) },
     side: 'new',
@@ -544,7 +544,7 @@ export interface DiffComments {
   comments: DiffComment[]
   /** The comments pinned to elements of HTML assets — what the Assets tab draws. */
   assetComments: AssetComment[]
-  /** Guests' comments on the shared Preview, oldest first — server-owned, read live. */
+  /** Guests' comments on shared assets, oldest first — server-owned, read live. */
   guestComments: GuestReviewComment[]
   /** The stored kinds, then the guests' — what the composer shows as chips and a send carries. */
   all: ReviewComment[]
@@ -642,7 +642,7 @@ export function useDiffComments(runId: string, options: { now?: () => number; ma
   const store = storeFor(queryClient)
   const drafts = useRunDrafts(runId === '' ? undefined : runId)
   // Derived from the query on every render, never copied into the store: an emptied list (the
-  // server restarted) must take the chips with it (spec 2026-11-26-preview-share-link § Storage).
+  // server restarted) must take the chips with it (spec 2026-11-28-asset-share-link § Storage).
   const guestListing = useGuestComments(runId === '' ? undefined : runId).data
   const listedGuests = useMemo(() => asGuestComments(guestListing), [guestListing])
   const clock = useRef(options.now ?? Date.now)

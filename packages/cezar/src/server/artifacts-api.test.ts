@@ -7,7 +7,7 @@ import { runArtifactsEventSchema, runArtifactsResponseSchema } from '@open-merca
 import { MAX_ARTIFACT_BYTES } from '../runs/artifacts.ts';
 import { artifactsDir, RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
-import { artifactCsp, artifactPickerOrigins, artifactPickerTag, artifactsBaseUrl, artifactsFrame, openArtifact, sameFileInside } from './artifacts.ts';
+import { SHARED_ARTIFACT_SANDBOX, artifactCsp, artifactPickerOrigins, artifactPickerTag, artifactsBaseUrl, artifactsFrame, openArtifact, sameFileInside } from './artifacts.ts';
 import { artifactPickerScript } from './preview/picker-script.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import { createApp } from './server.ts';
@@ -39,6 +39,14 @@ describe('artifactCsp — the exact header (spec Q3/Q4)', () => {
 
   it('never grants the same origin, in either mode', () => {
     for (const cdn of [true, false]) expect(artifactCsp(cdn)).not.toContain('allow-same-origin');
+  });
+
+  it('gives a shared frame scripts only, and changes no other directive (spec 2026-11-28-asset-share-link C15)', () => {
+    for (const cdn of [true, false]) {
+      const shared = artifactCsp(cdn, undefined, SHARED_ARTIFACT_SANDBOX);
+      expect(shared.startsWith("sandbox allow-scripts; default-src 'none'; ")).toBe(true);
+      expect(shared.replace('sandbox allow-scripts;', 'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;')).toBe(artifactCsp(cdn));
+    }
   });
 
   it("admits images and media from the run's own artifacts URL only — never 'self' or a host", () => {

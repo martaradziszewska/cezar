@@ -14,7 +14,7 @@ import {
 } from './share-tunnel-record.ts';
 
 /**
- * A hard-killed cezar leaves `cloudflared` running (spec `.ai/specs/2026-11-26-preview-share-link.md`
+ * A hard-killed cezar leaves `cloudflared` running (spec `.ai/specs/2026-11-28-asset-share-link.md`
  * § Exposure, "A stray child"). Every case works on a temp file with a fake `ps` and `kill`: no
  * test reads `~/.cache` or signals a real process.
  */

@@ -78,7 +78,7 @@ const health = (terminal: boolean): HealthResponse => ({
   capabilities: {
     localHandoff: true,
     terminal,
-    designMode: true, previewShare: false,
+    designMode: true, assetShare: false,
     tokenMetrics: true,
     tokenUsageMetrics: true,
     costMetrics: true,
@@ -855,15 +855,15 @@ describe('the built-in Review layout', () => {
   })
 })
 
-describe('a guest comment chip in the Chat column (spec 2026-11-26-preview-share-link)', () => {
-  it('opens the Preview beside the chat, on the comment’s page', async () => {
+describe('a guest comment chip in the Chat column (spec 2026-11-28-asset-share-link)', () => {
+  it('links to the commented asset on the Assets tab, and opens no Preview', async () => {
     const waiting: ApiRun = { ...RUN, status: 'waiting' }
     const guest = {
       id: 'g1',
       revision: 1,
       author: 'Ana',
       createdAt: '2026-11-26T10:00:00.000Z',
-      url: 'http://localhost:5173/settings',
+      asset: 'mockups/settings.html',
       selector: 'main > button',
       label: 'Save',
       excerpt: '',
@@ -882,8 +882,9 @@ describe('a guest comment chip in the Chat column (spec 2026-11-26-preview-share
     }))
     renderWorkspace()
     await ready()
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment from Ana on http://localhost:5173/settings element Save' }, { timeout: 5000 }))
-    await waitFor(() => expect(columnViews()).toEqual(['session', 'browser']))
-    expect(document.querySelector('[data-view="browser"]')?.textContent).toContain('localhost:5173/settings')
+    const chip = await screen.findByRole('link', { name: 'Comment from Ana on mockups/settings.html element Save' }, { timeout: 5000 })
+    expect(chip.getAttribute('href')).toMatch(new RegExp(`/tasks/${RUN.id}/assets/mockups%2Fsettings\\.html$`))
+    expect(screen.queryByRole('button', { name: /^Comment from Ana on / })).toBeNull()
+    expect(columnViews()).not.toContain('browser')
   }, 10_000)
 })

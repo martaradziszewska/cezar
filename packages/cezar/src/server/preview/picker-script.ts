@@ -34,14 +34,12 @@ export interface PickerConfig {
   parentOrigins?: string[];
   /** The app's real origin, so a reported address names the dev server and not the proxy. */
   upstreamOrigin: string;
-  /** The share link's guest page: no parent, an in-page host (spec 2026-11-26-preview-share-link § Mechanism 8). */
-  inPage?: boolean;
 }
 
 function pickerCore(config: PickerConfig): string {
   // `<` cannot end a script in a .js file, and is escaped so the config stays inert when inlined.
   const json = JSON.stringify({ ...config, htmlMax: PICK_HTML_MAX, textMax: PICK_TEXT_MAX }).replace(/</g, '\\u003c');
-  return (config.inPage ? IN_PAGE_SOURCE : PICKER_SOURCE).replace('__CEZAR_DESIGN_CONFIG__', () => json);
+  return PICKER_SOURCE.replace('__CEZAR_DESIGN_CONFIG__', () => json);
 }
 
 export function pickerScript(config: { parentOrigin: string; upstreamOrigin: string }): string {
@@ -57,82 +55,12 @@ export function artifactPickerScript(parentOrigins: string[]): string {
   return pickerCore({ parentOrigins, upstreamOrigin: '' });
 }
 
-/**
- * The picker for the share link's guest page. It talks to `window.__cezarShareHost` (set by the
- * guest host, which runs first) and listens through `window.__cezarSharePicker`; everything else is
- * the one picker above.
- */
-export function guestPickerCore(upstreamOrigin: string): string {
-  return pickerCore({ upstreamOrigin, inPage: true });
-}
-
-/**
- * How the picker reaches its host — the ONLY part that differs between the framed picker and the
- * in-page one. Each piece is spliced into the one source below; `ownUi` is empty when framed.
- */
-interface Transport {
-  guard: string;
-  post: string;
-  ownUi: string;
-  listen: string;
-}
-
-const FRAMED: Transport = {
-  guard: String.raw`  if (window.__cezarDesign) return;
+const PICKER_SOURCE = String.raw`(function () {
+  'use strict';
+  if (window.__cezarDesign) return;
   window.__cezarDesign = true;
   // Only as a framed page: opened in a tab of its own there is no cockpit to report to.
-  if (window.parent === window) return;`,
-  post: String.raw`  function post(message) {
-    message.source = 'cezar-design';
-    for (var i = 0; i < origins.length; i++) {
-      try { window.parent.postMessage(message, origins[i]); } catch (e) { /* parent gone */ }
-    }
-  }`,
-  ownUi: '',
-  listen: String.raw`  window.addEventListener('message', function (event) {
-    if (origins.indexOf(event.origin) === -1 || event.source !== window.parent) return;
-    var data = event.data;
-    if (!data || data.source !== 'cezar-design-host') return;
-    if (data.type === 'set-active') setActive(!!data.active);
-    else if (data.type === 'set-marks' && Array.isArray(data.marks)) setMarks(data.marks.slice(0, 50));
-  });
-  window.addEventListener('keydown', onToggleKey, true);`,
-};
-
-// No Alt+D forwarding in page: there is no cockpit to forward to, and the key is the app's.
-const IN_PAGE: Transport = {
-  guard: String.raw`  var shareHost = window.__cezarShareHost;
-  if (!shareHost || window.__cezarSharePicker) return;`,
-  post: String.raw`  function post(message) {
-    message.source = 'cezar-design';
-    try { shareHost.receive(message); } catch (e) { /* the host failed; picking carries on */ }
-  }`,
-  // The guest bar and popup live in the page: their own clicks and keys are not the app's to pick.
-  ownUi: String.raw`  var shareElement = shareHost.element;
-  function forApp(handler, otherwise) {
-    return function (event) {
-      if (event.target !== shareElement) return handler(event);
-      if (otherwise) otherwise();
-    };
-  }
-  onMove = forApp(onMove, function () { highlight(null); });
-  onClick = forApp(onClick);
-  onKey = forApp(onKey);
-  swallow = forApp(swallow);
-
-`,
-  listen: String.raw`  window.__cezarSharePicker = {
-    send: function (data) {
-      if (!data || data.source !== 'cezar-design-host') return;
-      if (data.type === 'set-active') setActive(!!data.active);
-      else if (data.type === 'set-marks' && Array.isArray(data.marks)) setMarks(data.marks.slice(0, 50));
-    }
-  };`,
-};
-
-const pickerSource = (t: Transport): string => String.raw`(function () {
-  'use strict';
-${t.guard}
+  if (window.parent === window) return;
 
   var cfg = __CEZAR_DESIGN_CONFIG__;
   var origins = cfg.parentOrigins || [cfg.parentOrigin];
@@ -150,7 +78,12 @@ ${t.guard}
   var nextKey = 1;
   var markTimer = null;
 
-${t.post}
+  function post(message) {
+    message.source = 'cezar-design';
+    for (var i = 0; i < origins.length; i++) {
+      try { window.parent.postMessage(message, origins[i]); } catch (e) { /* parent gone */ }
+    }
+  }
 
   function pageUrl() {
     return cfg.upstreamOrigin + location.pathname + location.search + location.hash;
@@ -538,7 +471,7 @@ ${t.post}
     placeMarks();
   }
 
-${t.ownUi}  var SWALLOWED = ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'dblclick', 'contextmenu', 'submit'];
+  var SWALLOWED = ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'dblclick', 'contextmenu', 'submit'];
 
   function setActive(next) {
     if (next === active) return;
@@ -557,7 +490,14 @@ ${t.ownUi}  var SWALLOWED = ['mousedown', 'mouseup', 'pointerdown', 'pointerup',
     }
   }
 
-${t.listen}
+  window.addEventListener('message', function (event) {
+    if (origins.indexOf(event.origin) === -1 || event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || data.source !== 'cezar-design-host') return;
+    if (data.type === 'set-active') setActive(!!data.active);
+    else if (data.type === 'set-marks' && Array.isArray(data.marks)) setMarks(data.marks.slice(0, 50));
+  });
+  window.addEventListener('keydown', onToggleKey, true);
 
   // Marks outlive the picker being switched off, so they follow the page on their own listeners.
   window.addEventListener('scroll', onScroll, true);
@@ -566,6 +506,3 @@ ${t.listen}
   post({ type: 'ready', url: pageUrl() });
 })();
 `;
-
-const PICKER_SOURCE = pickerSource(FRAMED);
-const IN_PAGE_SOURCE = pickerSource(IN_PAGE);

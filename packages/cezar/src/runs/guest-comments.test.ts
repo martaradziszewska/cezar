@@ -19,7 +19,7 @@ import {
   updateGuestComment,
 } from './guest-comments.ts';
 
-const pick = { url: 'http://localhost:5173/', selector: 'main > button', label: 'Save', excerpt: 'Save' };
+const pick = { asset: 'settings-mockup.html', selector: 'main > button', label: 'Save', excerpt: 'Save' };
 let dir: string;
 
 beforeEach(() => {
@@ -33,8 +33,8 @@ function add(body: string, guestId = 'g1', runId = 'r1') {
   return r.comment;
 }
 /** What a comment with no line break and no backtick is charged: its text and the fixed overhead. */
-const size = (c: { body: string; excerpt: string; label: string; selector: string; url: string; component?: string }) =>
-  c.body.length + c.excerpt.length + c.label.length + c.selector.length + c.url.length + (c.component?.length ?? 0) + GUEST_COMMENT_OVERHEAD;
+const size = (c: { body: string; excerpt: string; label: string; selector: string; asset: string; component?: string }) =>
+  c.body.length + c.excerpt.length + c.label.length + c.selector.length + c.asset.length + (c.component?.length ?? 0) + GUEST_COMMENT_OVERHEAD;
 /** How many comments of `charge` the budget holds. */
 const fits = (charge: number) => Math.floor(GUEST_COMMENTS_TEXT_BUDGET / charge);
 

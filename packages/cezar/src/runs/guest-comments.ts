@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { atomicWriteJsonSync } from '../workspace/config.ts';
 
 /**
- * The server-owned guest-comment list per run (spec 2026-11-26-preview-share-link § Storage):
+ * The server-owned guest-comment list per run (spec 2026-11-28-asset-share-link § Storage):
  * `<dataDir>/guest-comments/<runId>.json`. Every change is a synchronous read-modify-write, so two
  * requests in one process cannot interleave. Reads never throw; a corrupt file is an empty list.
  */
@@ -71,7 +71,7 @@ export type GuestCommentWrite =
 export function addGuestComment(
   dataDir: string,
   runId: string,
-  input: GuestCommentInput & { author: string; guestId: string },
+  input: GuestCommentInput & { asset: string; author: string; guestId: string },
   now: () => Date = () => new Date(),
 ): GuestCommentWrite {
   const list = readGuestComments(dataDir, runId);

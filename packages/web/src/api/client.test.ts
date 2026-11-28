@@ -3,16 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   ShareError,
-  decidePreviewShareGuest,
-  extendPreviewShare,
+  decideAssetShareGuest,
+  extendAssetShare,
   deleteGuestComment,
   getGuestComments,
   getLiveShares,
-  getPreviewShare,
+  getAssetShare,
   markGuestCommentsSent,
-  removePreviewShareGuest,
-  startPreviewShare,
-  stopPreviewShare,
+  removeAssetShareGuest,
+  startAssetShare,
+  stopAssetShare,
   archiveFinished,
   archiveRun,
   cancelRun,
@@ -904,21 +904,21 @@ describe('whether cezar still answers plain requests', () => {
   })
 })
 
-describe('startPreviewShare (spec 2026-11-26-preview-share-link)', () => {
-  const input = { target: 'http://127.0.0.1:5173', parentOrigin: 'http://127.0.0.1:4321' }
+describe('startAssetShare (spec 2026-11-28-asset-share-link)', () => {
+  const input = { asset: 'mockups/settings.html' }
 
-  it('posts the target and returns the share', async () => {
-    const share = { runId: 'r 1', target: input.target, url: 'https://t.example/s/x', startedAt: 'a', expiresAt: 'b', guests: [] }
+  it('posts the asset and returns the share', async () => {
+    const share = { runId: 'r 1', asset: input.asset, assetTitle: 'Settings mockup', url: 'https://t.example/s/x', startedAt: 'a', expiresAt: 'b', guests: [] }
     reply({ share })
-    await expect(startPreviewShare('r 1', input)).resolves.toEqual({ share })
-    expect(lastCall().path).toContain('/runs/r%201/preview-share')
+    await expect(startAssetShare('r 1', input)).resolves.toEqual({ share })
+    expect(lastCall().path).toContain('/runs/r%201/asset-share')
     expect(lastCall().method).toBe('POST')
     expect(lastCall().body).toEqual(input)
   })
 
   it('throws a ShareError carrying status, code and install from the 409 body', async () => {
     reply({ error: 'cloudflared is not installed', code: 'no-tunnel', install: 'brew install cloudflared' }, { status: 409 })
-    const failure = await startPreviewShare('r1', input).catch((error: unknown) => error)
+    const failure = await startAssetShare('r1', input).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(ShareError)
     expect(failure).toMatchObject({
       message: 'cloudflared is not installed',
@@ -930,32 +930,32 @@ describe('startPreviewShare (spec 2026-11-26-preview-share-link)', () => {
 
   it('falls back to the usual text when the body is not JSON', async () => {
     fetchMock.mockResolvedValue(new Response('<html>bad gateway</html>', { status: 502, statusText: 'Bad Gateway' }))
-    const failure = await startPreviewShare('r1', input).catch((error: unknown) => error)
+    const failure = await startAssetShare('r1', input).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(ShareError)
     expect(failure).toMatchObject({ message: '502 Bad Gateway', status: 502 })
     expect((failure as ShareError).code).toBeUndefined()
   })
 })
 
-describe('preview share calls', () => {
+describe('asset share calls', () => {
   it('reach the ten routes with the right verbs and paths', async () => {
     const reply = (body: unknown): void => {
       fetchMock.mockImplementation(async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
     }
     reply({ share: null })
-    await getPreviewShare('r1')
-    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['GET', '/runs/r1/preview-share'])
-    await stopPreviewShare('r1')
-    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/preview-share'])
+    await getAssetShare('r1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['GET', '/runs/r1/asset-share'])
+    await stopAssetShare('r1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/runs/r1/asset-share'])
     // The workspace indicator stops a share of another project than the one on screen.
-    await stopPreviewShare('r1', 'other')
-    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/p/other/runs/r1/preview-share'])
-    await extendPreviewShare('r 1')
-    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['POST', '/runs/r%201/preview-share/extend'])
-    await decidePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa', 'allow')
+    await stopAssetShare('r1', 'other')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['DELETE', '/p/other/runs/r1/asset-share'])
+    await extendAssetShare('r 1')
+    expect([lastCall().method, lastCall().path.split('/api/v1')[1]]).toEqual(['POST', '/runs/r%201/asset-share/extend'])
+    await decideAssetShareGuest('r1', 'aaaaaaaaaaaaaaaa', 'allow')
     expect([lastCall().method, lastCall().body]).toEqual(['POST', { decision: 'allow' }])
-    expect(lastCall().path).toContain('/runs/r1/preview-share/guests/aaaaaaaaaaaaaaaa')
-    await removePreviewShareGuest('r1', 'aaaaaaaaaaaaaaaa')
+    expect(lastCall().path).toContain('/runs/r1/asset-share/guests/aaaaaaaaaaaaaaaa')
+    await removeAssetShareGuest('r1', 'aaaaaaaaaaaaaaaa')
     expect(lastCall().method).toBe('DELETE')
     reply({ comments: [] })
     await getGuestComments('r1')
@@ -968,7 +968,7 @@ describe('preview share calls', () => {
     expect(lastCall().path).toContain('/runs/r1/guest-comments/sent')
     reply({ shares: [] })
     await getLiveShares()
-    expect(lastCall().path).toContain('/api/v1/workspace/preview-shares')
+    expect(lastCall().path).toContain('/api/v1/workspace/asset-shares')
   })
 })
 

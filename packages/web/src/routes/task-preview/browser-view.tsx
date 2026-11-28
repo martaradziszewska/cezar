@@ -32,7 +32,6 @@ import {
   type BrowserState,
 } from '../task-workspace/layout-state'
 import { parseDesignPick, type NewDesignPick } from './design-picks'
-import { ShareControl } from './share-control'
 
 /**
  * The task's Preview tab (spec `.ai/specs/2026-10-09-design-mode.md`): its own tabs,
@@ -71,7 +70,6 @@ export function BrowserView({
   onDesignEscape,
   designTray,
   renderEmpty,
-  runId,
 }: {
   state: BrowserState
   /** Called only for changes worth keeping — a successful load, a tab opened or closed — never
@@ -104,8 +102,6 @@ export function BrowserView({
   /** What an empty tab shows instead of the bare hint — the task's "Run the app". Handed the
    *  same `open` the address bar uses. Only on a cockpit that can frame a local address. */
   renderEmpty?: (open: (url: string) => void) => React.ReactNode
-  /** The task whose Preview this is: given, the toolbar offers Share (spec 2026-11-26-preview-share-link). */
-  runId?: string
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -737,7 +733,6 @@ export function BrowserView({
             </Button>
           </IconTooltip>
         ) : null}
-        {runId !== undefined ? <ShareControl runId={runId} targetOrigin={targetOrigin} path={sharePath(shown, target, targetOrigin)} /> : null}
       </div>
 
       <div ref={areaRef} className="relative min-h-0 flex-1">
@@ -1036,19 +1031,6 @@ export function designOrigin(url: string): string | null {
 }
 
 const DESIGN_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])$/i
-
-/** Path + search of the page on screen for a share's `next`: where the page moved to when it said so. */
-function sharePath(shown: string, target: string, origin: string | null): string {
-  for (const url of [shown, target]) {
-    try {
-      const parsed = new URL(url)
-      if (parsed.origin === origin) return parsed.pathname + parsed.search
-    } catch {
-      // not an address; try the next
-    }
-  }
-  return '/'
-}
 
 /** `url` without its fragment — what names the document. */
 function withoutHash(url: string): string {

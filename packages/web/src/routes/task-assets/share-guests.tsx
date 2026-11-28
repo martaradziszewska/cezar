@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { PreviewShareGuest } from '@open-mercato/cezar-api-client'
+import type { AssetShareGuest } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -18,15 +18,15 @@ export interface GuestDecisions {
   held: ReadonlyMap<string, Held>
   /** The row order the owner was looking at when they decided, kept until the window ends. */
   order: readonly string[] | null
-  run: (guest: PreviewShareGuest, outcome: Outcome, shown: readonly string[], task: () => Promise<boolean>) => void
+  run: (guest: AssetShareGuest, outcome: Outcome, shown: readonly string[], task: () => Promise<boolean>) => void
   /** The share ended: nothing of it, an unanswered decision included, may hold the next one's buttons. */
   reset: () => void
 }
 
-const NO_GUESTS: readonly PreviewShareGuest[] = []
+const NO_GUESTS: readonly AssetShareGuest[] = []
 
 /** The rows the owner did not just decide, in the server's order: what a change of is not theirs. */
-function othersOf(guests: readonly PreviewShareGuest[], own: ReadonlyMap<string, unknown>): string {
+function othersOf(guests: readonly AssetShareGuest[], own: ReadonlyMap<string, unknown>): string {
   return guests
     .filter((guest) => !own.has(guest.id))
     .map((guest) => `${guest.id}:${guest.state}`)
@@ -34,11 +34,11 @@ function othersOf(guests: readonly PreviewShareGuest[], own: ReadonlyMap<string,
 }
 
 /**
- * One guard for Allow / Deny / Remove (spec 2026-11-26-preview-share-link, D3): rows are added by
+ * One guard for Allow / Deny / Remove (spec 2026-11-28-asset-share-link, D3): rows are added by
  * anyone holding the link, and the server re-sorts and drops them, so without it a stranger's
  * Allow slides under the pointer.
  */
-export function useGuestDecisions(guests: readonly PreviewShareGuest[] = NO_GUESTS): GuestDecisions {
+export function useGuestDecisions(guests: readonly AssetShareGuest[] = NO_GUESTS): GuestDecisions {
   const [deciding, setDeciding] = useState(false)
   const [held, setHeld] = useState<ReadonlyMap<string, Held>>(() => new Map())
   const [order, setOrder] = useState<readonly string[] | null>(null)
@@ -123,7 +123,7 @@ export function useGuestDecisions(guests: readonly PreviewShareGuest[] = NO_GUES
 }
 
 /** Waiting rows first, unless a decision just froze the order the owner was looking at. */
-export function guestOrder(guests: readonly PreviewShareGuest[], frozen: readonly string[] | null): string[] {
+export function guestOrder(guests: readonly AssetShareGuest[], frozen: readonly string[] | null): string[] {
   const sorted = [...guests.filter((guest) => guest.state === 'waiting'), ...guests.filter((guest) => guest.state === 'allowed')]
   if (frozen === null) return sorted.map((guest) => guest.id)
   return [...frozen, ...sorted.map((guest) => guest.id).filter((id) => !frozen.includes(id))]
@@ -138,12 +138,12 @@ export function ShareGuests({
   onDecide,
   onRemove,
 }: {
-  guests: readonly PreviewShareGuest[]
+  guests: readonly AssetShareGuest[]
   /** False while sharing is off: the server refuses decisions then. */
   decisions: boolean
   state: GuestDecisions
-  onDecide: (guest: PreviewShareGuest, decision: 'allow' | 'deny', shown: readonly string[]) => void
-  onRemove: (guest: PreviewShareGuest, shown: readonly string[]) => void
+  onDecide: (guest: AssetShareGuest, decision: 'allow' | 'deny', shown: readonly string[]) => void
+  onRemove: (guest: AssetShareGuest, shown: readonly string[]) => void
 }) {
   const byId = new Map(guests.map((guest) => [guest.id, guest]))
   const shown = guestOrder(guests, state.order)

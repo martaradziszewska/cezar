@@ -6,16 +6,36 @@ import {
   GUEST_SELECTOR_MAX,
 } from '@open-mercato/cezar-contract';
 
-import { guestPickerCore } from './picker-script.ts';
+/**
+ * The share link's guest page (spec 2026-11-28-asset-share-link § Mechanism 4, C3): a cezar-written
+ * shell that frames the shared asset and hosts the comment bar and popup. It is the guest's
+ * counterpart of the cockpit's `AssetCommentsLayer` and speaks the framed picker's protocol to the
+ * frame. The asset stays in its own opaque origin, so nothing here is reachable from its script.
+ */
+
+/** The shell's CSP: its own nonce'd script and style, the frame, and the comment endpoints. */
+export function guestShellCsp(nonce: string): string {
+  return [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
+    "frame-src 'self'",
+    "connect-src 'self'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 /**
- * The share link's guest script (spec 2026-11-26-preview-share-link § Mechanism 8, C3): an in-page
- * host for the Design Mode picker. A corner bar and a comment popup in one closed shadow root,
- * saving to the share listener's `/__cezar_share__/comments`. Plain ES5-flavoured source, for the
- * same reasons as the picker.
+ * The whole document served at `/` to an allowed guest. `frameSrc` is this guest's asset address
+ * (C14); `name` is a stranger's text and rides as JSON data, never as markup or source.
  */
-export function guestScript(config: { upstreamOrigin: string; name: string }): string {
-  // The name is a stranger's text: it rides as JSON data, never as source.
+export function guestShell(config: { name: string; frameSrc: string; nonce: string; title: string }): string {
   const json = JSON.stringify({
     name: config.name,
     bodyMax: GUEST_COMMENT_BODY_MAX,
@@ -27,12 +47,48 @@ export function guestScript(config: { upstreamOrigin: string; name: string }): s
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-  // The host runs first: the picker finds `__cezarShareHost` when it starts.
-  return HOST_SOURCE.replace('__CEZAR_SHARE_CONFIG__', () => json) + guestPickerCore(config.upstreamOrigin);
+  const nonce = escapeHtml(config.nonce);
+  const title = escapeHtml(config.title);
+  // No `sandbox` attribute: the asset's own response header sandboxes it, opened here or directly.
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>${title}</title>
+<style nonce="${nonce}">${STYLE}</style>
+</head>
+<body>
+<iframe id="asset" src="${escapeHtml(config.frameSrc)}" title="${title}" referrerpolicy="no-referrer"></iframe>
+<div class="ui">
+<div class="bar" role="toolbar" aria-label="Comments">
+<button type="button" class="toggle" data-slot="toggle" aria-pressed="false">Comment</button>
+<span class="count" data-slot="count" title="Your comments">0</span>
+<span class="name" data-slot="name"></span>
+</div>
+<div class="popup" data-slot="popup" role="dialog" aria-label="Comment on this element" hidden>
+<div class="element" data-slot="element"></div>
+<textarea data-slot="body" maxlength="${GUEST_COMMENT_BODY_MAX}" placeholder="Leave a comment…" aria-label="Comment"></textarea>
+<div class="message" data-slot="message" role="alert" hidden></div>
+<div class="actions">
+<button type="button" class="delete" data-slot="delete">Delete</button>
+<button type="button" data-slot="cancel">Cancel</button>
+<button type="button" class="save" data-slot="save">Save</button>
+</div>
+</div>
+</div>
+<script type="application/json" id="cezar-share-config">${json}</script>
+<script nonce="${nonce}">${SHELL_SOURCE}</script>
+</body>
+</html>
+`;
 }
 
 const STYLE = String.raw`
-:host { all: initial; }
+html, body { margin: 0; height: 100%; background: #ffffff; }
+#asset { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
 .ui {
   --bg: #ffffff; --fg: #16181d; --muted: #5b6270; --line: #cfd4dc; --field: #ffffff; --danger: #b42318;
   font: 500 13px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg);
@@ -41,40 +97,41 @@ const STYLE = String.raw`
   .ui { --bg: #181b21; --fg: #eceef2; --muted: #a3abb8; --line: #333945; --field: #0f1115; --danger: #ff8a80; }
 }
 [hidden] { display: none !important; }
-* { box-sizing: border-box; }
+.ui, .ui * { box-sizing: border-box; }
 .bar, .popup { position: fixed; z-index: 2147483647; background: var(--bg); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 6px 24px rgba(0, 0, 0, .2); }
 .bar { right: 16px; bottom: 16px; display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 32px); padding: 5px 12px 5px 5px; border-radius: 999px; }
 .count { min-width: 22px; padding: 2px 6px; border-radius: 999px; background: #a3e635; color: #1a2e05; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
 .name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
-button { font: inherit; color: inherit; cursor: pointer; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: transparent; }
-button:disabled { opacity: .6; cursor: default; }
-button:focus-visible, textarea:focus-visible { outline: 2px solid #4f8cff; outline-offset: 2px; }
-.toggle[aria-pressed="true"], .save { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+.ui button { font: inherit; color: inherit; cursor: pointer; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: transparent; }
+.ui button:disabled { opacity: .6; cursor: default; }
+.ui button:focus-visible, .ui textarea:focus-visible { outline: 2px solid #4f8cff; outline-offset: 2px; }
+.ui .toggle[aria-pressed="true"], .ui .save { background: #2563eb; border-color: #2563eb; color: #ffffff; }
 .popup { width: min(320px, calc(100vw - 16px)); padding: 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 8px; }
 .element { font: 600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-textarea { width: 100%; min-height: 76px; resize: vertical; padding: 8px; font: inherit; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 8px; }
+.ui textarea { width: 100%; min-height: 76px; resize: vertical; padding: 8px; font: inherit; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 8px; }
 .message { color: var(--danger); font-size: 12px; }
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
 .delete { margin-right: auto; }
 `;
 
-// Every guest-visible string (the name, a body, a label, a server error) goes in as text or a field value.
-const HOST_SOURCE = String.raw`(function () {
+// Every guest-visible string (the name, a body, a selector, a server error) goes in as text or a
+// field value. What the frame reports is the asset's to forge, so it is read as data and nothing more.
+// Positions are set through the CSSOM: the CSP has no 'unsafe-inline' for a style attribute.
+const SHELL_SOURCE = String.raw`(function () {
   'use strict';
-  if (window.__cezarShareHost) return;
-  var cfg = __CEZAR_SHARE_CONFIG__;
+  var cfg = JSON.parse(document.getElementById('cezar-share-config').textContent);
   var BASE = '/__cezar_share__/';
   var ENDED = 'This link has ended — your comment was not saved.';
   var FAILED = 'Your comment could not be saved. Try again.';
-  var CSS = ` + JSON.stringify(STYLE) + String.raw`;
-  // Taken before the app's own scripts run: an app that wraps fetch must not see or alter these requests.
-  var fetchOwn = window.fetch.bind(window);
   var RETRY_MAX = 6;
 
-  var picker = null;
+  var frame = document.getElementById('asset');
+  // The picker in the frame said "ready"; nothing is posted to a page that has no picker yet.
+  var ready = false;
   var comments = [];
   var loaded = false;
-  var started = false;
+  var loads = 0;
+  var writes = 0;
   var active = false;
   // { key, pick?, id?, selector } — the comment in the popup; "id" once it is saved.
   var editing = null;
@@ -82,28 +139,37 @@ const HOST_SOURCE = String.raw`(function () {
   // A comment saved in this document keeps the picker key its element was framed under.
   var aliases = {};
   var rects = {};
-  var path = location.pathname;
   var lastMarks = '';
   var retries = 0;
 
-  var element = document.createElement('cezar-share-guest');
-  var root = element.attachShadow({ mode: 'closed' });
-  var ui = {};
+  function slot(name) {
+    return document.querySelector('[data-slot="' + name + '"]');
+  }
 
-  window.__cezarShareHost = { element: element, receive: receive };
+  var ui = {
+    toggle: slot('toggle'),
+    count: slot('count'),
+    name: slot('name'),
+    popup: slot('popup'),
+    element: slot('element'),
+    text: slot('body'),
+    message: slot('message'),
+    remove: slot('delete'),
+    cancel: slot('cancel'),
+    save: slot('save')
+  };
 
+  // '*': the frame's origin is opaque and cannot be named. Only selectors and numbers go this way.
   function tell(message) {
+    var target = frame.contentWindow;
+    if (!ready || !target) return;
     message.source = 'cezar-design-host';
-    if (picker) picker.send(message);
+    try { target.postMessage(message, '*'); } catch (e) { /* the frame is gone */ }
   }
 
   function clip(text, max) {
     text = typeof text === 'string' ? text : '';
     return text.length > max ? text.slice(0, max - 1) + '…' : text;
-  }
-
-  function pathOf(url) {
-    try { return new URL(url).pathname; } catch (e) { return null; }
   }
 
   function tail(selector) {
@@ -117,21 +183,20 @@ const HOST_SOURCE = String.raw`(function () {
 
   // ---- marks -------------------------------------------------------------------------------
 
-  // This page's comments, numbered in list order; the comment being written is framed unnumbered.
+  // Only while Comment is on (C16): exploring shows the mockup, not frames. Numbered in list
+  // order; the comment being written is framed unnumbered, and found again if the frame reloads.
   function wanted() {
     var list = [];
-    var n = 0;
+    if (!active) return list;
     for (var i = 0; i < comments.length; i++) {
-      if (pathOf(comments[i].url) !== location.pathname) continue;
-      n++;
-      list.push({ key: markOf(comments[i]), n: n, selector: comments[i].selector, path: location.pathname });
+      list.push({ key: markOf(comments[i]), n: i + 1, selector: comments[i].selector });
     }
-    if (editing && !editing.id) list.push({ key: editing.key });
+    if (editing && !editing.id) list.push({ key: editing.key, selector: editing.selector });
     return list;
   }
 
   function sendMarks(force) {
-    if (!started || !loaded) return;
+    if (!ready || !loaded) return;
     var list = wanted();
     var serialized = JSON.stringify(list);
     if (!force && serialized === lastMarks) return;
@@ -139,12 +204,11 @@ const HOST_SOURCE = String.raw`(function () {
     tell({ type: 'set-marks', marks: list });
   }
 
-  // A saved comment's element may render after the page loads, or be rendered again: one the
-  // picker has not framed is dropped and asked for again, so it is found by its selector anew.
-  // A few tries, then nothing until the path changes or a frame moves: an element that is gone
-  // must not cost a selector search and a layout read twice a second for the life of the page.
+  // A saved comment's element may render after the page loads, or belong to another state of the
+  // mockup: one the picker has not framed is dropped and asked for again, so it is found by its
+  // selector anew. A few tries, then nothing until a frame moves or Comment is switched on again.
   function retryMissing() {
-    if (retries >= RETRY_MAX) return;
+    if (!active || !ready || !loaded || retries >= RETRY_MAX) return;
     var list = wanted();
     var found = [];
     var missing = false;
@@ -158,115 +222,23 @@ const HOST_SOURCE = String.raw`(function () {
     sendMarks(true);
   }
 
-  // The app may change its path without a load. A poll of a string, not wrapped history methods:
-  // those are the app's router's own, and it may wrap or compare them too.
-  function check() {
-    if (!element.isConnected) document.documentElement.appendChild(element);
-    if (location.pathname !== path) {
-      path = location.pathname;
-      rects = {};
-      retries = 0;
-      sendMarks(true);
-      return;
-    }
-    retryMissing();
-  }
-
   // ---- the bar and the popup ---------------------------------------------------------------
 
-  function make(tag, className, text) {
-    var node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text) node.textContent = text;
-    return node;
-  }
-
-  function button(className, text, onClick) {
-    var node = make('button', className, text);
-    node.type = 'button';
-    node.addEventListener('click', onClick);
-    return node;
-  }
-
-  function build() {
-    try {
-      var sheet = new CSSStyleSheet();
-      sheet.replaceSync(CSS);
-      root.adoptedStyleSheets = [sheet];
-    } catch (e) {
-      root.appendChild(make('style', '', CSS));
-    }
-    var wrap = make('div', 'ui');
-    ui.bar = make('div', 'bar');
-    ui.bar.setAttribute('role', 'toolbar');
-    ui.bar.setAttribute('aria-label', 'Comments');
-    ui.toggle = button('toggle', 'Comment', function () { setActive(!active); });
-    ui.toggle.setAttribute('data-slot', 'toggle');
-    ui.toggle.setAttribute('aria-pressed', 'false');
-    ui.count = make('span', 'count', '0');
-    ui.count.setAttribute('data-slot', 'count');
-    ui.count.title = 'Your comments';
-    ui.name = make('span', 'name');
-    ui.name.setAttribute('data-slot', 'name');
-    ui.name.textContent = cfg.name;
-    ui.bar.appendChild(ui.toggle);
-    ui.bar.appendChild(ui.count);
-    ui.bar.appendChild(ui.name);
-
-    ui.popup = make('div', 'popup');
-    ui.popup.setAttribute('data-slot', 'popup');
-    ui.popup.setAttribute('role', 'dialog');
-    ui.popup.setAttribute('aria-label', 'Comment on this element');
-    ui.popup.hidden = true;
-    ui.element = make('div', 'element');
-    ui.text = make('textarea');
-    ui.text.maxLength = cfg.bodyMax;
-    ui.text.placeholder = 'Leave a comment…';
-    ui.text.setAttribute('aria-label', 'Comment');
-    ui.message = make('div', 'message');
-    ui.message.setAttribute('data-slot', 'message');
-    ui.message.setAttribute('role', 'alert');
-    ui.message.hidden = true;
-    var actions = make('div', 'actions');
-    ui.remove = button('delete', 'Delete', remove);
-    ui.cancel = button('', 'Cancel', close);
-    ui.save = button('save', 'Save', save);
-    actions.appendChild(ui.remove);
-    actions.appendChild(ui.cancel);
-    actions.appendChild(ui.save);
-    ui.popup.appendChild(ui.element);
-    ui.popup.appendChild(ui.text);
-    ui.popup.appendChild(ui.message);
-    ui.popup.appendChild(actions);
-    ui.popup.addEventListener('keydown', onPopupKey);
-
-    wrap.appendChild(ui.bar);
-    wrap.appendChild(ui.popup);
-    root.appendChild(wrap);
-    // A key typed into the bar or the popup is not the app's: it never bubbles out to its handlers.
-    var keys = ['keydown', 'keyup', 'keypress'];
-    for (var i = 0; i < keys.length; i++) root.addEventListener(keys[i], function (event) { event.stopPropagation(); });
-    document.documentElement.appendChild(element);
-  }
-
-  function start() {
-    if (started) return;
-    started = true;
-    build();
-    renderCount();
-    sendMarks(true);
-    window.addEventListener('popstate', check);
-    setInterval(check, 500);
-  }
-
   function renderCount() {
-    if (ui.count) ui.count.textContent = String(comments.length);
+    ui.count.textContent = String(comments.length);
   }
 
   function setActive(next) {
+    // Text typed and not saved would lose its element's frame: it is saved or cancelled first.
+    if (!next && editing) {
+      if (dirty()) { ui.text.focus(); return; }
+      close();
+    }
     active = next;
-    if (ui.toggle) ui.toggle.setAttribute('aria-pressed', active ? 'true' : 'false');
+    retries = 0;
+    ui.toggle.setAttribute('aria-pressed', active ? 'true' : 'false');
     tell({ type: 'set-active', active: active });
+    sendMarks(true);
   }
 
   function say(text) {
@@ -274,7 +246,12 @@ const HOST_SOURCE = String.raw`(function () {
     ui.message.hidden = !text;
   }
 
-  // Under the element, above it when there is no room below, always inside the viewport.
+  function num(value) {
+    return typeof value === 'number' && isFinite(value) ? value : 0;
+  }
+
+  // Under the element, above it when there is no room below, always inside the viewport. The
+  // frame fills the window from its corner, so the frame's coordinates are this page's.
   function place() {
     if (!editing) return;
     var rect = rects[editing.key] || (editing.pick && editing.pick.rect);
@@ -283,10 +260,10 @@ const HOST_SOURCE = String.raw`(function () {
     var vw = window.innerWidth;
     var vh = window.innerHeight;
     var left, top;
-    if (rect) {
-      top = rect.y + rect.height + 8;
-      if (top + height > vh - 8) top = rect.y - height - 8;
-      left = rect.x;
+    if (rect && typeof rect === 'object') {
+      top = num(rect.y) + num(rect.height) + 8;
+      if (top + height > vh - 8) top = num(rect.y) - height - 8;
+      left = num(rect.x);
     } else {
       top = vh - height - 72;
       left = vw - width - 16;
@@ -313,7 +290,7 @@ const HOST_SOURCE = String.raw`(function () {
   // Not while a save or delete is in flight: a failed answer must find the text still in the popup.
   function close() {
     if (!editing || busy) return;
-    var hadFocus = root.activeElement !== null;
+    var hadFocus = ui.popup.contains(document.activeElement);
     editing = null;
     busy = false;
     ui.popup.hidden = true;
@@ -346,11 +323,20 @@ const HOST_SOURCE = String.raw`(function () {
   function onPopupKey(event) {
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close();
     } else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       save();
     }
+  }
+
+  // Esc with the keyboard on the bar: closes the open comment, else leaves comment mode. Esc
+  // pressed inside the mockup arrives as the picker's "cancel" instead.
+  function onPageKey(event) {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (editing) close();
+    else if (active) setActive(false);
   }
 
   // ---- the share listener ------------------------------------------------------------------
@@ -362,7 +348,7 @@ const HOST_SOURCE = String.raw`(function () {
       init.headers['content-type'] = 'application/json';
       init.body = JSON.stringify(payload);
     }
-    return fetchOwn(BASE + name, init).then(function (res) {
+    return window.fetch(BASE + name, init).then(function (res) {
       if (res.status === 204) return { status: 204, body: null };
       return res.json().then(function (body) { return { status: res.status, body: body }; }, function () { return { status: res.status, body: null }; });
     }, function () {
@@ -377,15 +363,22 @@ const HOST_SOURCE = String.raw`(function () {
   }
 
   function isComment(value) {
-    return !!value && typeof value.id === 'string' && typeof value.url === 'string' &&
-      typeof value.selector === 'string' && typeof value.body === 'string';
+    return !!value && typeof value.id === 'string' && typeof value.selector === 'string' && typeof value.body === 'string';
   }
 
+  // A list read before a save answered would drop that save: it is read again instead.
   function load() {
+    var turn = ++loads;
+    var before = writes;
     request('GET', 'comments').then(function (answer) {
+      if (turn !== loads) return;
+      if (before !== writes) { load(); return; }
       var list = answer.status === 200 && answer.body && answer.body.comments;
-      comments = [];
-      if (Array.isArray(list)) for (var i = 0; i < list.length; i++) if (isComment(list[i])) comments.push(list[i]);
+      // A failed read keeps what is on screen; the first one has nothing to keep.
+      if (Array.isArray(list)) {
+        comments = [];
+        for (var i = 0; i < list.length; i++) if (isComment(list[i])) comments.push(list[i]);
+      }
       loaded = true;
       renderCount();
       sendMarks(true);
@@ -394,8 +387,9 @@ const HOST_SOURCE = String.raw`(function () {
 
   function componentOf(pick) {
     var names = Array.isArray(pick.components) ? pick.components.slice().reverse() : [];
+    for (var i = 0; i < names.length; i++) if (typeof names[i] !== 'string') return undefined;
     if (!names.length) return undefined;
-    return clip(names.join(' › ') + (pick.source ? ' (' + pick.source + ')' : ''), cfg.componentMax);
+    return clip(names.join(' › ') + (typeof pick.source === 'string' && pick.source ? ' (' + pick.source + ')' : ''), cfg.componentMax);
   }
 
   function save() {
@@ -410,8 +404,8 @@ const HOST_SOURCE = String.raw`(function () {
       sent = request('PUT', 'comments/' + encodeURIComponent(target.id), { body: body });
     } else {
       var pick = target.pick;
+      // No asset and no address: the server names the asset from the share itself.
       var input = {
-        url: pick.url,
         selector: clip(pick.selector, cfg.selectorMax),
         label: clip(pick.text, cfg.labelMax),
         excerpt: clip(pick.html, cfg.excerptMax),
@@ -431,7 +425,7 @@ const HOST_SOURCE = String.raw`(function () {
         aliases[comment.id] = target.key;
         comments.push(comment);
       }
-      if (ok) renderCount();
+      if (ok) { writes++; renderCount(); }
       setBusy(false);
       if (editing !== target) { sendMarks(); return; }
       if (ok) { close(); return; }
@@ -447,6 +441,7 @@ const HOST_SOURCE = String.raw`(function () {
     request('DELETE', 'comments/' + encodeURIComponent(target.id), {}).then(function (answer) {
       setBusy(false);
       if (answer.status === 204) {
+        writes++;
         comments = comments.filter(function (comment) { return comment.id !== target.id; });
         delete aliases[target.id];
         renderCount();
@@ -463,10 +458,19 @@ const HOST_SOURCE = String.raw`(function () {
   // ---- the picker's messages ---------------------------------------------------------------
 
   function receive(message) {
-    if (!message || message.source !== 'cezar-design') return;
+    if (!message || typeof message !== 'object' || message.source !== 'cezar-design') return;
     if (message.type === 'ready') {
-      picker = window.__cezarSharePicker;
-      load();
+      // A new document in the frame: its picker knows no key and no state of the last one.
+      var again = ready;
+      ready = true;
+      aliases = {};
+      rects = {};
+      lastMarks = '';
+      retries = 0;
+      if (active) tell({ type: 'set-active', active: true });
+      sendMarks(true);
+      // The owner may have removed a comment since; the first list is already on its way.
+      if (again) load();
     } else if (message.type === 'rects') {
       rects = {};
       retries = 0;
@@ -475,13 +479,15 @@ const HOST_SOURCE = String.raw`(function () {
       place();
     } else if (message.type === 'picked') {
       var pick = message.element;
-      if (!active || !started || !pick || typeof pick.mark !== 'string' || dirty()) {
+      var usable = !!pick && typeof pick === 'object' && typeof pick.mark === 'string' && typeof pick.selector === 'string' && pick.selector !== '';
+      if (!active || !loaded || !usable || dirty()) {
         sendMarks(true);
         if (dirty()) ui.text.focus();
         return;
       }
       open({ key: pick.mark, pick: pick, selector: pick.selector }, '');
     } else if (message.type === 'mark-clicked' && typeof message.key === 'string') {
+      if (!active) return;
       if (dirty()) { ui.text.focus(); return; }
       for (var j = 0; j < comments.length; j++) {
         if (markOf(comments[j]) === message.key) {
@@ -490,13 +496,31 @@ const HOST_SOURCE = String.raw`(function () {
         }
       }
     } else if (message.type === 'cancel') {
-      // Esc in the app: closes the open comment unless it holds unsaved text, else leaves comment mode.
+      // Esc in the mockup: closes the open comment unless it holds unsaved text, else leaves comment mode.
       if (editing) { if (!dirty()) close(); }
       else setActive(false);
+    } else if (message.type === 'toggle') {
+      // The picker's own key, pressed in the mockup: it only ever leaves comment mode.
+      if (active) setActive(false);
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
-  else start();
+  // THIS frame only. Its origin is opaque, so the window is the check: the top page, another
+  // frame and a popup are all somebody else.
+  window.addEventListener('message', function (event) {
+    if (!event.source || event.source !== frame.contentWindow) return;
+    receive(event.data);
+  });
+
+  ui.name.textContent = cfg.name;
+  ui.toggle.addEventListener('click', function () { setActive(!active); });
+  ui.remove.addEventListener('click', remove);
+  ui.cancel.addEventListener('click', close);
+  ui.save.addEventListener('click', save);
+  ui.popup.addEventListener('keydown', onPopupKey);
+  document.addEventListener('keydown', onPageKey);
+  window.addEventListener('resize', place);
+  setInterval(retryMissing, 500);
+  load();
 })();
 `;

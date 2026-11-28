@@ -3,11 +3,11 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { useLiveShares, usePreviewShare } from './queries'
+import { useLiveShares, useAssetShare } from './queries'
 import { createQueryClient } from './query-client'
 
 /**
- * A failed first read must not hide a live link (spec `.ai/specs/2026-11-26-preview-share-link.md`
+ * A failed first read must not hide a live link (spec `.ai/specs/2026-11-28-asset-share-link.md`
  * C7, the second anti-goal): both share queries try again before they give up.
  */
 
@@ -16,8 +16,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const SHARE = { runId: 'r1', target: 'http://localhost:5173', url: 'https://x.trycloudflare.com/__cezar_share__/join/t', startedAt: 'a', expiresAt: 'b', guests: [] }
-const LIVE = { shares: [{ projectId: 'p1', runId: 'r1', title: 'Settings', target: 'http://localhost:5173', expiresAt: 'b', waiting: 0 }] }
+const SHARE = { runId: 'r1', asset: 'settings.html', assetTitle: 'Settings mockup', url: 'https://x.trycloudflare.com/__cezar_share__/join/t', startedAt: 'a', expiresAt: 'b', guests: [] }
+const LIVE = { shares: [{ projectId: 'p1', runId: 'r1', title: 'Settings', asset: 'settings.html', assetTitle: 'Settings mockup', expiresAt: 'b', waiting: 0 }] }
 
 /** Answers `failures` requests with `failure`, then `body`. */
 function server(failures: number, failure: 'offline' | number, body: unknown) {
@@ -43,7 +43,7 @@ function mount(hook: () => { data: unknown; isError: boolean }) {
 }
 
 describe.each([
-  ['usePreviewShare', () => usePreviewShare('r1'), { share: SHARE }],
+  ['useAssetShare', () => useAssetShare('r1'), { share: SHARE }],
   ['useLiveShares', () => useLiveShares(), LIVE],
 ] as const)('%s', (_name, hook, body) => {
   it('shows the live link when the first read fails and the next one answers', async () => {

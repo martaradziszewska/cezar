@@ -74,7 +74,7 @@ export function ReviewCommentsBlock({ items }: { items: readonly ReviewItem[] })
   )
 }
 
-/** A guest item's head: who left it, then the page and element the way the other kinds show theirs. */
+/** A guest item's head: who left it, then the asset and element the way the other kinds show theirs. */
 function GuestLocation({ runId, item, guest }: { runId: string | undefined; item: ReviewItem; guest: NonNullable<ReviewItem['guest']> }) {
   return (
     <div className="flex flex-col gap-0.5 border-b border-border/60 px-2.5 py-1.5 text-label">
@@ -86,9 +86,9 @@ function GuestLocation({ runId, item, guest }: { runId: string | undefined; item
       </div>
       <div className="flex min-w-0 items-center gap-1.5">
         {runId ? (
-          <IconTooltip label="Open the Preview">
+          <IconTooltip label={`Open ${item.path} on the Assets tab`}>
             <Link
-              to={previewTarget(runId)}
+              to={assetCommentTarget(runId, item.path)}
               className="min-w-0 truncate font-mono font-medium text-foreground underline-offset-2 hover:underline"
             >
               {item.path}
@@ -118,7 +118,7 @@ function GuestLocation({ runId, item, guest }: { runId: string | undefined; item
 
 function whereLabel(items: readonly ReviewItem[]): string {
   const guests = items.filter((item) => item.guest).length
-  if (guests > 0) return guests === items.length ? 'on the app preview' : 'in the review'
+  if (guests > 0) return guests === items.length ? (guests === 1 ? 'on a shared asset' : 'on shared assets') : 'in the review'
   const assets = items.filter((item) => item.asset).length
   if (assets === 0) return 'on the diff'
   return assets === items.length ? (assets === 1 ? 'on an asset' : 'on assets') : 'on the diff and assets'
@@ -127,11 +127,6 @@ function whereLabel(items: readonly ReviewItem[]): string {
 /** The Assets tab, opened on the asset a comment is pinned to. */
 export function assetCommentTarget(runId: string, asset: string): string {
   return `/tasks/${runId}/assets/${encodeURIComponent(asset)}`
-}
-
-/** The task's Preview tab. It has no address parameter, so a guest comment opens it as it was left. */
-export function previewTarget(runId: string): string {
-  return `/tasks/${runId}/preview`
 }
 
 /** The Changes tab, asked to reveal this comment (or line) — it reads these params on arrival. */

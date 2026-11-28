@@ -15,7 +15,7 @@ import {
   type GuestReviewComment,
   type ReviewComment,
 } from './diff-comments'
-import { assetCommentTarget, previewTarget, reviewTarget } from './review-comments-block'
+import { assetCommentTarget, reviewTarget } from './review-comments-block'
 
 /**
  * The diff comments as draft items in the thread composer — one chip per comment, `file +line`,
@@ -27,18 +27,14 @@ export function DiffCommentChips({
   comments,
   onRemove,
   onOpen,
-  onOpenInPreview,
 }: {
   runId: string
   comments: readonly ReviewComment[]
   onRemove: (id: string) => void
   /** Given, a LINE comment's label is a button that calls this — the Changes tab, where a link to
    *  itself would do nothing, scrolls the diff to the comment's file instead. Absent, it links to
-   *  the tab. An asset comment always links to its asset. */
+   *  the tab. An asset comment, a guest's included, always links to its asset. */
   onOpen?: (comment: DiffComment) => void
-  /** Given (the task workspace), a GUEST comment's label is a button that opens the Preview on its
-   *  page. Absent, it links to the Preview tab. */
-  onOpenInPreview?: (url: string) => void
 }) {
   if (comments.length === 0) return null
   return (
@@ -47,11 +43,7 @@ export function DiffCommentChips({
     <TooltipProvider delayDuration={300}>
       {sortReviewComments(comments).map((comment) => {
         if (isAssetComment(comment)) return <AssetCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
-        if (isGuestComment(comment)) {
-          return (
-            <GuestCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} onOpenInPreview={onOpenInPreview} />
-          )
-        }
+        if (isGuestComment(comment)) return <GuestCommentChip key={comment.id} runId={runId} comment={comment} onRemove={onRemove} />
         const name = comment.path.split('/').at(-1) ?? comment.path
         const sign = (side: 'old' | 'new') => (side === 'old' ? '−' : '+')
         const span =
@@ -180,18 +172,16 @@ function AssetCommentChip({
   )
 }
 
-/** A guest's comment on the shared Preview: `Ana · button.primary “Save”`, opening the Preview.
- *  No edit: they are someone else's words (spec 2026-11-26-preview-share-link, C6). */
+/** A guest's comment on a shared asset: `Ana · button.primary “Save”`, linking to the asset on
+ *  the Assets tab. No edit: they are someone else's words (spec 2026-11-28-asset-share-link, C6). */
 function GuestCommentChip({
   runId,
   comment: stored,
   onRemove,
-  onOpenInPreview,
 }: {
   runId: string
   comment: GuestReviewComment
   onRemove: (id: string) => void
-  onOpenInPreview?: (url: string) => void
 }) {
   // Shown as it will be sent: a bidi control would put another order on screen than in the message.
   const comment = readableGuestComment(stored)
@@ -200,9 +190,10 @@ function GuestCommentChip({
   const label = oneLine(comment.label)
   const tail = selectorTail(oneLine(comment.selector))
   const element = label || tail
-  const opens = `Comment from ${author} on ${comment.url} element ${element}`
+  const asset = oneLine(comment.asset)
+  const opens = `Comment from ${author} on ${asset} element ${element}`
   const heldId = useId()
-  // What the next send would leave behind (spec 2026-11-26-preview-share-link § Exposure). The
+  // What the next send would leave behind (spec 2026-11-28-asset-share-link § Exposure). The
   // label above replaces the chip's text for a screen reader, so the badge is its description.
   const mark =
     comment.sent ? { slot: 'guest-comment-sent', text: 'sent', says: 'Sent: the agent already has it' }
@@ -220,7 +211,6 @@ function GuestCommentChip({
       </span>
     : null
   const described = mark ? heldId : undefined
-  const openInPreview = onOpenInPreview && isLocalHttpAddress(comment.url) ? onOpenInPreview : undefined
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -232,30 +222,17 @@ function GuestCommentChip({
           <span aria-hidden="true" className="flex h-full items-center border-r border-border px-2 text-muted-foreground">
             <MessageSquareIcon className="size-3.5" />
           </span>
-          {openInPreview ? (
-            <button
-              type="button"
-              onClick={() => openInPreview(comment.url)}
-              className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={opens}
-              aria-describedby={described}
-            >
-              {badge}
-              {author} · {tail}
-              {label ? ` “${label}”` : null}
-            </button>
-          ) : (
-            <Link
-              to={previewTarget(runId)}
-              className="min-w-0 truncate px-2 font-medium hover:underline"
-              aria-label={opens}
-              aria-describedby={described}
-            >
-              {badge}
-              {author} · {tail}
-              {label ? ` “${label}”` : null}
-            </Link>
-          )}
+          <Link
+            // The stored name, not the tidied one: it is what the Assets tab looks the file up by.
+            to={assetCommentTarget(runId, stored.asset)}
+            className="min-w-0 truncate px-2 font-medium hover:underline"
+            aria-label={opens}
+            aria-describedby={described}
+          >
+            {badge}
+            {author} · {tail}
+            {label ? ` “${label}”` : null}
+          </Link>
           <button
             type="button"
             aria-label={`Remove comment from ${author} on element ${element}`}
@@ -268,10 +245,10 @@ function GuestCommentChip({
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={6} className="max-w-[320px] text-left">
         {/* Everything the agent will read, uncut and scrolling: the owner can only gate what they
-            can see (spec 2026-11-26-preview-share-link, C1). */}
+            can see (spec 2026-11-28-asset-share-link, C1). */}
         <div data-slot="diff-comment-tooltip" className="flex max-h-80 flex-col gap-1 overflow-auto">
           <span className="font-mono text-meta break-all text-contrast-foreground/80">
-            {author} · {comment.url} · {comment.selector}
+            {author} · {asset} · {comment.selector}
             {label ? ` “${label}”` : null}
           </span>
           {comment.component ? (
@@ -287,17 +264,6 @@ function GuestCommentChip({
       </TooltipContent>
     </Tooltip>
   )
-}
-
-/** A guest-supplied address goes to the Preview frame only when it is a local http one: the
- *  server's own check is a wire and a disk away (spec 2026-11-26-preview-share-link § Mechanism 9). */
-export function isLocalHttpAddress(address: string): boolean {
-  try {
-    const { protocol, hostname } = new URL(address)
-    return protocol === 'http:' && (hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname))
-  } catch {
-    return false
-  }
 }
 
 function oneLine(text: string): string {

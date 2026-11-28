@@ -69,8 +69,8 @@ describe('a relay request is a hosted request', () => {
     });
 
     it('turns off every local power in a scope, even CEZ_TERMINAL=1', () => {
-      const narrowed = runInRelayScope({ deviceId: DEVICE }, () => narrowForRelay({ ...local, designMode: true, previewShare: true, managerSystemNotifications: true }));
-      expect(narrowed).toMatchObject({ localHandoff: false, terminal: false, designMode: false, previewShare: false, managerSystemNotifications: false, phonePairing: false });
+      const narrowed = runInRelayScope({ deviceId: DEVICE }, () => narrowForRelay({ ...local, designMode: true, assetShare: true, managerSystemNotifications: true }));
+      expect(narrowed).toMatchObject({ localHandoff: false, terminal: false, designMode: false, assetShare: false, managerSystemNotifications: false, phonePairing: false });
     });
 
     it('keeps what a hosted cockpit has', () => {

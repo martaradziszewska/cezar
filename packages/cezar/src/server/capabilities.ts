@@ -208,9 +208,9 @@ function designModeEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
   return env.CEZ_DESIGN_MODE !== '0' && localHandoffEnabled(env, bindHost);
 }
 
-/** Preview Share (spec `2026-11-26-preview-share-link`): local cockpit only; `CEZ_PREVIEW_SHARE=0` turns it off. */
-function previewShareEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
-  return env.CEZ_PREVIEW_SHARE !== '0' && localHandoffEnabled(env, bindHost);
+/** Asset Share (spec `2026-11-28-asset-share-link`): local cockpit only; `CEZ_ASSET_SHARE=0` turns it off. */
+function assetShareEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
+  return env.CEZ_ASSET_SHARE !== '0' && localHandoffEnabled(env, bindHost);
 }
 
 /** `CEZ_REMOTE=1` or a non-loopback bind host ⇒ hosted mode (no local handoff).
@@ -252,7 +252,7 @@ export function resolveCapabilities(env: NodeJS.ProcessEnv = process.env, bindHo
     localHandoff: localHandoffEnabled(env, bindHost),
     terminal: terminalEnabled(env, bindHost),
     designMode: designModeEnabled(env, bindHost),
-    previewShare: previewShareEnabled(env, bindHost),
+    assetShare: assetShareEnabled(env, bindHost),
     // Deliberately not re-derived here: RunManager enforces the same predicate,
     // and two spellings of "is the inbox on" would eventually disagree.
     followups: followupsEnabled(env),

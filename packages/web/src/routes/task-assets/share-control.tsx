@@ -2,17 +2,17 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ChevronDownIcon, ClockPlusIcon, CopyIcon, Share2Icon, SquareIcon } from 'lucide-react'
 import { useRef, useState } from 'react'
 
-import type { PreviewShareStateResponse } from '@open-mercato/cezar-api-client'
+import type { AssetShareStateResponse } from '@open-mercato/cezar-api-client'
 import {
   ApiError,
-  decidePreviewShareGuest,
-  extendPreviewShare,
-  removePreviewShareGuest,
+  decideAssetShareGuest,
+  extendAssetShare,
+  removeAssetShareGuest,
   ShareError,
-  startPreviewShare,
-  stopPreviewShare,
+  startAssetShare,
+  stopAssetShare,
 } from '@/api/client'
-import { queryKeys, useGuestComments, useHealth, usePreviewShare } from '@/api/queries'
+import { queryKeys, useGuestComments, useHealth, useAssetShare } from '@/api/queries'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
@@ -21,10 +21,9 @@ import { writeClipboard } from '@/lib/clipboard'
 
 import { ShareGuests, useGuestDecisions } from './share-guests'
 
-/** Spec 2026-11-26-preview-share-link § Exposure, verbatim; shown before every start (C8). */
+/** Spec 2026-11-28-asset-share-link § Exposure, verbatim; shown before every start (C8). */
 const EXPOSURE =
-  'Anyone with this link can use this app and read whatever your dev server serves, including source files. Traffic passes through Cloudflare.'
-const NOT_LOCAL = 'Sharing works on local http:// addresses'
+  "People you let in with this link can open this page, and the images among this task's assets, and comment. Traffic passes through Cloudflare."
 
 type Failure =
   | { kind: 'no-tunnel'; install: string | undefined; message: string }
@@ -32,25 +31,25 @@ type Failure =
   | { kind: 'other'; message: string }
 
 /**
- * The Preview toolbar's Share control (spec 2026-11-26-preview-share-link). Everything shown is
- * read from `usePreviewShare` on each render; `share.url` holds the link token, so it reaches the
+ * The Assets toolbar's Share control (spec 2026-11-28-asset-share-link). Everything shown is
+ * read from `useAssetShare` on each render; `share.url` holds the link token, so it reaches the
  * clipboard and nowhere else.
  */
 export function ShareControl({
   runId,
-  targetOrigin,
-  path,
+  asset,
+  assetTitle,
 }: {
   runId: string
-  /** The loopback origin of the tab on screen, or null when it has none (same value Design Mode uses). */
-  targetOrigin: string | null
-  /** Path + search of the tab on screen, for the link's `next`. */
-  path: string
+  /** The listed name of the HTML asset on screen: what Create link shares. */
+  asset: string
+  /** Its title, the file name when the page has none: named above the exposure text. */
+  assetTitle: string
 }) {
   const health = useHealth()
-  const enabled = health.data?.capabilities?.previewShare === true
+  const enabled = health.data?.capabilities?.assetShare === true
   const queryClient = useQueryClient()
-  const share = usePreviewShare(runId).data?.share ?? null
+  const share = useAssetShare(runId).data?.share ?? null
   const commentCount = useGuestComments(runId).data?.comments.length ?? 0
   const decisions = useGuestDecisions(share?.guests)
 
@@ -94,23 +93,22 @@ export function ShareControl({
   }
   // A focus refetch that began before the request must not land after it with the old state.
   // `false` when the answer was dropped: a share its owner stopped never reads as live again.
-  const settle = async (next: PreviewShareStateResponse): Promise<boolean> => {
+  const settle = async (next: AssetShareStateResponse): Promise<boolean> => {
     if (stopAsked.current && next.share !== null) return false
-    const queryKey = queryKeys.runs.previewShare(runId)
+    const queryKey = queryKeys.runs.assetShare(runId)
     await queryClient.cancelQueries({ queryKey })
     if (stopAsked.current && next.share !== null) return false
-    queryClient.setQueryData<PreviewShareStateResponse>(queryKey, next)
+    queryClient.setQueryData<AssetShareStateResponse>(queryKey, next)
     return true
   }
   const failed = (error: unknown) => toast(messageOf(error), { tone: 'danger', expected: explained(error) })
 
   const start = () => {
-    if (targetOrigin === null) return
     void busy('start', async () => {
       setFailure(null)
       stopAsked.current = false
       try {
-        const answer = await startPreviewShare(runId, { target: targetOrigin + path, parentOrigin: window.location.origin })
+        const answer = await startAssetShare(runId, { asset })
         await settle(answer)
         writeClipboard(answer.share.url).then(
           () => toast('Link copied'),
@@ -123,7 +121,7 @@ export function ShareControl({
     })
   }
 
-  const request = (task: () => Promise<PreviewShareStateResponse>) => async () => {
+  const request = (task: () => Promise<AssetShareStateResponse>) => async () => {
     try {
       await settle(await task())
       return true
@@ -144,18 +142,10 @@ export function ShareControl({
         }}
       >
         <PopoverTrigger asChild>
-          <Button
-            type="button"
-            data-slot="share-idle"
-            variant="outline"
-            size="sm"
-            disabled={targetOrigin === null}
-            // A disabled control cannot open a tooltip, so the reason stays a native title (as Design Mode's).
-            title={targetOrigin === null ? NOT_LOCAL : undefined}
-            className="ml-1 disabled:opacity-40"
-          >
-            <Share2Icon aria-hidden="true" className="size-3.5" />
-            Share
+          {/* The toolbar's own button shape: ghost, one height, the name hidden at phone width. */}
+          <Button type="button" data-slot="share-idle" variant="ghost" size="sm" className="text-muted-foreground max-sm:px-1.5">
+            <Share2Icon aria-hidden="true" />
+            <span className="max-sm:sr-only">Share</span>
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -169,13 +159,15 @@ export function ShareControl({
           }}
           className="flex w-80 flex-col gap-3 text-ui"
         >
-          <SharePanel failure={failure} starting={starting} unavailable={targetOrigin === null ? NOT_LOCAL : null} onStart={start} />
+          <SharePanel title={assetTitle} failure={failure} starting={starting} onStart={start} />
         </PopoverContent>
       </Popover>
     )
   }
 
-  const sameOrigin = targetOrigin === share.target
+  // One share per task (C9): on another asset this names the shared one and offers no second link.
+  const sameAsset = asset === share.asset
+  const sharedTitle = share.assetTitle !== '' ? share.assetTitle : share.asset
   // The owner cannot act on a waiting guest while sharing is off, so nothing calls for attention.
   const waiting = enabled ? share.guests.filter((guest) => guest.state === 'waiting').length : 0
   const copyLink = () => {
@@ -187,7 +179,7 @@ export function ShareControl({
   const extend = () =>
     void busy('extend', async () => {
       try {
-        const answer = await extendPreviewShare(runId)
+        const answer = await extendAssetShare(runId)
         if ((await settle(answer)) && answer.share) toast(`Sharing until ${clock(answer.share.expiresAt)}`)
       } catch (error) {
         // Stopped meanwhile: "not sharing" is what the owner asked for, not a failure.
@@ -198,15 +190,17 @@ export function ShareControl({
     void busy('stop', async () => {
       stopAsked.current = true
       // A stop that failed stopped nothing: later answers count again.
-      if (!(await request(() => stopPreviewShare(runId))())) stopAsked.current = false
+      if (!(await request(() => stopAssetShare(runId))())) stopAsked.current = false
     })
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button type="button" data-slot="share-live" variant="outline" size="sm" className="relative ml-1">
-          <span aria-hidden="true" className="size-2 rounded-full bg-success" />
-          {sameOrigin ? `Sharing · ${commentsLabel(commentCount)} · until ${clock(share.expiresAt)}` : `Sharing ${hostOf(share.target)}`}
-          <ChevronDownIcon aria-hidden="true" className="size-3.5 opacity-70" />
+        <Button type="button" data-slot="share-live" variant="ghost" size="sm" className="relative max-w-[min(22rem,60vw)] max-sm:px-1.5">
+          <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-success" />
+          <span data-slot="share-live-label" className="min-w-0 truncate">
+            {sameAsset ? `Sharing · ${commentsLabel(commentCount)} · until ${clock(share.expiresAt)}` : `Sharing “${sharedTitle}”`}
+          </span>
+          <ChevronDownIcon aria-hidden="true" className="size-3.5 shrink-0 opacity-70" />
           {waiting > 0 ? (
             <span
               role="img"
@@ -251,9 +245,9 @@ export function ShareControl({
               decisions={enabled}
               state={decisions}
               onDecide={(guest, decision, shown) =>
-                decisions.run(guest, decision === 'allow' ? 'allowed' : 'denied', shown, request(() => decidePreviewShareGuest(runId, guest.id, decision)))
+                decisions.run(guest, decision === 'allow' ? 'allowed' : 'denied', shown, request(() => decideAssetShareGuest(runId, guest.id, decision)))
               }
-              onRemove={(guest, shown) => decisions.run(guest, 'removed', shown, request(() => removePreviewShareGuest(runId, guest.id)))}
+              onRemove={(guest, shown) => decisions.run(guest, 'removed', shown, request(() => removeAssetShareGuest(runId, guest.id)))}
             />
           </>
         ) : null}
@@ -264,35 +258,30 @@ export function ShareControl({
 
 /** The idle popover: the exposure text above every way to start, a failed start included. */
 function SharePanel({
+  title,
   failure,
   starting,
-  unavailable,
   onStart,
 }: {
+  /** What Create link will share. */
+  title: string
   failure: Failure | null
   starting: boolean
-  /** Why no link can be made for the tab now on screen, or null. */
-  unavailable: string | null
   onStart: () => void
 }) {
   const exposure = <p className="text-muted-foreground">{EXPOSURE}</p>
   const startButton = (label: string) => (
-    <Button
-      type="button"
-      size="sm"
-      className="self-end"
-      disabled={starting || unavailable !== null}
-      title={unavailable ?? undefined}
-      onClick={onStart}
-    >
+    <Button type="button" size="sm" className="self-end" disabled={starting} onClick={onStart}>
       {starting ? 'Creating link…' : label}
     </Button>
   )
   if (failure === null || starting) {
     return (
       <div data-slot="share-confirm" className="flex flex-col gap-3">
+        <p data-slot="share-asset" className="truncate font-medium">
+          Share “{title}”
+        </p>
         {exposure}
-        {unavailable !== null ? <p className="text-meta text-muted-foreground">{unavailable}</p> : null}
         {startButton('Create link')}
       </div>
     )
@@ -356,12 +345,4 @@ function commentsLabel(count: number): string {
 
 function clock(iso: string): string {
   return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
-}
-
-function hostOf(origin: string): string {
-  try {
-    return new URL(origin).host
-  } catch {
-    return origin
-  }
 }

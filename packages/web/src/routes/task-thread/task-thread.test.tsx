@@ -2196,30 +2196,27 @@ describe('Manager source task arrivals', () => {
   })
 })
 
-describe('ThreadView — guest comment chips (spec 2026-11-26-preview-share-link)', () => {
-  it('passes the workspace Preview opener down to the composer chips', async () => {
-    const onOpenInPreview = vi.fn()
+describe('ThreadView — guest comment chips (spec 2026-11-28-asset-share-link)', () => {
+  it('shows a guest comment in the composer as a link to its asset', async () => {
     const guest = {
       id: 'g1',
       revision: 1,
       author: 'Ana',
       createdAt: '2026-11-26T10:00:00.000Z',
-      url: 'http://localhost:5173/settings',
+      asset: 'mockups/settings.html',
       selector: 'main > button',
       label: 'Save',
       excerpt: '',
       body: 'brand green',
     }
-    const { queryClient } = renderView(
-      <ThreadView run={run('waiting')} thread={reduceThread(EVENTS)} onOpenInPreview={onOpenInPreview} />,
-    )
+    const { queryClient } = renderView(<ThreadView run={run('waiting')} thread={reduceThread(EVENTS)} />)
     const key = queryKeys.runs.guestComments('r1')
     // After the mount's own read has settled, so it cannot overwrite the list set here.
     await waitFor(() => expect(queryClient.getQueryState(key)?.status).toBe('success'))
     act(() => {
       queryClient.setQueryData(key, { comments: [guest] })
     })
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment from Ana on http://localhost:5173/settings element Save' }))
-    expect(onOpenInPreview).toHaveBeenCalledWith('http://localhost:5173/settings')
+    const chip = await screen.findByRole('link', { name: 'Comment from Ana on mockups/settings.html element Save' })
+    expect(chip.getAttribute('href')).toMatch(/\/tasks\/r1\/assets\/mockups%2Fsettings\.html$/)
   })
 })

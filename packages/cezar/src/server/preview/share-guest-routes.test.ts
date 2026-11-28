@@ -1,26 +1,29 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, request, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { connect, type AddressInfo, type Socket } from 'node:net';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { request, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
+import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { GUEST_COMMENT_OVERHEAD, GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, GUEST_URL_MAX, type GuestComment } from '@open-mercato/cezar-contract';
+import { GUEST_COMMENT_OVERHEAD, GUEST_COMMENTS_MAX, GUEST_COMMENTS_TEXT_BUDGET, type GuestComment } from '@open-mercato/cezar-contract';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { addGuestComment, guestCommentsRoot, readGuestComments } from '../../runs/guest-comments.ts';
+import { artifactsDir } from '../../runs/store.ts';
+import { artifactCsp } from '../artifacts.ts';
 import { createGuestRoutes } from './share-guest-routes.ts';
-import { PreviewShares, type GuestRequest, type GuestRoutes, type Tunnel, type TunnelAdapter } from './share-listener.ts';
+import { AssetShares, type GuestRequest, type GuestRoutes, type Tunnel, type TunnelAdapter } from './share-listener.ts';
 
 /**
- * The share listener's own pages (spec `.ai/specs/2026-11-26-preview-share-link.md` § Mechanism 5–9,
+ * What the share listener answers with (spec `.ai/specs/2026-11-28-asset-share-link.md` § Mechanism 3–9,
  * § Storage, § Exposure). The routes run behind the real listener and a fake tunnel that hands the
  * listener's own address back, so every rule is decided on a real socket, cookie and guest state.
  */
 
 const SHARE = '/__cezar_share__';
-const COCKPIT = 'http://localhost:4321';
+const ASSET = 'settings-mockup.html';
+const TITLE = 'Settings mockup';
 const GONE = 'This link is no longer active.';
 const INBOX_FULL = "The reviewer's inbox is full.";
 const BODY_MAX = 64 * 1024;
@@ -125,39 +128,33 @@ class LoopbackTunnel implements TunnelAdapter {
 const idOf = (cookie: string): string => createHash('sha256').update(cookie).digest('hex').slice(0, 16);
 
 describe('the share listener’s own pages', () => {
-  let upstream: Server;
-  let app: string;
-  let appRequests: string[];
   let dir: string;
   let clock: number;
   let tunnels: LoopbackTunnel;
-  let shares: PreviewShares;
+  let shares: AssetShares;
   let routes: GuestRoutes;
   let published: Array<[string, string]>;
-  let scripted: Array<{ upstreamOrigin: string; name: string }>;
+  /** Every shell the routes asked for, in order. */
+  let shells: Array<{ name: string; frameSrc: string; nonce: string; title: string }>;
+  /** `CEZ_ARTIFACTS_CDN`, as the routes read it per answer. */
+  let cdn: boolean;
   let onComments: (projectId: string, runId: string) => void;
   let main: Site;
   let addresses: number;
   /** Every request the listener handed to the routes, in order. */
   let handed: string[];
-  let others: PreviewShares[];
+  let others: AssetShares[];
 
   beforeEach(async () => {
-    appRequests = [];
     published = [];
-    scripted = [];
+    shells = [];
+    cdn = true;
     addresses = 0;
     handed = [];
     others = [];
     clock = Date.now();
     onComments = (projectId, runId) => published.push([projectId, runId]);
     dir = mkdtempSync(joinPath(tmpdir(), 'cez-share-guest-'));
-    upstream = createServer((req, res) => {
-      appRequests.push(`${req.method} ${req.url}`);
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<!doctype html><html><head></head><body>app</body></html>');
-    });
-    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-    app = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
     routes = buildRoutes();
     tunnels = new LoopbackTunnel();
     shares = buildShares(routes);
@@ -168,25 +165,27 @@ describe('the share listener’s own pages', () => {
     return createGuestRoutes({
       dataDirOf: (projectId) => (projectId === 'p1' ? dir : null),
       onComments: (projectId, runId) => onComments(projectId, runId),
-      guestScript: (config) => {
-        scripted.push(config);
-        return `/* guest script for ${config.name} at ${config.upstreamOrigin} */`;
+      guestShell: (config) => {
+        shells.push(config);
+        return `<!-- shell ${JSON.stringify(config)} -->`;
       },
+      cdnEnabled: () => cdn,
       now: () => clock,
       ...(bodyTimeoutMs === undefined ? {} : { bodyTimeoutMs }),
     });
   }
 
-  function buildShares(guestRoutes: GuestRoutes): PreviewShares {
-    const built = new PreviewShares({
+  function buildShares(guestRoutes: GuestRoutes): AssetShares {
+    const built = new AssetShares({
       tunnel: tunnels,
       guestRoutes: {
         handle(ctx, req, res) {
           handed.push(`${req.method} ${ctx.path}`);
           return guestRoutes.handle(ctx, req, res);
         },
+        shell: (ctx, req, res) => guestRoutes.shell(ctx, req, res),
+        asset: (ctx, name, req, res) => guestRoutes.asset(ctx, name, req, res),
       },
-      isCezar: async () => 'not-cezar',
       onChange: () => {},
       now: () => clock,
     });
@@ -194,15 +193,13 @@ describe('the share listener’s own pages', () => {
     return built;
   }
 
-  afterEach(async () => {
+  afterEach(() => {
     for (const built of others) built.closeAll();
-    upstream.closeAllConnections();
-    await new Promise<void>((resolve) => upstream.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function open(runId: string, projectId: string, on: PreviewShares = shares): Promise<Site> {
-    const started = await on.start({ runId, projectId, target: `${app}/settings?tab=1`, parentOrigin: COCKPIT, forbidden: [] });
+  async function open(runId: string, projectId: string, on: AssetShares = shares): Promise<Site> {
+    const started = await on.start({ runId, projectId, asset: ASSET, assetTitle: TITLE });
     if (!started.ok) throw new Error(started.error);
     const url = new URL(started.share.url);
     return { runId, port: tunnels.started.at(-1)!, host: url.host, origin: url.origin, joinPath: url.pathname + url.search };
@@ -241,7 +238,7 @@ describe('the share listener’s own pages', () => {
   }
 
   /** A browser brought to `state` the way a real one gets there. `expired` moves the clock for everyone. */
-  async function guestIn(state: State, name = 'Ana', site: Site = main, on: PreviewShares = shares): Promise<Browser> {
+  async function guestIn(state: State, name = 'Ana', site: Site = main, on: AssetShares = shares): Promise<Browser> {
     const guest = await join(site);
     if (state === 'new') return guest;
     expect((await guest.post('ask', { name })).status).toBe(200);
@@ -252,8 +249,11 @@ describe('the share listener’s own pages', () => {
     return guest;
   }
 
+  /** `GET /` as this browser: the shell for an allowed one. */
+  const shellOf = (guest: Browser): Promise<Answer> =>
+    send(guest.site.port, guest.site.host, '/', { headers: { cookie: `theme=dark; __cezar_share=${guest.cookie}` } });
+
   const comment = () => ({
-    url: `${app}/settings?tab=1`,
     selector: 'main > form.settings > button.btn-primary',
     label: 'Save',
     excerpt: '<button class="btn-primary" type="submit">Save</button>',
@@ -280,21 +280,18 @@ describe('the share listener’s own pages', () => {
   }
 
   describe('the waiting page', () => {
-    const configOf = (html: string): { next: string } =>
-      JSON.parse(/<script type="application\/json" id="cezar-share-config">([^<]*)<\/script>/.exec(html)![1]!) as { next: string };
-
     it.each(EVERY_STATE)('is served to a %s browser', async (state) => {
       const res = await (await guestIn(state)).get('wait');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
       expect(res.body.startsWith('<!doctype html>')).toBe(true);
-      expect(appRequests).toEqual([]);
     });
 
     it('carries the wording a visitor reads', async () => {
       const { body } = await (await join()).get('wait');
       for (const text of [
-        'Someone is sharing an app preview with you.',
+        'Someone is sharing a design with you.',
+        '<title>Shared design</title>',
         'Your name',
         'Ask to join',
         'Waiting to be let in…',
@@ -327,7 +324,7 @@ describe('the share listener’s own pages', () => {
       expect(first.headers['referrer-policy']).toBe('no-referrer');
 
       const scripts = [...first.body.matchAll(/<script\b([^>]*)>/g)].map((tag) => tag[1]!.trim());
-      expect(scripts.sort()).toEqual([`nonce="${nonce}"`, 'type="application/json" id="cezar-share-config"'].sort());
+      expect(scripts).toEqual([`nonce="${nonce}"`]);
       expect([...first.body.matchAll(/<style\b([^>]*)>/g)].map((tag) => tag[1]!.trim())).toEqual([`nonce="${nonce}"`]);
       // What the policy would refuse anyway must not be relied on: no handler or style attribute at all.
       expect(first.body).not.toMatch(/<[^>]+\s(on[a-z]+|style)\s*=/i);
@@ -351,33 +348,13 @@ describe('the share listener’s own pages', () => {
       expect(form).toMatch(/<button id="submit" type="submit">Ask to join<\/button>/);
     });
 
-    it('keeps a same-origin relative next and carries it as data', async () => {
-      const { body } = await (await join()).get(`wait?next=${encodeURIComponent('/settings?tab=1#top')}`);
-      expect(configOf(body)).toEqual({ next: '/settings?tab=1#top' });
-    });
-
-    it.each([
-      ['none at all', ''],
-      ['another site', '?next=https%3A%2F%2Fevil.example%2F'],
-      ['a scheme-relative address', '?next=%2F%2Fevil.example%2F'],
-      ['a backslash a browser reads as a slash', '?next=%2F%5Cevil.example'],
-      ['a script address', '?next=javascript%3Aalert(1)'],
-      ['a path with a control character', '?next=%2Fa%0Ab'],
-      ['one over the length the join link allows', `?next=%2F${'a'.repeat(2048)}`],
-    ])('turns %s into /', async (_name, query) => {
-      const { body } = await (await join()).get(`wait${query}`);
-      expect(configOf(body)).toEqual({ next: '/' });
-    });
-
-    it('cannot be made to carry markup or script through next', async () => {
-      const hostile = '/</script><script>alert(1)</script><!--<img src=x onerror=alert(2)>';
-      const { body } = await (await join()).get(`wait?next=${encodeURIComponent(hostile)}`);
-      expect(configOf(body)).toEqual({ next: hostile });
-      expect(body).not.toContain('alert(1)</script>');
-      expect(body).not.toContain('<img');
-      expect(body).not.toContain('<!--');
-      expect(body.match(/<script\b/g)).toHaveLength(2);
-      expect(body.match(/<\/script>/g)).toHaveLength(2);
+    it('carries nothing from its address: a next is ignored', async () => {
+      const guest = await join();
+      const { body } = await guest.get(`wait?next=${encodeURIComponent('//evil.example/</script><script>alert(1)</script>')}`);
+      expect(body).not.toContain('evil.example');
+      expect(body).not.toContain('alert(1)');
+      expect(body.match(/<script\b/g)).toHaveLength(1);
+      expect(body.match(/<\/script>/g)).toHaveLength(1);
     });
 
     it('is never kept by a shared cache', async () => {
@@ -506,9 +483,9 @@ describe('the share listener’s own pages', () => {
         expect(page.el('submit').disabled).toBe(true);
       });
 
-      it('checks every 2 seconds while waiting and goes to next once let in', async () => {
+      it('checks every 2 seconds while waiting and goes to the shell once let in', async () => {
         const guest = await join();
-        const page = await load(guest, `?next=${encodeURIComponent('/settings?tab=1')}`);
+        const page = await load(guest);
         await page.ask('Ana');
         expect([...page.timers.values()].map((timer) => timer.ms)).toEqual([2000]);
         await page.poll();
@@ -516,11 +493,11 @@ describe('the share listener’s own pages', () => {
         expect([...page.timers.values()].map((timer) => timer.ms)).toEqual([2000]);
         shares.decide('r1', guest.id, 'allow');
         await page.poll();
-        expect(page.visited).toEqual(['/settings?tab=1']);
+        expect(page.visited).toEqual(['/']);
         expect(page.timers.size).toBe(0);
       });
 
-      it('sends a browser that is already let in straight on, and to / without a usable next', async () => {
+      it('sends a browser that is already let in straight to the shell, whatever next says', async () => {
         const page = await load(await guestIn('allowed'), '?next=%2F%2Fevil.example');
         expect(page.visited).toEqual(['/']);
       });
@@ -671,7 +648,7 @@ describe('the share listener’s own pages', () => {
       ['no Origin', { origin: undefined }],
       ['another site’s Origin', { origin: 'https://evil.example' }],
       ['an Origin that only starts like the tunnel’s', { origin: 'SITE.evil.example' }],
-      ['the app’s own address as Origin', { origin: 'APP' }],
+      ['another local port as Origin', { origin: 'http://127.0.0.1:1' }],
       ['a null Origin', { origin: 'null' }],
       ['a form’s content type', { 'content-type': 'application/x-www-form-urlencoded' }],
       ['text/plain', { 'content-type': 'text/plain' }],
@@ -679,7 +656,7 @@ describe('the share listener’s own pages', () => {
     ])('refuses a request with %s, and no request is created', async (_name, headers) => {
       const guest = await join();
       const sent = Object.fromEntries(
-        Object.entries(headers).map(([name, value]) => [name, value?.replace('SITE', main.origin).replace('APP', app)]),
+        Object.entries(headers).map(([name, value]) => [name, value?.replace('SITE', main.origin)]),
       );
       const res = await guest.post('ask', { name: 'Ana' }, sent);
       expect(res.status).toBe(403);
@@ -725,29 +702,196 @@ describe('the share listener’s own pages', () => {
     });
   });
 
-  describe('GET guest.js', () => {
-    it('gives an allowed guest the script built for the app’s real address and the allowed name', async () => {
-      const res = await (await guestIn('allowed', 'Ana')).get('guest.js');
+  describe('the shell', () => {
+    const POLICY = /^default-src 'none'; script-src 'nonce-([A-Za-z0-9+/=]{22,})'; style-src 'nonce-\1'; frame-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'$/;
+
+    it('gives an allowed guest the page built for their name, the asset’s title and their own frame address', async () => {
+      const res = await shellOf(await guestIn('allowed', 'Ana'));
       expect(res.status).toBe(200);
-      expect(res.headers['content-type']).toBe('text/javascript; charset=utf-8');
+      expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
       expect(res.headers['x-content-type-options']).toBe('nosniff');
-      expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
       expectUncacheable(res);
-      expect(res.body).toBe(`/* guest script for Ana at ${app} */`);
-      expect(scripted).toEqual([{ upstreamOrigin: app, name: 'Ana' }]);
+      const nonce = POLICY.exec(String(res.headers['content-security-policy']))?.[1];
+      expect(nonce).toBeDefined();
+      expect(shells).toEqual([{ name: 'Ana', title: TITLE, nonce, frameSrc: expect.stringMatching(/^\/__cezar_share__\/a\/[a-f0-9]{64}\/settings-mockup\.html$/) }]);
+      expect(res.body).toBe(`<!-- shell ${JSON.stringify(shells[0])} -->`);
     });
 
-    it.each(NOT_ALLOWED)('answers 404 to a %s browser and builds nothing', async (state) => {
-      const res = await (await guestIn(state)).get('guest.js');
-      expectGone(res);
-      expect(res.body).not.toContain('guest script');
-      expect(scripted).toEqual([]);
+    it('mints a nonce for every load, and a frame address per guest that stays theirs', async () => {
+      const ana = await guestIn('allowed', 'Ana');
+      const piotr = await guestIn('allowed', 'Piotr');
+      await shellOf(ana);
+      await shellOf(ana);
+      await shellOf(piotr);
+      expect(shells[0]!.nonce).not.toBe(shells[1]!.nonce);
+      expect(shells[0]!.frameSrc).toBe(shells[1]!.frameSrc);
+      expect(shells[2]!.frameSrc).not.toBe(shells[0]!.frameSrc);
+    });
+
+    it.each(NOT_ALLOWED)('is not built for a %s browser', async (state) => {
+      const res = await shellOf(await guestIn(state));
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe(`${SHARE}/wait`);
+      expect(shells).toEqual([]);
     });
 
     it('stops answering a guest the owner removed', async () => {
       const guest = await guestIn('allowed');
       expect(shares.removeGuest('r1', guest.id)).toBe(true);
-      expectGone(await guest.get('guest.js'));
+      expect((await shellOf(guest)).status).toBe(302);
+      expect(shells).toEqual([]);
+    });
+  });
+
+  describe('asset files', () => {
+    const PAGE = '<!doctype html><html><head><title>Settings mockup</title></head><body><img src="shots/a.png"><button>Save</button></body></html>';
+    const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
+    let assets: string;
+
+    beforeEach(() => {
+      assets = artifactsDir(dir, 'r1');
+      mkdirSync(joinPath(assets, 'shots'), { recursive: true });
+      writeFileSync(joinPath(assets, ASSET), PAGE);
+      writeFileSync(joinPath(assets, 'shots', 'a.png'), PNG);
+      writeFileSync(joinPath(assets, 'logo.png'), PNG);
+      writeFileSync(joinPath(assets, 'other.html'), '<!doctype html><title>Other</title>secret page');
+      writeFileSync(joinPath(assets, 'notes.md'), '# secret notes');
+      writeFileSync(joinPath(assets, 'data.json'), '{"secret":true}');
+      writeFileSync(joinPath(assets, 'archive.zip'), 'secret bytes');
+      writeFileSync(joinPath(assets, '.env'), 'SECRET=1');
+    });
+
+    /** The frame's base for this guest: what the shell was handed. */
+    async function viewOf(guest: Browser): Promise<string> {
+      expect((await shellOf(guest)).status).toBe(200);
+      return shells.at(-1)!.frameSrc.slice(0, -ASSET.length);
+    }
+    const file = (view: string, name: string, site: Site = main): Promise<Answer> => send(site.port, site.host, `${view}${name}`);
+
+    it('serves the shared asset in the cockpit’s sandbox minus popups, with the framed picker appended', async () => {
+      const view = await viewOf(await guestIn('allowed'));
+      const res = await file(view, ASSET);
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['referrer-policy']).toBe('no-referrer');
+      expectUncacheable(res);
+      const base = `${main.origin}${view}`;
+      const policy = String(res.headers['content-security-policy']);
+      // C15: scripts and nothing else. Every other directive is the cockpit's own, byte for byte.
+      expect(policy.startsWith("sandbox allow-scripts; default-src 'none';")).toBe(true);
+      expect(policy).toBe(artifactCsp(true, base, 'allow-scripts'));
+      expect(policy.replace('sandbox allow-scripts;', 'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox;')).toBe(artifactCsp(true, base));
+      expect(policy).toContain(`img-src data: blob: ${base};`);
+      expect(policy).toContain("connect-src 'none'");
+      expect(policy).toContain("form-action 'none'");
+      expect(policy).not.toContain('allow-same-origin');
+      expect(policy).not.toContain('allow-popups');
+      // The page first, untouched: a script before the doctype would drop it into quirks mode.
+      expect(res.body.startsWith(PAGE)).toBe(true);
+      const tail = res.body.slice(PAGE.length);
+      expect(tail.startsWith('\n<script>')).toBe(true);
+      expect(tail.endsWith('</script>\n')).toBe(true);
+      // The shell is the picker's only parent, under either scheme a TLS edge may show.
+      expect(tail).toContain(`"parentOrigins":["http://${main.host}","https://${main.host}"]`);
+    });
+
+    it('serves an image of the run, at the top or one folder down, with the inert policy', async () => {
+      const view = await viewOf(await guestIn('allowed'));
+      for (const name of ['shots/a.png', 'logo.png']) {
+        const res = await file(view, name);
+        expect(res.status, name).toBe(200);
+        expect(res.headers['content-type']).toBe('image/png');
+        expect(res.headers['content-security-policy']).toBe("default-src 'none'; style-src 'unsafe-inline'; sandbox");
+        expect(res.headers['x-content-type-options']).toBe('nosniff');
+        expectUncacheable(res);
+        expect(Buffer.from(res.body, 'utf8').length).toBeGreaterThan(0);
+      }
+    });
+
+    it.each([
+      ['another HTML asset of the task', 'other.html'],
+      ['a Markdown asset', 'notes.md'],
+      ['a JSON asset', 'data.json'],
+      ['a file of no listed kind', 'archive.zip'],
+      ['an image that is not there', 'shots/missing.png'],
+      ['a folder', 'shots'],
+    ])('answers 404 for %s, with nothing of it', async (_label, name) => {
+      const view = await viewOf(await guestIn('allowed'));
+      const res = await file(view, name);
+      expect(res.status).toBe(404);
+      expect(res.body).not.toContain('secret');
+      expectUncacheable(res);
+    });
+
+    it('never follows a symlink out of the folder, for the shared name or an image', async () => {
+      const outside = joinPath(dir, 'outside.html');
+      writeFileSync(outside, 'secret outside');
+      rmSync(joinPath(assets, ASSET));
+      symlinkSync(outside, joinPath(assets, ASSET));
+      symlinkSync(outside, joinPath(assets, 'link.png'));
+      const view = await viewOf(await guestIn('allowed'));
+      for (const name of [ASSET, 'link.png']) {
+        const res = await file(view, name);
+        expect(res.status, name).toBe(404);
+        expect(res.body).not.toContain('secret');
+      }
+    });
+
+    it('serves the file as it is now: a rewrite shows on the next load', async () => {
+      const view = await viewOf(await guestIn('allowed'));
+      expect((await file(view, ASSET)).body).toContain('<button>Save</button>');
+      writeFileSync(joinPath(assets, ASSET), '<!doctype html><title>v2</title><button>Save changes</button>');
+      const next = await file(view, ASSET);
+      expect(next.body).toContain('<button>Save changes</button>');
+      expect(next.body).not.toContain('<button>Save</button>');
+    });
+
+    it('answers a plain page while the shared file is gone, keeps the share up, and serves it again when it is back', async () => {
+      const guest = await guestIn('allowed');
+      const view = await viewOf(guest);
+      rmSync(joinPath(assets, ASSET));
+      const away = await file(view, ASSET);
+      expect(away.status).toBe(404);
+      expect(away.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(away.body).toBe('This page is not available right now.');
+      expectUncacheable(away);
+      expect(shares.get('r1')).not.toBeNull();
+      expect((await guest.get('status')).json.state).toBe('allowed');
+      // Renamed to something that is no page: still away, not served as another kind.
+      writeFileSync(joinPath(assets, 'settings-mockup.md'), '# moved');
+      expect((await file(view, ASSET)).status).toBe(404);
+      writeFileSync(joinPath(assets, ASSET), PAGE);
+      expect((await file(view, ASSET)).status).toBe(200);
+    });
+
+    it('drops every https source when CEZ_ARTIFACTS_CDN is off, as the cockpit does', async () => {
+      cdn = false;
+      const view = await viewOf(await guestIn('allowed'));
+      const policy = String((await file(view, ASSET)).headers['content-security-policy']);
+      expect(policy).toBe(artifactCsp(false, `${main.origin}${view}`, 'allow-scripts'));
+      expect(policy).not.toContain('https:');
+    });
+
+    it('reads a guest’s files from the share’s own task only', async () => {
+      const elsewhere = await open('r2', 'p1');
+      mkdirSync(artifactsDir(dir, 'r2'), { recursive: true });
+      writeFileSync(joinPath(artifactsDir(dir, 'r2'), ASSET), '<!doctype html><title>r2</title>second task');
+      const guest = await guestIn('allowed', 'Ola', elsewhere);
+      const view = await viewOf(guest);
+      expect((await file(view, ASSET, elsewhere)).body).toContain('second task');
+      // The first task's image is not this share's.
+      expect((await file(view, 'logo.png', elsewhere)).status).toBe(404);
+      // And a key is good on its own share only.
+      expect((await file(view, ASSET)).status).toBe(404);
+    });
+
+    it('answers 404 when the share’s project has no data folder', async () => {
+      const lost = await open('r9', 'p-gone');
+      const guest = await guestIn('allowed', 'Ana', lost);
+      const view = await viewOf(guest);
+      expect((await file(view, ASSET, lost)).status).toBe(404);
     });
   });
 
@@ -767,11 +911,10 @@ describe('the share listener’s own pages', () => {
         expectJson(res);
         expectUncacheable(res);
         expect(res.json).toEqual({
-          comment: { ...comment(), id: expect.any(String), revision: 1, author: 'Ana', createdAt: new Date(clock).toISOString() },
+          comment: { ...comment(), asset: ASSET, id: expect.any(String), revision: 1, author: 'Ana', createdAt: new Date(clock).toISOString() },
         });
         expect(stored()).toEqual([{ ...res.json.comment, guestId: ana.id }]);
         expect(published).toEqual([['p1', 'r1']]);
-        expect(appRequests).toEqual([]);
       });
 
       it('takes the author from the allowed guest, never from the body', async () => {
@@ -790,7 +933,7 @@ describe('the share listener’s own pages', () => {
         });
         expect(res.status).toBe(201);
         expect(stored()).toEqual([
-          { ...comment(), id: res.json.comment.id, revision: 1, author: 'Ana', guestId: ana.id, createdAt: new Date(clock).toISOString() },
+          { ...comment(), asset: ASSET, id: res.json.comment.id, revision: 1, author: 'Ana', guestId: ana.id, createdAt: new Date(clock).toISOString() },
         ]);
         expect(res.json.comment.id).not.toBe('chosen');
         expect((await piotr.get('comments')).json.comments).toEqual([]);
@@ -804,7 +947,6 @@ describe('the share listener’s own pages', () => {
 
       it('stores every text field without bidi controls', async () => {
         const res = await ana.post('comments', {
-          url: `${app}/settings`,
           selector: laced('a'),
           label: laced('b'),
           excerpt: laced('c'),
@@ -856,52 +998,12 @@ describe('the share listener’s own pages', () => {
         expect((await ana.post('comments', comment(), { 'content-type': 'Application/JSON; charset=utf-8' })).status).toBe(201);
       });
 
-      it.each([
-        ['an address on a host that only starts like the app’s', () => `${app}.evil.example/settings`],
-        ['the app’s address used as a login', () => `${app}@evil.example/settings`],
-        ['the app’s address with a user and a password', () => `${app.replace('http://', 'http://user:pw@')}/x`],
-        ['the app’s address with a user alone', () => `${app.replace('http://', 'http://user@')}/x`],
-        ['the app’s address with a password alone', () => `${app.replace('http://', 'http://:pw@')}/x`],
-        ['a blob address whose origin is the app’s', () => `blob:${app}/abc`],
-        ['another local port', () => 'http://127.0.0.1:1/settings'],
-        ['the tunnel’s own address', () => `${main.origin}/settings`],
-        ['the app under another scheme', () => `${app.replace('http:', 'https:')}/settings`],
-        ['the app under a WebSocket scheme', () => `${app.replace('http:', 'ws:')}/settings`],
-        ['a script address', () => 'javascript:alert(1)'],
-        ['a relative path', () => '/settings'],
-        ['something that is not an address', () => 'not a url'],
-        ['an address that is over 2,000 characters once spelled out', () => `${app}/${' '.repeat(700)}x`],
-      ])('answers 400 to %s as the comment’s page', async (_name, url) => {
-        const res = await ana.post('comments', { ...comment(), url: url() });
-        expect(res.status).toBe(400);
-        expectJson(res);
-        expect(stored()).toEqual([]);
-        expect(published).toEqual([]);
-        // A refused address must not have damaged the list: the next comment is saved and read back.
-        expect((await ana.post('comments', comment())).status).toBe(201);
-        expect((await ana.get('comments')).json.comments).toHaveLength(1);
-      });
-
-      it.each([
-        ['the app’s page as a browser spells it', (a: string) => `${a}/settings?tab=1#top`, (a: string) => `${a}/settings?tab=1#top`],
-        ['no path', (a: string) => a, (a: string) => `${a}/`],
-        ['an upper-case scheme', (a: string) => `${a.replace('http://', 'HTTP://')}/Settings`, (a: string) => `${a}/Settings`],
-        ['another spelling of the same host', (a: string) => `${a.replace('127.0.0.1', '0x7f.1')}/x`, (a: string) => `${a}/x`],
-        ['a backslash before an at sign', (a: string) => `${a}\\@evil.example/`, (a: string) => `${a}/@evil.example/`],
-        ['dot segments', (a: string) => `${a}/a/../b?q=1#h`, (a: string) => `${a}/b?q=1#h`],
-        [
-          'spaces around it, line breaks, a tab and backticks inside',
-          (a: string) => ` ${a}/a\n\n## x \`y\`\tz `,
-          (a: string) => `${a}/a##%20x%20%60y%60z`,
-        ],
-        ['a space and a backtick in its query', (a: string) => `${a}/?q=\`x\`&r=a b`, (a: string) => `${a}/?q=\`x\`&r=a%20b`],
-      ])('stores the one spelling it checked for %s, never the text that was sent', async (_name, sent, kept) => {
-        const res = await ana.post('comments', { ...comment(), url: sent(app) });
+      it('takes the asset from the share, never from the body, and keeps no address', async () => {
+        const res = await ana.post('comments', { ...comment(), asset: 'other.html', url: 'https://evil.example/' });
         expect(res.status).toBe(201);
-        expect(res.json.comment.url).toBe(kept(app));
-        expect(stored().map((saved) => saved.url)).toEqual([kept(app)]);
-        expect(stored()[0]!.url).not.toMatch(/[\s\\]/);
-        expect(stored()[0]!.url.length).toBeLessThanOrEqual(GUEST_URL_MAX);
+        expect(res.json.comment.asset).toBe(ASSET);
+        expect(stored()[0]!.asset).toBe(ASSET);
+        expect(stored()[0]).not.toHaveProperty('url');
       });
 
       it.each([
@@ -911,11 +1013,10 @@ describe('the share listener’s own pages', () => {
         ['text over 2,000 characters', () => ({ ...comment(), body: 'x'.repeat(2001) })],
         ['markup over 600 characters', () => ({ ...comment(), excerpt: 'x'.repeat(601) })],
         ['a label over 80 characters', () => ({ ...comment(), label: 'x'.repeat(81) })],
-        ['an address over 2,000 characters', () => ({ ...comment(), url: `${app}/${'a'.repeat(2000)}` })],
         ['a field that is not text', () => ({ ...comment(), label: 7 })],
         ['a list', () => [comment()]],
         ['a bare word', () => 'null'],
-        ['a body that is not JSON', () => '{"url":'],
+        ['a body that is not JSON', () => '{"body":'],
         ['no body', () => ''],
       ])('answers 400 to %s', async (_name, body) => {
         const res = await ana.post('comments', body());
@@ -926,7 +1027,7 @@ describe('the share listener’s own pages', () => {
       });
 
       it('answers 409 once the run holds 50 unsent comments', async () => {
-        for (let i = 0; i < GUEST_COMMENTS_MAX; i += 1) addGuestComment(dir, 'r1', { ...comment(), body: `c${i}`, author: 'Piotr', guestId: piotr.id });
+        for (let i = 0; i < GUEST_COMMENTS_MAX; i += 1) addGuestComment(dir, 'r1', { ...comment(), asset: ASSET, body: `c${i}`, author: 'Piotr', guestId: piotr.id });
         const res = await ana.post('comments', comment());
         expect(res.status).toBe(409);
         expectJson(res);
@@ -937,9 +1038,9 @@ describe('the share listener’s own pages', () => {
 
       it('answers 409 once the run’s unsent text would pass its budget', async () => {
         const big = { ...comment(), excerpt: 'e'.repeat(600), selector: 's'.repeat(1000), body: 'b'.repeat(2000) };
-        const each = big.url.length + big.selector.length + big.label.length + big.excerpt.length + big.body.length + GUEST_COMMENT_OVERHEAD;
+        const each = ASSET.length + big.selector.length + big.label.length + big.excerpt.length + big.body.length + GUEST_COMMENT_OVERHEAD;
         for (let i = 0; i < Math.floor(GUEST_COMMENTS_TEXT_BUDGET / each); i += 1) {
-          expect(addGuestComment(dir, 'r1', { ...big, author: 'Piotr', guestId: piotr.id }).ok).toBe(true);
+          expect(addGuestComment(dir, 'r1', { ...big, asset: ASSET, author: 'Piotr', guestId: piotr.id }).ok).toBe(true);
         }
         const before = stored().length;
         const res = await ana.post('comments', big);
@@ -1009,7 +1110,7 @@ describe('the share listener’s own pages', () => {
           body: 'new text',
           author: 'Marta',
           guestId: piotr.id,
-          url: 'https://evil.example/',
+          asset: 'other.html',
           selector: 'body',
           revision: 40,
           id: 'other',
@@ -1038,7 +1139,7 @@ describe('the share listener’s own pages', () => {
         const big = { ...comment(), excerpt: 'e'.repeat(600), selector: 's'.repeat(1000), body: 'b'.repeat(2000) };
         // Big ones, then small ones: what is left is less than one small comment, whatever the cost rule.
         for (const filler of [big, comment()]) {
-          while (addGuestComment(dir, 'r1', { ...filler, author: 'Piotr', guestId: piotr.id }).ok) {
+          while (addGuestComment(dir, 'r1', { ...filler, asset: ASSET, author: 'Piotr', guestId: piotr.id }).ok) {
             /* fill what is left */
           }
         }
@@ -1165,7 +1266,6 @@ describe('the share listener’s own pages', () => {
         const unknown = browser('f'.repeat(64));
         for (const res of [
           await unknown.get('comments'),
-          await unknown.get('guest.js'),
           await unknown.get('status'),
           await unknown.get('wait'),
           await unknown.post('comments', comment()),
@@ -1175,7 +1275,7 @@ describe('the share listener’s own pages', () => {
           expect(res.body).toBe(GONE);
         }
         expect(stored()).toEqual([]);
-        expect(scripted).toEqual([]);
+        expect(shells).toEqual([]);
       });
     });
 
@@ -1185,7 +1285,7 @@ describe('the share listener’s own pages', () => {
         ['another site’s Origin', { origin: 'https://evil.example' }],
         ['an Origin that only starts like the tunnel’s', { origin: 'SITE.evil.example' }],
         ['the tunnel’s Origin with a path', { origin: 'SITE/' }],
-        ['the app’s own address as Origin', { origin: 'APP' }],
+        ['another local port as Origin', { origin: 'http://127.0.0.1:1' }],
         ['a null Origin', { origin: 'null' }],
         ['a form’s content type', { 'content-type': 'application/x-www-form-urlencoded' }],
         ['text/plain', { 'content-type': 'text/plain' }],
@@ -1194,7 +1294,7 @@ describe('the share listener’s own pages', () => {
       ])('with %s is refused on every write, and changes nothing', async (_name, headers) => {
         const { id } = (await ana.post('comments', comment())).json.comment;
         const sent = Object.fromEntries(
-          Object.entries(headers).map(([name, value]) => [name, value?.replace('SITE', main.origin).replace('APP', app)]),
+          Object.entries(headers).map(([name, value]) => [name, value?.replace('SITE', main.origin)]),
         );
         for (const res of [
           await ana.post('comments', comment(), sent),
@@ -1398,19 +1498,17 @@ describe('the share listener’s own pages', () => {
       ['PUT', 'ask'],
       ['DELETE', 'comments'],
       ['PATCH', 'comments/abc'],
-    ])('%s %s answers 404 from the listener itself, never from the app', async (method, path) => {
+    ])('%s %s answers 404', async (method, path) => {
       const guest = await guestIn('allowed');
       const res = await guest.call(method, path, method === 'GET' || method === 'DELETE' ? undefined : { body: 'x', name: 'x' });
       expectGone(res);
       expectUncacheable(res);
-      expect(appRequests).toEqual([]);
     });
 
     it('answers 404 for the bare prefix too', async () => {
       const guest = await guestIn('allowed');
       const res = await send(main.port, main.host, SHARE, { headers: { cookie: `__cezar_share=${guest.cookie}` } });
       expectGone(res);
-      expect(appRequests).toEqual([]);
     });
   });
 
@@ -1438,7 +1536,7 @@ describe('the share listener’s own pages', () => {
         destroy() {},
       };
       const req = { method, url: path, headers: { origin: ORIGIN, 'content-type': 'application/json' }, on: () => req };
-      const ctx: GuestRequest = { runId: 'r1', projectId: 'p1', path, tunnelOrigin: ORIGIN, upstreamOrigin: 'http://localhost:5173', guest, ask: () => ({ error: 'no' }) };
+      const ctx: GuestRequest = { runId: 'r1', projectId: 'p1', path, tunnelOrigin: ORIGIN, asset: ASSET, assetTitle: TITLE, guest, ask: () => ({ error: 'no' }) };
       const returned = on.handle(ctx, req as unknown as IncomingMessage, res as unknown as ServerResponse);
       return { returned, ...seen };
     }
@@ -1470,18 +1568,42 @@ describe('the share listener’s own pages', () => {
 
     it('answers 404 to an allowed guest that somehow has no name, rather than saving an unnamed comment', () => {
       expect(direct(routes, { id: 'a'.repeat(16), state: 'allowed' }, 'GET', `${SHARE}/comments`).status).toBe(404);
-      expect(direct(routes, { id: 'a'.repeat(16), state: 'allowed' }, 'GET', `${SHARE}/guest.js`).status).toBe(404);
     });
 
-    it('answers 500 when the script cannot be built', () => {
+    it('answers 500 when the shell cannot be built, and 404 to anyone who is not an allowed, named guest with a view', () => {
+      const shell = (on: GuestRoutes, guest: GuestRequest['guest'], viewBase?: string): number => {
+        const seen = { status: 0 };
+        const res = {
+          headersSent: false,
+          destroyed: false,
+          writeHead(status: number) {
+            seen.status = status;
+            this.headersSent = true;
+            return this;
+          },
+          end() {
+            return this;
+          },
+          destroy() {},
+        };
+        const ctx: GuestRequest = { runId: 'r1', projectId: 'p1', path: '/', tunnelOrigin: ORIGIN, asset: ASSET, assetTitle: TITLE, ...(viewBase ? { viewBase } : {}), guest, ask: () => ({ error: 'no' }) };
+        on.shell(ctx, {} as IncomingMessage, res as unknown as ServerResponse);
+        return seen.status;
+      };
       const broken = createGuestRoutes({
         dataDirOf: () => dir,
         onComments: () => {},
-        guestScript: () => {
-          throw new Error('no script');
+        guestShell: () => {
+          throw new Error('no shell');
         },
       });
-      expect(direct(broken, { id: 'a'.repeat(16), state: 'allowed', name: 'Ana' }, 'GET', `${SHARE}/guest.js`)).toMatchObject({ returned: true, status: 500 });
+      const view = `${SHARE}/a/${'a'.repeat(64)}/`;
+      expect(shell(broken, { id: 'a'.repeat(16), state: 'allowed', name: 'Ana' }, view)).toBe(500);
+      expect(shell(routes, { id: 'a'.repeat(16), state: 'allowed', name: 'Ana' }, view)).toBe(200);
+      expect(shell(routes, { id: 'a'.repeat(16), state: 'allowed', name: 'Ana' })).toBe(404);
+      expect(shell(routes, { id: 'a'.repeat(16), state: 'allowed' }, view)).toBe(404);
+      expect(shell(routes, { id: 'a'.repeat(16), state: 'waiting', name: 'Ana' }, view)).toBe(404);
+      expect(shell(routes, null, view)).toBe(404);
     });
 
     /** A `POST comments` whose body the test feeds by hand, and an answer that only counts what was written. */
@@ -1510,12 +1632,13 @@ describe('the share listener’s own pages', () => {
         projectId: 'p1',
         path: `${SHARE}/comments`,
         tunnelOrigin: ORIGIN,
-        upstreamOrigin: 'http://localhost:5173',
+        asset: ASSET,
+        assetTitle: TITLE,
         guest: { id: 'a'.repeat(16), state: 'allowed', name: 'Ana', code: '1234' },
         ask: () => ({ error: 'no' }),
       };
       expect(routes.handle(ctx, req as unknown as IncomingMessage, res as unknown as ServerResponse)).toBe(true);
-      const whole = Buffer.from(JSON.stringify({ ...comment(), url: 'http://localhost:5173/settings' }));
+      const whole = Buffer.from(JSON.stringify(comment()));
       const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
       return { req, res, whole, turn };
     }

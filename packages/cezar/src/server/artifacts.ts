@@ -18,16 +18,22 @@ const CDN_SCRIPT = ['https://cdnjs.cloudflare.com', 'https://cdn.jsdelivr.net', 
 const CDN_STYLE = ['https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com', 'https://cdn.jsdelivr.net'];
 const CDN_FONT = ['https://fonts.gstatic.com'];
 
+/** What an asset's frame may do in the cockpit. */
+const ARTIFACT_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
+/** A shared asset gets no popups: its script must have no way to pass its address on (spec
+ *  2026-11-28-asset-share-link C15). */
+export const SHARED_ARTIFACT_SANDBOX = 'allow-scripts';
+
 /**
  * The exact CSP of an HTML artifact (Q3 + Q4). `cdnEnabled` false drops every `https:` source.
  * `ownBase` is this run's artifacts URL (`artifactsBaseUrl`): images and media load from there
  * only. `'self'` is not used — it would admit every cockpit route, and no other run's files.
  */
-export function artifactCsp(cdnEnabled: boolean, ownBase?: string): string {
+export function artifactCsp(cdnEnabled: boolean, ownBase?: string, sandbox: string = ARTIFACT_SANDBOX): string {
   const src = (base: string[], cdn: string[]) => [...base, ...(cdnEnabled ? cdn : [])].join(' ');
   const own = ownBase ? ` ${ownBase}` : '';
   return [
-    'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox',
+    `sandbox ${sandbox}`,
     "default-src 'none'",
     `script-src ${src(["'unsafe-inline'"], CDN_SCRIPT)}`,
     `style-src ${src(["'unsafe-inline'"], CDN_STYLE)}`,
@@ -111,14 +117,14 @@ export function appendToStream(stream: ReadableStream<Uint8Array>, tail: string)
 }
 
 /** Response headers for one listed artifact, by kind. */
-export function artifactHeaders(artifact: RunArtifact, cdnEnabled: boolean, ownBase?: string): Record<string, string> {
+export function artifactHeaders(artifact: RunArtifact, cdnEnabled: boolean, ownBase?: string, sandbox?: string): Record<string, string> {
   const common = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' };
   switch (artifact.kind) {
     case 'html':
       return {
         ...common,
         'content-type': 'text/html; charset=utf-8',
-        'content-security-policy': artifactCsp(cdnEnabled, ownBase),
+        'content-security-policy': artifactCsp(cdnEnabled, ownBase, sandbox),
         'referrer-policy': 'no-referrer',
         'cross-origin-resource-policy': 'same-origin',
       };

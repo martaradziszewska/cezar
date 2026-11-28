@@ -10,15 +10,15 @@ import { createQueryClient } from '@/api/query-client'
 
 import { LiveSharesIndicator, TaskShareBadge } from './live-shares-indicator'
 
-/** The live-link indicators outside the Preview (spec 2026-11-26-preview-share-link, C7). */
+/** The live-link indicators outside the Assets tab (spec 2026-11-28-asset-share-link, C7). */
 
-const api = vi.hoisted(() => ({ stopPreviewShare: vi.fn(), getLiveShares: vi.fn() }))
+const api = vi.hoisted(() => ({ stopAssetShare: vi.fn(), getLiveShares: vi.fn() }))
 vi.mock('@/api/client', async (importOriginal) => ({ ...(await importOriginal<object>()), ...api }))
 
-const capability = vi.hoisted(() => ({ previewShare: true }))
+const capability = vi.hoisted(() => ({ assetShare: true }))
 vi.mock('@/api/queries', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  useHealth: () => ({ data: { capabilities: { previewShare: capability.previewShare } } }),
+  useHealth: () => ({ data: { capabilities: { assetShare: capability.assetShare } } }),
 }))
 
 const toast = vi.hoisted(() => vi.fn())
@@ -29,7 +29,8 @@ const listed = (overrides: Partial<Listed> = {}): Listed => ({
   projectId: 'cezar',
   runId: 'r1',
   title: 'Brand the Save button',
-  target: 'http://localhost:5173',
+  asset: 'mockups/settings.html',
+  assetTitle: 'Settings mockup',
   expiresAt: '2026-11-27T18:40:00.000Z',
   waiting: 0,
   ...overrides,
@@ -54,8 +55,8 @@ const badge = () => document.querySelector('[data-slot="task-share-badge"]')
 
 beforeEach(() => {
   client = createQueryClient()
-  capability.previewShare = true
-  api.stopPreviewShare.mockReset()
+  capability.assetShare = true
+  api.stopAssetShare.mockReset()
   api.getLiveShares.mockReset().mockResolvedValue({ shares: [] })
   toast.mockReset()
 })
@@ -82,27 +83,28 @@ describe('LiveSharesIndicator', () => {
   })
 
   it('stays visible while sharing is off, so a live link can still be stopped', () => {
-    capability.previewShare = false
+    capability.assetShare = false
     seed([listed()])
     renderWith(<LiveSharesIndicator />)
     expect(indicator()).not.toBeNull()
   })
 
-  it('lists each share with Open into its Preview, on the share’s own project', () => {
-    seed([listed(), listed({ projectId: 'other', runId: 'r2', title: '', target: 'http://127.0.0.1:3000' })])
+  it('lists each share with Open onto its asset, on the share’s own project', () => {
+    seed([listed(), listed({ projectId: 'other', runId: 'r2', title: '', asset: 'plain.html', assetTitle: '' })])
     renderWith(<LiveSharesIndicator />)
     fireEvent.click(screen.getByRole('button', { name: /live links/ }))
     const items = Array.from(document.querySelectorAll<HTMLElement>('[data-slot="live-share"]'))
     expect(items.map((item) => item.querySelector('[data-slot="live-share-title"]')?.textContent)).toEqual([
       'Brand the Save button',
-      // No title yet: the target's host stands in.
-      '127.0.0.1:3000',
+      // No task title yet: what is shared stands in, and an untitled page goes by its file name.
+      'plain.html',
     ])
+    expect(items.map((item) => item.querySelector('[data-slot="live-share-asset"]')?.textContent)).toEqual(['Settings mockup', 'plain.html'])
     const opens = screen.getAllByRole('link', { name: 'Open' })
-    expect(opens.map((link) => link.getAttribute('href'))).toEqual(['/p/cezar/tasks/r1/preview', '/p/other/tasks/r2/preview'])
+    expect(opens.map((link) => link.getAttribute('href'))).toEqual(['/p/cezar/tasks/r1/assets/mockups%2Fsettings.html', '/p/other/tasks/r2/assets/plain.html'])
   })
 
-  it('closes the list when Open is clicked: the Preview it opens is not covered by it', async () => {
+  it('closes the list when Open is clicked: the asset it opens is not covered by it', async () => {
     seed([listed(), listed({ projectId: 'other', runId: 'r2' })])
     renderWith(<LiveSharesIndicator />)
     fireEvent.click(screen.getByRole('button', { name: /live links/ }))
@@ -118,18 +120,18 @@ describe('LiveSharesIndicator', () => {
 
   it('Stop sharing stops that run’s share in its own project', async () => {
     seed([listed(), listed({ projectId: 'other', runId: 'r2' })])
-    api.stopPreviewShare.mockResolvedValue({ share: null })
+    api.stopAssetShare.mockResolvedValue({ share: null })
     renderWith(<LiveSharesIndicator />)
     fireEvent.click(screen.getByRole('button', { name: /live links/ }))
     fireEvent.click(screen.getAllByRole('button', { name: 'Stop sharing' })[1]!)
-    await waitFor(() => expect(api.stopPreviewShare).toHaveBeenCalledWith('r2', 'other'))
-    expect(api.stopPreviewShare).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(api.stopAssetShare).toHaveBeenCalledWith('r2', 'other'))
+    expect(api.stopAssetShare).toHaveBeenCalledTimes(1)
     expect(toast).not.toHaveBeenCalled()
   })
 
   it('toasts the server’s message when a stop fails', async () => {
     seed([listed()])
-    api.stopPreviewShare.mockRejectedValue(new ApiError(404, 'no such run'))
+    api.stopAssetShare.mockRejectedValue(new ApiError(404, 'no such run'))
     renderWith(<LiveSharesIndicator />)
     fireEvent.click(screen.getByRole('button', { name: /live link/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }))

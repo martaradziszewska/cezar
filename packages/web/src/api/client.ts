@@ -63,9 +63,9 @@ import type {
   CancelResponse,
   ChangesPayload,
   RunArtifactsResponse,
-  PreviewShareRequest,
-  PreviewShareResponse,
-  PreviewShareStateResponse,
+  AssetShareRequest,
+  AssetShareResponse,
+  AssetShareStateResponse,
   GuestCommentsResponse,
   GuestCommentsSentResponse,
   LiveSharesResponse,
@@ -1440,8 +1440,8 @@ export async function getRunArtifacts(id: string, opts?: ReadOptions): Promise<R
   )
 }
 
-/** A failed `POST /runs/:id/preview-share`. `message` is the server's `error`; `code`/`install`
- *  are the fields it pairs with a missing or failed tunnel (spec 2026-11-26-preview-share-link). */
+/** A failed `POST /runs/:id/asset-share`. `message` is the server's `error`; `code`/`install`
+ *  are the fields it pairs with a missing or failed tunnel (spec 2026-11-28-asset-share-link). */
 export class ShareError extends Error {
   readonly status: number
   readonly code?: 'no-tunnel' | 'tunnel-failed'
@@ -1456,9 +1456,9 @@ export class ShareError extends Error {
   }
 }
 
-/** Start sharing the task's Preview. The answer carries the secret link token: never log it. */
-export async function startPreviewShare(runId: string, input: PreviewShareRequest): Promise<PreviewShareResponse> {
-  const res = await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].$post({
+/** Start sharing one HTML asset of the task. The answer carries the secret link token: never log it. */
+export async function startAssetShare(runId: string, input: AssetShareRequest): Promise<AssetShareResponse> {
+  const res = await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].$post({
     param: { projectId: queryScope(), id: encodeURIComponent(runId) },
     json: input,
   })
@@ -1472,65 +1472,65 @@ export async function startPreviewShare(runId: string, input: PreviewShareReques
     throw new ShareError(res.status, failure.message, { ...(code ? { code } : {}), ...(install ? { install } : {}) })
   }
   const parsed = parseJson(body)
-  if (parsed === undefined) throw new ApiError(res.status, `the cezar server answered ${runPath(runId, '/preview-share')} with a non-JSON body`)
-  return parsed as PreviewShareResponse
+  if (parsed === undefined) throw new ApiError(res.status, `the cezar server answered ${runPath(runId, '/asset-share')} with a non-JSON body`)
+  return parsed as AssetShareResponse
 }
 
 /** The task's current share, or `{ share: null }`. */
-export async function getPreviewShare(runId: string, opts?: ReadOptions): Promise<PreviewShareStateResponse> {
+export async function getAssetShare(runId: string, opts?: ReadOptions): Promise<AssetShareStateResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].$get(
+    await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].$get(
       { param: { projectId: queryScope(), id: encodeURIComponent(runId) } },
       init(opts),
     ),
-    runPath(runId, '/preview-share'),
+    runPath(runId, '/asset-share'),
   )
 }
 
 /** `projectId` pins it from outside the run's scope (the workspace live-links indicator). */
-export async function stopPreviewShare(runId: string, projectId: string = queryScope()): Promise<PreviewShareStateResponse> {
+export async function stopAssetShare(runId: string, projectId: string = queryScope()): Promise<AssetShareStateResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].$delete({
+    await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].$delete({
       param: { projectId, id: encodeURIComponent(runId) },
     }),
-    runPath(runId, '/preview-share'),
+    runPath(runId, '/asset-share'),
   )
 }
 
-/** Another 8 hours from now (spec 2026-11-26-preview-share-link C5). The answer carries the link token. */
-export async function extendPreviewShare(runId: string): Promise<PreviewShareStateResponse> {
+/** Another 8 hours from now (spec 2026-11-28-asset-share-link C5). The answer carries the link token. */
+export async function extendAssetShare(runId: string): Promise<AssetShareStateResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].extend.$post({
+    await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].extend.$post({
       param: { projectId: queryScope(), id: encodeURIComponent(runId) },
     }),
-    runPath(runId, '/preview-share/extend'),
+    runPath(runId, '/asset-share/extend'),
   )
 }
 
-export async function decidePreviewShareGuest(
+export async function decideAssetShareGuest(
   runId: string,
   guestId: string,
   decision: 'allow' | 'deny',
-): Promise<PreviewShareStateResponse> {
+): Promise<AssetShareStateResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].guests[':guestId'].$post({
+    await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].guests[':guestId'].$post({
       param: { projectId: queryScope(), id: encodeURIComponent(runId), guestId: encodeURIComponent(guestId) },
       json: { decision },
     }),
-    runPath(runId, '/preview-share/guests'),
+    runPath(runId, '/asset-share/guests'),
   )
 }
 
-export async function removePreviewShareGuest(runId: string, guestId: string): Promise<PreviewShareStateResponse> {
+export async function removeAssetShareGuest(runId: string, guestId: string): Promise<AssetShareStateResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id']['preview-share'].guests[':guestId'].$delete({
+    await cez.api.v1.p[':projectId'].runs[':id']['asset-share'].guests[':guestId'].$delete({
       param: { projectId: queryScope(), id: encodeURIComponent(runId), guestId: encodeURIComponent(guestId) },
     }),
-    runPath(runId, '/preview-share/guests'),
+    runPath(runId, '/asset-share/guests'),
   )
 }
 
-/** Comments guests left on the shared Preview. */
+/** Comments guests left on shared assets. */
 export async function getGuestComments(runId: string, opts?: ReadOptions): Promise<GuestCommentsResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id']['guest-comments'].$get(
@@ -1566,7 +1566,7 @@ export async function markGuestCommentsSent(
 
 /** Every live share on this machine, across projects (the live-links indicator). Workspace-level. */
 export async function getLiveShares(opts?: ReadOptions): Promise<LiveSharesResponse> {
-  return unwrap(await cez.api.v1.workspace['preview-shares'].$get({}, init(opts)), '/workspace/preview-shares')
+  return unwrap(await cez.api.v1.workspace['asset-shares'].$get({}, init(opts)), '/workspace/asset-shares')
 }
 
 /** A listed name (`file` or `folder/file`) as URL path segments, so a nested page's relative

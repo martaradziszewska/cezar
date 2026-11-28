@@ -54,7 +54,7 @@ function mountChangesHost(options?: Parameters<typeof useDiffComments>[1]) {
 }
 
 /** A host whose clock the test moves: a guest comment rides a send only once it has been shown for
- *  `GUEST_HOLD_MS` (spec 2026-11-26-preview-share-link § Exposure). */
+ *  `GUEST_HOLD_MS` (spec 2026-11-28-asset-share-link § Exposure). */
 function mountClockedHost(options: { markRetryMs?: number } = {}) {
   let at = Date.parse('2026-11-27T10:00:00Z')
   const now = () => at
@@ -295,7 +295,7 @@ const GUEST: GuestComment = {
   revision: 2,
   author: 'Ana',
   createdAt: '2026-11-26T10:00:00.000Z',
-  url: 'http://localhost:5173/settings',
+  asset: 'mockups/settings.html',
   selector: 'main > button.btn-primary',
   label: 'Save',
   excerpt: '<button>Save</button>',
@@ -355,7 +355,7 @@ function guestServer(initialDrafts: DiffComment[], initialGuests: GuestComment[]
   }
 }
 
-describe('guest comments in the shared store (spec 2026-11-26-preview-share-link)', () => {
+describe('guest comments in the shared store (spec 2026-11-28-asset-share-link)', () => {
   it('lists guest comments after the stored ones, oldest first, apart from the line and asset lists', async () => {
     const older: GuestComment = { ...GUEST, id: 'g0', author: 'Piotr', createdAt: '2026-11-26T09:00:00.000Z' }
     guestServer([C1], [GUEST, older])

@@ -14,7 +14,7 @@ import { connectionStatus } from './connection-status'
 import { GlobalEventsProvider, POLL_WHILE_DOWN_MS, PROBE_DELAY_MS, PROBE_WHILE_DOWN_MS, RECONCILE_TIMEOUT_MS, RETURN_SILENCE_MS, useGlobalEvents, useRunUsage, useUsage } from './global-events'
 import { setApiScope, WORKSPACE_RUN_EVENT_OMITTED_KEYS } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from './query-client'
-import { queryKeys, usePreviewShare, useProviderStatus, useRuns, useTodos, workspaceQueryKeys } from './queries'
+import { queryKeys, useAssetShare, useProviderStatus, useRuns, useTodos, workspaceQueryKeys } from './queries'
 import { toast } from '@/components/ui/toaster'
 import { HIDDEN_STREAM_GRACE_MS, RUN_EVENT_BATCH_MS } from './run-events'
 import type { ApiRun, ProviderStatusResponse, RunRecord } from '@open-mercato/cezar-api-client'
@@ -1938,23 +1938,24 @@ describe('useGlobalEvents — artifacts', () => {
   })
 })
 
-describe('useGlobalEvents — preview share (spec 2026-11-26-preview-share-link)', () => {
+describe('useGlobalEvents — asset share (spec 2026-11-28-asset-share-link)', () => {
   const share = (runId = 'r1') => ({
     runId,
-    target: 'http://127.0.0.1:5173',
+    asset: 'settings.html',
+    assetTitle: 'Settings mockup',
     url: 'https://example.trycloudflare.com/s/token',
     startedAt: '2026-11-26T10:00:00.000Z',
     expiresAt: '2026-11-26T14:00:00.000Z',
     guests: [],
   })
   const shareFrame = (runId: string, over: Record<string, unknown> = {}, project: string | undefined = BOOT) =>
-    JSON.stringify({ type: 'preview-share', runId, share: share(runId), project, ...over })
+    JSON.stringify({ type: 'asset-share', runId, share: share(runId), project, ...over })
   const comment = {
     id: 'c1',
     revision: 1,
     author: 'Ann',
     createdAt: '2026-11-26T10:00:00.000Z',
-    url: 'http://127.0.0.1:5173/',
+    asset: 'settings.html',
     selector: 'main > h1',
     label: 'Heading',
     excerpt: 'Welcome',
@@ -1965,37 +1966,37 @@ describe('useGlobalEvents — preview share (spec 2026-11-26-preview-share-link)
 
   beforeEach(() => vi.mocked(toast).mockClear())
 
-  it('a preview-share frame replaces the cached share and refreshes the live-links list', () => {
-    client.setQueryData(queryKeys.runs.previewShare('r1'), { share: null })
+  it('a asset-share frame replaces the cached share and refreshes the live-links list', () => {
+    client.setQueryData(queryKeys.runs.assetShare('r1'), { share: null })
     client.setQueryData(workspaceQueryKeys.liveShares, { shares: [] })
     const { source } = mount()
 
-    source.emit('preview-share', shareFrame('r1'))
+    source.emit('asset-share', shareFrame('r1'))
 
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: share('r1') })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: share('r1') })
     expect(client.getQueryState(workspaceQueryKeys.liveShares)?.isInvalidated).toBe(true)
     expect(toast).not.toHaveBeenCalled()
   })
 
   it('a frame with no share and an ended reason clears the cache and toasts once', () => {
-    client.setQueryData(queryKeys.runs.previewShare('r1'), { share: share('r1') })
+    client.setQueryData(queryKeys.runs.assetShare('r1'), { share: share('r1') })
     const { source } = mount()
 
-    source.emit('preview-share', shareFrame('r1', { share: null, ended: 'the task was deleted' }))
+    source.emit('asset-share', shareFrame('r1', { share: null, ended: 'the task was deleted' }))
 
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: null })
     expect(toast).toHaveBeenCalledTimes(1)
     expect(toast).toHaveBeenCalledWith('Sharing stopped: the task was deleted')
   })
 
   it('another project patches no run cache but still refreshes live shares and toasts the end', () => {
-    client.setQueryData(queryKeys.runs.previewShare('r1'), { share: share('r1') })
+    client.setQueryData(queryKeys.runs.assetShare('r1'), { share: share('r1') })
     client.setQueryData(workspaceQueryKeys.liveShares, { shares: [] })
     const { source } = mount()
 
-    source.emit('preview-share', shareFrame('r1', { share: null, ended: 'time ran out' }, 'some-other-project'))
+    source.emit('asset-share', shareFrame('r1', { share: null, ended: 'time ran out' }, 'some-other-project'))
 
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: share('r1') })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: share('r1') })
     expect(client.getQueryState(workspaceQueryKeys.liveShares)?.isInvalidated).toBe(true)
     expect(toast).toHaveBeenCalledWith('Sharing stopped: time ran out')
   })
@@ -2012,24 +2013,24 @@ describe('useGlobalEvents — preview share (spec 2026-11-26-preview-share-link)
   })
 
   it('ignores malformed JSON and frames of the wrong shape', () => {
-    client.setQueryData(queryKeys.runs.previewShare('r1'), { share: share('r1') })
+    client.setQueryData(queryKeys.runs.assetShare('r1'), { share: share('r1') })
     client.setQueryData(queryKeys.runs.guestComments('r1'), { comments: [comment] })
     const { source } = mount()
 
-    source.emit('preview-share', '{not json')
+    source.emit('asset-share', '{not json')
     source.emit('guest-comments', '{not json')
-    source.emit('preview-share', JSON.stringify({ type: 'preview-share', runId: 'r1', ended: 'x' }))
+    source.emit('asset-share', JSON.stringify({ type: 'asset-share', runId: 'r1', ended: 'x' }))
 
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: share('r1') })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: share('r1') })
     expect(client.getQueryData(queryKeys.runs.guestComments('r1'))).toEqual({ comments: [comment] })
     expect(toast).not.toHaveBeenCalled()
   })
 
   it('a reconnect replaces a cached live share with null after a server restart', async () => {
     vi.useFakeTimers()
-    client.setQueryData(queryKeys.runs.previewShare('r1'), { share: share('r1') })
+    client.setQueryData(queryKeys.runs.assetShare('r1'), { share: share('r1') })
     vi.mocked(fetch).mockImplementation(async () => json({ share: null }))
-    const observer = renderHook(() => usePreviewShare('r1'), { wrapper })
+    const observer = renderHook(() => useAssetShare('r1'), { wrapper })
     const { source } = mount()
     source.open()
     source.fail()
@@ -2040,7 +2041,7 @@ describe('useGlobalEvents — preview share (spec 2026-11-26-preview-share-link)
       await vi.advanceTimersByTimeAsync(50)
     })
 
-    expect(client.getQueryData(queryKeys.runs.previewShare('r1'))).toEqual({ share: null })
+    expect(client.getQueryData(queryKeys.runs.assetShare('r1'))).toEqual({ share: null })
     observer.unmount()
   })
 })

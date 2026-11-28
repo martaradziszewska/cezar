@@ -74,8 +74,8 @@ describe('a sent asset comment in the transcript', () => {
   })
 })
 
-describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-link)', () => {
-  it('heads the card with the guest, then the page and element, the markup and the note', () => {
+describe('a sent guest comment in the transcript (spec 2026-11-28-asset-share-link)', () => {
+  it('heads the card with the guest, then the asset and element, the markup and the note', () => {
     renderBubble(
       formatDiffComments([
         COMMENT,
@@ -85,7 +85,7 @@ describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-
           revision: 1,
           author: 'Ana',
           createdAt: '2026-11-26T10:00:00.000Z',
-          url: 'http://localhost:5173/settings',
+          asset: 'mockups/settings.html',
           selector: 'main > button.btn-primary',
           label: 'Save',
           excerpt: '<button>Save</button>',
@@ -99,8 +99,8 @@ describe('a sent guest comment in the transcript (spec 2026-11-26-preview-share-
     const card = cards[1]!
     expect(card.querySelector('[data-slot="review-comment-author"]')?.textContent).toBe('From Ana')
     const link = card.querySelector('a')!
-    expect(link.textContent).toBe('http://localhost:5173/settings')
-    expect(link.getAttribute('href')).toBe('/tasks/r1/preview')
+    expect(link.textContent).toBe('mockups/settings.html')
+    expect(link.getAttribute('href')).toBe('/tasks/r1/assets/mockups%2Fsettings.html')
     expect(card.querySelector('[data-slot="review-comment-element"]')?.textContent).toBe('· element main > button.btn-primary')
     expect(card.querySelector('[data-slot="review-comment-label"]')?.textContent).toBe('“Save”')
     expect(card.querySelector('[data-slot="review-comment-component"]')?.textContent).toBe('component: SettingsForm › Button')
